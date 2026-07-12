@@ -23,19 +23,24 @@ export default function SketchLayer() {
   const selection = useSketchStore((s) => s.selection);
   const pending = useSketchStore((s) => s.pending);
   const clickAt = useSketchStore((s) => s.clickAt);
+  const toggleSelect = useSketchStore((s) => s.toggleSelect);
 
-  const { points, lines } = useMemo(() => {
+  const { points, lines, circles } = useMemo(() => {
     const pts = [];
     const lns = [];
+    const circs = [];
     for (const e of sk.entities.values()) if (e.type === 'point') pts.push(e);
     for (const e of sk.entities.values()) {
       if (e.type === 'line') {
         const a = sk.entities.get(e.p1);
         const b = sk.entities.get(e.p2);
         if (a && b) lns.push({ id: e.id, a, b });
+      } else if (e.type === 'circle') {
+        const c = sk.entities.get(e.center);
+        if (c) circs.push({ id: e.id, cx: c.x, cy: c.y, r: e.r });
       }
     }
-    return { points: pts, lines: lns };
+    return { points: pts, lines: lns, circles: circs };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [sk, version]);
 
@@ -43,7 +48,7 @@ export default function SketchLayer() {
     invalidate();
   }, [version]);
 
-  const drawing = tool === 'point' || tool === 'line';
+  const drawing = tool === 'point' || tool === 'line' || tool === 'circle';
   const selected = new Set(selection);
 
   return (
@@ -62,18 +67,46 @@ export default function SketchLayer() {
         </mesh>
       )}
 
-      {lines.map((l) => (
-        <Line
-          key={l.id}
-          points={[
-            [l.a.x, l.a.y, Z],
-            [l.b.x, l.b.y, Z],
-          ]}
-          color="#38bdf8"
-          lineWidth={2}
-          raycast={noRaycast}
-        />
-      ))}
+      {lines.map((l) => {
+        const isSel = selected.has(l.id);
+        return (
+          <Line
+            key={l.id}
+            points={[
+              [l.a.x, l.a.y, Z],
+              [l.b.x, l.b.y, Z],
+            ]}
+            color={isSel ? '#f43f5e' : '#38bdf8'}
+            lineWidth={isSel ? 4 : 2}
+            // Pickable only in select mode, same convention as points below.
+            raycast={tool === 'select' ? undefined : noRaycast}
+            onClick={(e) => {
+              if (tool !== 'select') return;
+              e.stopPropagation();
+              toggleSelect(l.id);
+            }}
+          />
+        );
+      })}
+
+      {circles.map((c) => {
+        // Outline only — the centre point already renders via the points loop.
+        const segs = 64;
+        const ring = [];
+        for (let i = 0; i <= segs; i++) {
+          const a = (i / segs) * Math.PI * 2;
+          ring.push([c.cx + c.r * Math.cos(a), c.cy + c.r * Math.sin(a), Z]);
+        }
+        return (
+          <Line
+            key={c.id}
+            points={ring}
+            color="#38bdf8"
+            lineWidth={2}
+            raycast={noRaycast}
+          />
+        );
+      })}
 
       {points.map((p) => {
         const isSel = selected.has(p.id);

@@ -9,7 +9,7 @@ import { useSketchStore } from '../stores/sketchStore.js';
 
 const { Text } = Typography;
 
-// Point-selection constraints (line constraints come with line selection later).
+// Point-selection constraints.
 const POINT_CONSTRAINTS = [
   { kind: 'coincident', label: 'Coincident', need: 2 },
   { kind: 'horizontal', label: 'Horizontal', need: 2 },
@@ -19,12 +19,28 @@ const POINT_CONSTRAINTS = [
   { kind: 'lockY', label: 'Lock Y', need: 1, value: true },
 ];
 
+// Line-selection constraints — need exactly 2 lines selected.
+const LINE_CONSTRAINTS = [
+  { kind: 'parallel', label: 'Parallel' },
+  { kind: 'perpendicular', label: 'Perpendicular' },
+  { kind: 'equalLength', label: 'Equal Length' },
+];
+
 export default function SketchPanel() {
   const {
-    tool, selection, dofState, solveResult, error,
-    setTool, applyConstraint, solve, deleteSelected, loadDemo, clear,
+    sk, tool, selection, dofState, solveResult, error,
+    setTool, applyConstraint, applyConstraintRefs, solve, deleteSelected,
+    loadDemo, clear, removeConstraintAt,
   } = useSketchStore();
   const [value, setValue] = useState(10);
+
+  // Split the (mixed point/line/circle) selection by entity type so the
+  // line/radius constraint buttons can enable and build correctly-ordered refs.
+  const lineIds = selection.filter((id) => sk.entities.get(id)?.type === 'line');
+  const pointIds = selection.filter((id) => sk.entities.get(id)?.type === 'point');
+  const twoLinesSelected = selection.length === 2 && lineIds.length === 2;
+  const pointAndLineSelected = selection.length === 2 && pointIds.length === 1 && lineIds.length === 1;
+  const isCircleSelection = selection.length === 1 && sk.entities.get(selection[0])?.type === 'circle';
 
   return (
     <Card
@@ -42,11 +58,12 @@ export default function SketchPanel() {
             { label: 'Select', value: 'select' },
             { label: 'Point', value: 'point' },
             { label: 'Line', value: 'line' },
+            { label: 'Circle', value: 'circle' },
           ]}
         />
         <Text type="secondary" style={{ fontSize: 12 }}>
           {tool === 'select'
-            ? `Click points to select · ${selection.length} selected`
+            ? `Click points, lines or circles to select · ${selection.length} selected`
             : `Click on the viewport plane to add a ${tool}`}
         </Text>
 
@@ -63,10 +80,40 @@ export default function SketchPanel() {
               {c.label}
             </Button>
           ))}
+          {/* Radius dimension: enabled only when the selection is a single circle. */}
+          <Button
+            size="small"
+            disabled={!isCircleSelection}
+            onClick={() => applyConstraint('radius', value)}
+          >
+            Radius
+          </Button>
         </Space>
         <Space size={4}>
           <Text type="secondary" style={{ fontSize: 12 }}>value</Text>
           <InputNumber size="small" value={value} onChange={(v) => setValue(v ?? 0)} style={{ width: 90 }} />
+        </Space>
+
+        <Divider style={{ margin: '4px 0' }} />
+
+        <Space wrap size={4}>
+          {LINE_CONSTRAINTS.map((c) => (
+            <Button
+              key={c.kind}
+              size="small"
+              disabled={!twoLinesSelected}
+              onClick={() => applyConstraintRefs(c.kind, lineIds)}
+            >
+              {c.label}
+            </Button>
+          ))}
+          <Button
+            size="small"
+            disabled={!pointAndLineSelected}
+            onClick={() => applyConstraintRefs('pointOnLine', [pointIds[0], lineIds[0]])}
+          >
+            Point on Line
+          </Button>
         </Space>
 
         <Divider style={{ margin: '4px 0' }} />
@@ -102,6 +149,28 @@ export default function SketchPanel() {
           </Text>
         )}
         {error && <Text type="danger" style={{ fontSize: 12 }}>{error}</Text>}
+
+        <Divider style={{ margin: '4px 0' }} />
+
+        <Text type="secondary" style={{ fontSize: 12 }}>Constraints ({sk.constraints.length})</Text>
+        <Space direction="vertical" size={2} style={{ width: '100%' }}>
+          {sk.constraints.map((c, i) => (
+            <Space key={i} size={4} style={{ width: '100%', justifyContent: 'space-between' }}>
+              <Text style={{ fontSize: 11, color: '#9ca3af' }}>
+                {c.kind} [{c.refs.join(', ')}]{c.value != null ? ` = ${c.value}` : ''}
+              </Text>
+              <Button
+                size="small"
+                danger
+                type="text"
+                style={{ fontSize: 11, lineHeight: 1, padding: '0 4px' }}
+                onClick={() => removeConstraintAt(i)}
+              >
+                ×
+              </Button>
+            </Space>
+          ))}
+        </Space>
       </Space>
     </Card>
   );

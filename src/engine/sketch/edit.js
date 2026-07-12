@@ -30,6 +30,67 @@ export function hitTestPoint(sk, x, y, tol = 1e-6) {
 }
 
 /**
+ * Point-to-segment squared distance from (px, py) to segment (ax,ay)-(bx,by).
+ */
+function segDist2(px, py, ax, ay, bx, by) {
+  const abx = bx - ax;
+  const aby = by - ay;
+  const len2 = abx * abx + aby * aby;
+  let t = len2 > 0 ? ((px - ax) * abx + (py - ay) * aby) / len2 : 0;
+  t = Math.max(0, Math.min(1, t));
+  const cx = ax + t * abx;
+  const cy = ay + t * aby;
+  return dist2(px, py, cx, cy);
+}
+
+/**
+ * Nearest line entity to (x, y) within `tol` (point-to-segment distance), or
+ * null. Mirrors `hitTestPoint` but for line geometry — used to let select mode
+ * pick lines for the line constraints (parallel/perpendicular/equal length/
+ * point-on-line).
+ */
+export function hitTestLine(sk, x, y, tol = 1e-6) {
+  const t2 = tol * tol;
+  let best = null;
+  let bestD = t2;
+  for (const e of sk.entities.values()) {
+    if (e.type !== 'line') continue;
+    const a = sk.entities.get(e.p1);
+    const b = sk.entities.get(e.p2);
+    if (!a || !b) continue;
+    const d = segDist2(x, y, a.x, a.y, b.x, b.y);
+    if (d <= bestD) {
+      bestD = d;
+      best = e.id;
+    }
+  }
+  return best;
+}
+
+/**
+ * Nearest circle entity to (x, y) whose *ring* passes within `tol` — i.e.
+ * |dist(center, point) - r| <= tol — or null. Used for click selection of a
+ * circle (for the radius dimension), distinct from hitTestPoint's centre-only
+ * point picking.
+ */
+export function hitTestCircle(sk, x, y, tol = 1e-6) {
+  let best = null;
+  let bestErr = tol;
+  for (const e of sk.entities.values()) {
+    if (e.type !== 'circle') continue;
+    const c = sk.entities.get(e.center);
+    if (!c) continue;
+    const d = Math.hypot(c.x - x, c.y - y);
+    const err = Math.abs(d - e.r);
+    if (err <= bestErr) {
+      bestErr = err;
+      best = e.id;
+    }
+  }
+  return best;
+}
+
+/**
  * Return the id of an existing point within `tol` of (x, y), or create one.
  * This is what makes clicking a shared corner reuse the same point — the whole
  * reason the model is point-based — so closed profiles are coincident for free.

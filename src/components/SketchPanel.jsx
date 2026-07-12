@@ -1,7 +1,7 @@
 /**
  * SketchPanel — Phase 2 sketcher controls: tool palette, constraint buttons,
- * solve, and DOF/solve feedback. Drawing happens in the viewport (SketchLayer);
- * this panel is the toolbar and status.
+ * dimensioning, chamfer, undo/redo, solve, and DOF/solve feedback. Drawing
+ * happens in the viewport (SketchLayer); this panel is the toolbar and status.
  */
 import { Card, Button, Typography, Tag, Space, Segmented, InputNumber, Divider } from 'antd';
 import { useState } from 'react';
@@ -26,21 +26,31 @@ const LINE_CONSTRAINTS = [
   { kind: 'equalLength', label: 'Equal Length' },
 ];
 
+function toolHint(tool, count) {
+  if (tool === 'select') return `Click points, lines or circles to select · ${count} selected`;
+  if (tool === 'dimension') return `Pick 1 line / 2 points / 1 circle, set value → Dimension · ${count} selected`;
+  if (tool === 'point') return 'Click on the plane to add points';
+  return 'Click to start, move, click to finish · Esc cancels';
+}
+
 export default function SketchPanel() {
   const {
-    sk, tool, selection, dofState, solveResult, error,
-    setTool, applyConstraint, applyConstraintRefs, solve, deleteSelected,
-    loadDemo, clear, removeConstraintAt,
+    sk, tool, selection, dofState, solveResult, error, past, future,
+    setTool, applyConstraint, applyConstraintRefs, dimension, chamfer,
+    solve, deleteSelected, undo, redo, loadDemo, clear, removeConstraintAt,
   } = useSketchStore();
   const [value, setValue] = useState(10);
 
   // Split the (mixed point/line/circle) selection by entity type so the
-  // line/radius constraint buttons can enable and build correctly-ordered refs.
+  // line/radius/dimension/chamfer buttons can enable and build ordered refs.
   const lineIds = selection.filter((id) => sk.entities.get(id)?.type === 'line');
   const pointIds = selection.filter((id) => sk.entities.get(id)?.type === 'point');
   const twoLinesSelected = selection.length === 2 && lineIds.length === 2;
   const pointAndLineSelected = selection.length === 2 && pointIds.length === 1 && lineIds.length === 1;
   const isCircleSelection = selection.length === 1 && sk.entities.get(selection[0])?.type === 'circle';
+  const oneLine = selection.length === 1 && lineIds.length === 1;
+  const twoPoints = selection.length === 2 && pointIds.length === 2;
+  const canDimension = oneLine || twoPoints || isCircleSelection;
 
   return (
     <Card
@@ -58,13 +68,13 @@ export default function SketchPanel() {
             { label: 'Select', value: 'select' },
             { label: 'Point', value: 'point' },
             { label: 'Line', value: 'line' },
+            { label: 'Rectangle', value: 'rectangle' },
             { label: 'Circle', value: 'circle' },
+            { label: 'Dimension', value: 'dimension' },
           ]}
         />
         <Text type="secondary" style={{ fontSize: 12 }}>
-          {tool === 'select'
-            ? `Click points, lines or circles to select · ${selection.length} selected`
-            : `Click on the viewport plane to add a ${tool}`}
+          {toolHint(tool, selection.length)}
         </Text>
 
         <Divider style={{ margin: '4px 0' }} />
@@ -92,6 +102,10 @@ export default function SketchPanel() {
         <Space size={4}>
           <Text type="secondary" style={{ fontSize: 12 }}>value</Text>
           <InputNumber size="small" value={value} onChange={(v) => setValue(v ?? 0)} style={{ width: 90 }} />
+          {/* Smart dimension: infers distance / length / radius from the selection. */}
+          <Button size="small" type="primary" ghost disabled={!canDimension} onClick={() => dimension(value)}>
+            Dimension
+          </Button>
         </Space>
 
         <Divider style={{ margin: '4px 0' }} />
@@ -114,11 +128,17 @@ export default function SketchPanel() {
           >
             Point on Line
           </Button>
+          {/* Chamfer the shared corner of two selected lines by `value`. */}
+          <Button size="small" disabled={!twoLinesSelected} onClick={() => chamfer(value)}>
+            Chamfer
+          </Button>
         </Space>
 
         <Divider style={{ margin: '4px 0' }} />
 
         <Space wrap size={4}>
+          <Button size="small" onClick={() => undo()} disabled={!past.length}>Undo</Button>
+          <Button size="small" onClick={() => redo()} disabled={!future.length}>Redo</Button>
           <Button size="small" type="primary" onClick={() => solve()}>Solve</Button>
           <Button size="small" danger disabled={!selection.length} onClick={() => deleteSelected()}>
             Delete

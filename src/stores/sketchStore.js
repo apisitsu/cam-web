@@ -7,17 +7,23 @@
  * uses for buffers, so React never walks the model). Only the *solve* crosses to
  * the worker, serialized. The worker is created lazily so tests/SSR don't spin
  * it up on import.
+ *
+ * Undo/redo keep serialized snapshots (`past`/`future`); `_snapshot()` is called
+ * at the start of every user mutation, so one undo reverts the edit *and* the
+ * solve it triggered.
  */
 import { create } from 'zustand';
 import * as Comlink from 'comlink';
 import {
-  createSketch, addLine, addCircle, addConstraint, dof, serialize, deserialize,
+  createSketch, addPoint, addLine, addCircle, addConstraint, dof, serialize, deserialize,
 } from '../engine/sketch/model.js';
 import {
-  getOrCreatePoint, hitTestPoint, hitTestLine, hitTestCircle, deleteEntity, removeConstraint,
+  getOrCreatePoint, hitTestPoint, hitTestLine, hitTestCircle,
+  deleteEntity, removeConstraint, chamfer as chamferEdit,
 } from '../engine/sketch/edit.js';
 
 const SNAP = 1.5; // mm — click snap / pick tolerance
+const HISTORY = 50; // max undo depth
 
 let sketchApi = null;
 function worker() {
@@ -30,10 +36,24 @@ function worker() {
   return sketchApi;
 }
 
-/** A deliberately skewed quad; horizontals/verticals + a side dim solve it square. */
-function demoSketch() {
+/**
+ * A fresh sketch seeded with a fixed **origin** point at (0,0). Kept here (not in
+ * the pure engine `createSketch`, which the node checks assume is empty) because
+ * "every sketch has an origin to dimension from" is an app-level policy. The
+ * origin is `fixed` (grounds the solve, contributes no DOF) and tagged so the UI
+ * can style it and refuse to delete it.
+ */
+function newSketch() {
   const sk = createSketch();
-  const p1 = getOrCreatePoint(sk, 0, 0);
+  const id = addPoint(sk, 0, 0, true);
+  sk.entities.get(id).origin = true;
+  return sk;
+}
+
+/** A deliberately skewed quad anchored at the origin; horizontals/verticals solve it square. */
+function demoSketch() {
+  const sk = newSketch();
+  const p1 = getOrCreatePoint(sk, 0, 0); // snaps to the origin (fixed → grounds the quad)
   const p2 = getOrCreatePoint(sk, 30, 3);
   const p3 = getOrCreatePoint(sk, 27, 33);
   const p4 = getOrCreatePoint(sk, -3, 30);
@@ -45,17 +65,18 @@ function demoSketch() {
   addConstraint(sk, 'horizontal', [p4, p3]);
   addConstraint(sk, 'vertical', [p1, p4]);
   addConstraint(sk, 'vertical', [p2, p3]);
-  addConstraint(sk, 'lockX', [p1], 0);
-  addConstraint(sk, 'lockY', [p1], 0);
   return sk;
 }
 
 export const useSketchStore = create((set, get) => ({
-  sk: createSketch(),
+  sk: newSketch(),
   version: 0, // bump to re-render after any mutation
-  tool: 'select', // select | point | line | circle
-  pending: null, // first endpoint while drawing a line/circle
+  tool: 'select', // select | point | line | rectangle | circle | dimension
+  pending: null, // first endpoint while drawing a line/rectangle/circle
+  cursor: null, // { x, y } live pointer on the plane — drives rubber-band preview
   selection: [], // selected entity ids — points, lines, and/or circles (mixed)
+  past: [], // undo stack (serialized snapshots, oldest first)
+  future: [], // redo stack
   solveResult: null, // { success, status, conflicting, redundant }
   dofState: null,
   error: null,
@@ -64,8 +85,49 @@ export const useSketchStore = create((set, get) => ({
     set({ version: get().version + 1, dofState: dof(get().sk) });
   },
 
+  /** Push the current sketch onto the undo stack and clear the redo stack. */
+  _snapshot() {
+    const past = get().past.concat([serialize(get().sk)]);
+    if (past.length > HISTORY) past.shift();
+    set({ past, future: [] });
+  },
+
+  undo() {
+    const { past, future, sk } = get();
+    if (!past.length) return;
+    set({
+      sk: deserialize(past[past.length - 1]),
+      past: past.slice(0, -1),
+      future: future.concat([serialize(sk)]),
+      selection: [], pending: null, error: null,
+    });
+    get()._bump();
+  },
+
+  redo() {
+    const { past, future, sk } = get();
+    if (!future.length) return;
+    set({
+      sk: deserialize(future[future.length - 1]),
+      future: future.slice(0, -1),
+      past: past.concat([serialize(sk)]),
+      selection: [], pending: null, error: null,
+    });
+    get()._bump();
+  },
+
   setTool(tool) {
-    set({ tool, pending: null, error: null });
+    set({ tool, pending: null, cursor: null, error: null });
+  },
+
+  /** Live pointer position on the plane (sketch coords) — preview only, no mutation. */
+  hover(x, y) {
+    set({ cursor: { x, y } });
+  },
+
+  /** Escape: drop the in-progress line/rectangle/circle without committing it. */
+  cancelPending() {
+    if (get().pending != null) set({ pending: null });
   },
 
   /**
@@ -84,15 +146,19 @@ export const useSketchStore = create((set, get) => ({
   clickAt(x, y) {
     const { sk, tool } = get();
     if (tool === 'point') {
+      get()._snapshot();
       getOrCreatePoint(sk, x, y, SNAP);
       get()._bump();
     } else if (tool === 'line') {
-      const p = getOrCreatePoint(sk, x, y, SNAP);
       const { pending } = get();
       if (pending == null) {
-        set({ pending: p });
+        set({ pending: getOrCreatePoint(sk, x, y, SNAP) });
       } else {
-        if (p !== pending) addLine(sk, pending, p);
+        const p = getOrCreatePoint(sk, x, y, SNAP);
+        if (p !== pending) {
+          get()._snapshot();
+          addLine(sk, pending, p);
+        }
         set({ pending: null });
         get()._bump();
       }
@@ -101,18 +167,50 @@ export const useSketchStore = create((set, get) => ({
       // line tool); second click sets the radius from the distance to the centre.
       const { pending } = get();
       if (pending == null) {
-        const c = getOrCreatePoint(sk, x, y, SNAP);
-        set({ pending: c });
+        set({ pending: getOrCreatePoint(sk, x, y, SNAP) });
       } else {
         const center = sk.entities.get(pending);
         const r = Math.hypot(x - center.x, y - center.y);
-        if (r > 1e-6) addCircle(sk, pending, r);
+        if (r > 1e-6) {
+          get()._snapshot();
+          addCircle(sk, pending, r);
+        }
+        set({ pending: null });
+        get()._bump();
+      }
+    } else if (tool === 'rectangle') {
+      // Rectangle tool: first click sets corner A; second click sets the opposite
+      // corner. Builds 4 axis-aligned lines that *share* their corner points, plus
+      // horizontal/vertical constraints so the solver keeps it a true rectangle.
+      const { pending } = get();
+      if (pending == null) {
+        set({ pending: getOrCreatePoint(sk, x, y, SNAP) });
+      } else {
+        const a = sk.entities.get(pending);
+        if (Math.abs(x - a.x) > 1e-6 && Math.abs(y - a.y) > 1e-6) {
+          get()._snapshot();
+          const b = getOrCreatePoint(sk, x, a.y, SNAP); // A→B along x
+          const c = getOrCreatePoint(sk, x, y, SNAP); // opposite corner
+          const d = getOrCreatePoint(sk, a.x, y, SNAP); // A→D along y
+          addLine(sk, pending, b);
+          addLine(sk, b, c);
+          addLine(sk, c, d);
+          addLine(sk, d, pending);
+          addConstraint(sk, 'horizontal', [pending, b]);
+          addConstraint(sk, 'horizontal', [d, c]);
+          addConstraint(sk, 'vertical', [b, c]);
+          addConstraint(sk, 'vertical', [pending, d]);
+          set({ pending: null });
+          get()._bump();
+          get().solve();
+          return;
+        }
         set({ pending: null });
         get()._bump();
       }
     } else {
-      // select: points take priority over lines, then circles, under the
-      // cursor; empty space clears the selection. All route through toggleSelect.
+      // select / dimension: points take priority over lines, then circles, under
+      // the cursor; empty space clears. All route through toggleSelect.
       const hit = hitTestPoint(sk, x, y, SNAP);
       if (hit != null) { get().toggleSelect(hit); return; }
       const lineHit = hitTestLine(sk, x, y, SNAP);
@@ -126,9 +224,11 @@ export const useSketchStore = create((set, get) => ({
   /** Apply a constraint to the current selection, then re-solve. */
   applyConstraint(kind, value) {
     const { sk, selection } = get();
+    get()._snapshot();
     try {
       addConstraint(sk, kind, selection, value);
     } catch (e) {
+      get()._undoSnapshot();
       set({ error: String(e?.message || e) });
       return;
     }
@@ -145,15 +245,75 @@ export const useSketchStore = create((set, get) => ({
    */
   applyConstraintRefs(kind, refs, value) {
     const { sk } = get();
+    get()._snapshot();
     try {
       addConstraint(sk, kind, refs, value);
     } catch (e) {
+      get()._undoSnapshot();
       set({ error: String(e?.message || e) });
       return;
     }
     set({ selection: [], error: null });
     get()._bump();
     get().solve();
+  },
+
+  /**
+   * Dimension the current selection — the CAD "smart dimension" flow: a single
+   * line dimensions its length, two points their distance, a single circle its
+   * radius. Drives the matching constraint from whatever is selected.
+   */
+  dimension(value) {
+    const { sk, selection } = get();
+    const ents = selection.map((id) => sk.entities.get(id)).filter(Boolean);
+    let kind;
+    let refs;
+    if (ents.length === 1 && ents[0].type === 'line') {
+      kind = 'distance'; refs = [ents[0].p1, ents[0].p2];
+    } else if (ents.length === 2 && ents.every((e) => e.type === 'point')) {
+      kind = 'distance'; refs = selection.slice();
+    } else if (ents.length === 1 && ents[0].type === 'circle') {
+      kind = 'radius'; refs = [selection[0]];
+    } else {
+      set({ error: 'Dimension needs 1 line, 2 points, or 1 circle' });
+      return;
+    }
+    get()._snapshot();
+    try {
+      addConstraint(sk, kind, refs, value);
+    } catch (e) {
+      get()._undoSnapshot();
+      set({ error: String(e?.message || e) });
+      return;
+    }
+    set({ selection: [], error: null });
+    get()._bump();
+    get().solve();
+  },
+
+  /** Chamfer the corner between the two selected lines by `dist`. */
+  chamfer(dist) {
+    const { sk, selection } = get();
+    const lines = selection.filter((id) => sk.entities.get(id)?.type === 'line');
+    if (lines.length !== 2) {
+      set({ error: 'Chamfer needs exactly 2 lines' });
+      return;
+    }
+    get()._snapshot();
+    const res = chamferEdit(sk, lines[0], lines[1], dist);
+    if (res == null) {
+      get()._undoSnapshot();
+      set({ error: 'Lines must share a corner and the distance must fit' });
+      return;
+    }
+    set({ selection: [], error: null });
+    get()._bump();
+    get().solve();
+  },
+
+  /** Discard the snapshot just pushed (used when a guarded mutation aborts). */
+  _undoSnapshot() {
+    set({ past: get().past.slice(0, -1) });
   },
 
   /** Solve the whole sketch in the worker and adopt the result. */
@@ -177,26 +337,34 @@ export const useSketchStore = create((set, get) => ({
 
   deleteSelected() {
     const { sk, selection } = get();
-    selection.forEach((id) => deleteEntity(sk, id));
+    // The origin is a fixed reference — never delete it.
+    const ids = selection.filter((id) => !sk.entities.get(id)?.origin);
+    if (!ids.length) { set({ selection: [] }); return; }
+    get()._snapshot();
+    ids.forEach((id) => deleteEntity(sk, id));
     set({ selection: [] });
     get()._bump();
+    get().solve();
   },
 
   /** Remove one constraint (by its index in sk.constraints), then re-solve. */
   removeConstraintAt(index) {
     const { sk } = get();
+    get()._snapshot();
     removeConstraint(sk, index);
     get()._bump();
     get().solve();
   },
 
   loadDemo() {
+    get()._snapshot();
     set({ sk: demoSketch(), selection: [], pending: null, solveResult: null, error: null });
     get()._bump();
   },
 
   clear() {
-    set({ sk: createSketch(), selection: [], pending: null, solveResult: null, error: null });
+    get()._snapshot();
+    set({ sk: newSketch(), selection: [], pending: null, solveResult: null, error: null });
     get()._bump();
   },
 }));

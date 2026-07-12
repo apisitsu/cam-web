@@ -6,9 +6,18 @@
  * Screen→sketch coordinate mapping and event handling live in the view layer;
  * everything here is testable under plain Node.
  */
-import { addPoint } from './model.js';
+import { addPoint, addLine } from './model.js';
 
 const dist2 = (ax, ay, bx, by) => (ax - bx) ** 2 + (ay - by) ** 2;
+
+/** Unit vector from point `from` to point `to` (falls back to +x if degenerate). */
+function unit(from, to) {
+  const dx = to.x - from.x;
+  const dy = to.y - from.y;
+  const len = Math.hypot(dx, dy);
+  if (len < 1e-9) return { x: 1, y: 0 };
+  return { x: dx / len, y: dy / len };
+}
 
 /**
  * Nearest point entity to (x, y) within `tol`, or null. Used for click snapping
@@ -131,4 +140,37 @@ export function removeConstraint(sk, index) {
   if (index < 0 || index >= sk.constraints.length) return false;
   sk.constraints.splice(index, 1);
   return true;
+}
+
+/**
+ * Chamfer the corner where two lines meet: find the point they share, pull each
+ * line's shared endpoint back by `dist` along its own direction to a new point,
+ * drop the old corner (and any constraint on it), and join the two new points
+ * with a chamfer line. Returns the chamfer line id, or null if the lines don't
+ * share a corner or `dist` is not usable. All done on the point-based model, so
+ * no arc primitive is needed.
+ */
+export function chamfer(sk, l1Id, l2Id, dist) {
+  const l1 = sk.entities.get(l1Id);
+  const l2 = sk.entities.get(l2Id);
+  if (!l1 || l1.type !== 'line' || !l2 || l2.type !== 'line') return null;
+  if (!(dist > 0)) return null;
+  const shared = [l1.p1, l1.p2].find((id) => id === l2.p1 || id === l2.p2);
+  if (shared == null) return null;
+  const P = sk.entities.get(shared);
+  const far1 = sk.entities.get(l1.p1 === shared ? l1.p2 : l1.p1);
+  const far2 = sk.entities.get(l2.p1 === shared ? l2.p2 : l2.p1);
+  // Don't chamfer past either line's far end.
+  if (dist >= Math.hypot(far1.x - P.x, far1.y - P.y)) return null;
+  if (dist >= Math.hypot(far2.x - P.x, far2.y - P.y)) return null;
+  const u1 = unit(P, far1);
+  const u2 = unit(P, far2);
+  const c1 = addPoint(sk, P.x + u1.x * dist, P.y + u1.y * dist);
+  const c2 = addPoint(sk, P.x + u2.x * dist, P.y + u2.y * dist);
+  // Re-point the two lines off the old corner and onto the new chamfer points.
+  if (l1.p1 === shared) l1.p1 = c1; else l1.p2 = c1;
+  if (l2.p1 === shared) l2.p1 = c2; else l2.p2 = c2;
+  const line = addLine(sk, c1, c2);
+  deleteEntity(sk, shared); // orphaned corner + any constraint referencing it
+  return line;
 }

@@ -1,0 +1,108 @@
+นี่เป็นโปรเจกต์ระดับที่บริษัทอย่าง Autodesk/Siemens ใช้เวลาหลายปีและทีมใหญ่ในการสร้าง เพราะหัวใจจริง ๆ ไม่ได้อยู่ที่ React/Node แต่อยู่ที่ **geometry kernel** และ **toolpath/simulation engine** ผมจะออกแบบสถาปัตยกรรมที่ใช้ของ open-source ที่มีอยู่จริงแทนการเขียนเองทั้งหมด แล้ววาง roadmap แบบทำได้จริง
+
+## 1. ความจริงเรื่อง scope ก่อนเริ่ม
+
+สิ่งที่ React/Node/Ant Design ทำได้คือ UI shell + orchestration เท่านั้น งานหนักจริงอยู่ที่ 3 ก้อนนี้ ซึ่ง **ห้ามเขียนเอง** ถ้าอยากได้ผลลัพธ์ในเวลาที่สมเหตุสมผล:
+
+- **CAD kernel** (B-rep/NURBS): extrude, revolve, boolean, fillet, STEP/IGES → ใช้ **OpenCascade (OCCT)**
+- **Toolpath algorithms**: waterline, dropcutter, polygon offset → **OpenCAMLib + Clipper2**
+- **2D constraint solver**: coincident, tangent, dimension → **planegcs** (จาก FreeCAD)
+
+ทั้งสามคอมไพล์เป็น WASM รันใน browser ได้
+
+## 2. สถาปัตยกรรมแบบ Layer
+
+```
+┌────────────────────────────────────────────────┐
+│ Presentation — React + Ant Design               │
+│  • Viewport: React Three Fiber (Three.js)       │
+│  • Feature tree, toolbar, property panel        │
+├────────────────────────────────────────────────┤
+│ App State — Zustand + Command Bus (undo/redo)   │
+│  • Document model, feature history              │
+├────────────────────────────────────────────────┤
+│ Engine Layer (Web Workers + WASM, ผ่าน Comlink) │
+│  • occt-worker      : OpenCascade.js            │
+│  • sketch-worker    : planegcs                  │
+│  • cam-worker       : OpenCAMLib + Clipper2     │
+│  • sim-worker       : material removal (dexel)  │
+│  • gcode: parser + post-processor               │
+├────────────────────────────────────────────────┤
+│ Backend — Node.js (Fastify)                     │
+│  • Auth, Project CRUD, versioning               │
+│  • Blob storage (MinIO/S3) สำหรับ STEP/project  │
+│  • BullMQ: offload sim หนัก ๆ ไป native OCCT    │
+└────────────────────────────────────────────────┘
+```
+
+**หลักการสำคัญ:** งาน geometry/CAM/sim ทุกอย่างอยู่ใน Web Worker เพื่อให้ viewport ค้าง 60fps ไม่ได้ ส่วน main thread ทำแค่ render กับ UI
+
+## 3. การตัดสินใจเทคโนโลยีหลัก
+
+**Geometry kernel**
+
+| ตัวเลือก | ประเภท | ข้อดี | ข้อเสีย |
+|---|---|---|---|
+| **OpenCascade.js** | B-rep/NURBS (WASM) | ครบ, STEP/IGES/fillet | bundle ~30MB, กิน RAM |
+| Manifold | mesh boolean (WASM) | เร็ว, เล็ก | ไม่มี NURBS/STEP, ไม่มี fillet จริง |
+| Three.js CSG | mesh (JS) | ง่าย | ไม่ใช่ CAD จริง ทำ CAM ต่อไม่ได้ |
+
+→ เลือก **OpenCascade.js** ไม่มีทางเลือกอื่นถ้าต้องการ CAD/CAM จริง
+
+**Toolpath engine**
+
+| ตัวเลือก | ครอบคลุม | หมายเหตุ |
+|---|---|---|
+| **OpenCAMLib** | 3D milling (waterline, dropcutter) | C++ ต้อง build Emscripten เอง |
+| **Clipper2** | 2D polygon offset | ใช้กับ pocket/contour 2.5D + turning profile |
+| Custom | turning cycles (G71/72/76) | ต้องเขียนเอง — turning เป็น 2D จึงไม่ยากมาก |
+
+**Rendering**
+
+| Three.js (R3F) | Babylon.js |
+|---|---|
+| ecosystem ใหญ่, R3F เข้ากับ React ดี | engine สมบูรณ์กว่า แต่ integrate React ยากกว่า |
+
+→ **R3F** เหมาะกับ stack นี้
+
+## 4. โมดูลหลัก + หน้าที่
+
+**CAD**
+- Sketcher 2D (planegcs): line/arc/circle/spline + constraint
+- Modeling 3D (OCCT): extrude, revolve, boolean, fillet/chamfer, tessellate สำหรับ display
+
+**CAM — แยก 2 โหมด**
+- *Milling*: stock + WCS/work offset → operations (face, contour, pocket 2.5D, drill, adaptive) → stepover/stepdown, lead-in/out
+- *Turning*: ดึง profile จากหน้าตัด revolve → operations (facing, rough, finish, groove, thread, part-off) — คำนวณเป็น 2D ในระนาบ ZX
+
+**Simulation**
+- *Backplot*: parse toolpath → วาด polyline แยกสี rapid/feed
+- *Material removal*: milling ใช้ **multi-dexel**, turning ใช้ **2D revolved profile** (เบากว่ามาก) + ตรวจ gouge/collision
+
+**G-code I/O**
+- *Post-processor*: core กลาง + config ต่อ controller (Fanuc/Siemens/Haas/LinuxCNC) เพราะ canned cycle ต่างกัน
+- *Importer*: tokenizer → parser → motion planner (G0-3, arc, G81-89, G71) → ป้อนเข้า pipeline เดียวกับ simulation
+
+## 5. Roadmap แบบเฟส
+
+จุดสำคัญ: **เริ่มจากปลายทางที่ให้คุณค่าเร็วสุดและไม่ต้องพึ่ง CAD kernel** คือ import G-code + simulate
+
+| เฟส | ส่งมอบ | พึ่ง kernel? | เหตุผล |
+|---|---|---|---|
+| **0** | Setup + R3F viewport + **G-code parser + backplot** | ไม่ | ได้ของใช้งานได้เร็ว, validate render pipeline |
+| **1** | Material removal sim (dexel) จาก G-code | ไม่ | ต่อยอดเฟส 0 ทันที |
+| **2** | 2D Sketcher + constraint (planegcs) | บางส่วน | ฐานของ CAD |
+| **3** | 3D modeling: extrude/revolve/boolean (OCCT) | ใช่ | ได้ CAD จริง |
+| **4** | CAM Milling 2.5D (pocket/contour/drill) | ใช่ | ต่อ toolpath จาก geometry |
+| **5** | CAM Turning (profile-based cycles) | ใช่ | 2D จึงเร็วกว่า milling |
+| **6** | Post-processor + export G/M code | — | ปิด loop ครบ |
+| **7** | Backend: auth, storage, versioning | — | ทำเป็น product |
+
+## 6. คำแนะนำ MVP
+
+อย่าเริ่มที่ CAD เพราะ OCCT integration หนักและ demoization ช้า **เริ่มที่เฟส 0-1** (import G-code → backplot → material removal) เพราะ:
+- ได้ demo ที่ CNC engineer เห็นค่าทันที
+- ทดสอบ Three.js render + worker architecture ก่อนลง kernel ที่ซับซ้อน
+- ตรง pain point จริง (verify G-code ก่อนส่งเข้าเครื่อง)
+
+ผมช่วยต่อได้ในทิศทางไหน — ลง detail สถาปัตยกรรมของเฟสใดเฟสหนึ่ง (เช่น G-code parser + dexel sim architecture ของเฟส 0-1), วาง folder structure/monorepo, หรือทำ comparison ลึกเรื่อง build OpenCascade.js เป็น worker? แจ้งได้เลยว่าจะเริ่มจุดไหน

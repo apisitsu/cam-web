@@ -15,10 +15,10 @@
 import { create } from 'zustand';
 import * as Comlink from 'comlink';
 import {
-  createSketch, addPoint, addLine, addCircle, addConstraint, dof, serialize, deserialize,
+  createSketch, addPoint, addLine, addCircle, addArc, addConstraint, dof, serialize, deserialize,
 } from '../engine/sketch/model.js';
 import {
-  getOrCreatePoint, hitTestPoint, hitTestLine, hitTestCircle,
+  getOrCreatePoint, hitTestPoint, hitTestLine, hitTestCircle, hitTestArc,
   deleteEntity, removeConstraint, chamfer as chamferEdit,
 } from '../engine/sketch/edit.js';
 
@@ -71,10 +71,12 @@ function demoSketch() {
 export const useSketchStore = create((set, get) => ({
   sk: newSketch(),
   version: 0, // bump to re-render after any mutation
-  tool: 'select', // select | point | line | rectangle | circle | dimension
-  pending: null, // first endpoint while drawing a line/rectangle/circle
+  tool: 'select', // select | point | line | rectangle | circle | arc | dimension
+  pending: null, // first click while drawing (line/rect/circle centre, arc centre)
+  pending2: null, // second click for a 3-click tool — the arc's start point
   cursor: null, // { x, y } live pointer on the plane — drives rubber-band preview
-  selection: [], // selected entity ids — points, lines, and/or circles (mixed)
+  snap: null, // { x, y, id } existing point the cursor is snapping to, or null
+  selection: [], // selected entity ids — points, lines, circles, and/or arcs (mixed)
   past: [], // undo stack (serialized snapshots, oldest first)
   future: [], // redo stack
   solveResult: null, // { success, status, conflicting, redundant }
@@ -99,7 +101,7 @@ export const useSketchStore = create((set, get) => ({
       sk: deserialize(past[past.length - 1]),
       past: past.slice(0, -1),
       future: future.concat([serialize(sk)]),
-      selection: [], pending: null, error: null,
+      selection: [], pending: null, pending2: null, error: null,
     });
     get()._bump();
   },
@@ -111,23 +113,32 @@ export const useSketchStore = create((set, get) => ({
       sk: deserialize(future[future.length - 1]),
       future: future.slice(0, -1),
       past: past.concat([serialize(sk)]),
-      selection: [], pending: null, error: null,
+      selection: [], pending: null, pending2: null, error: null,
     });
     get()._bump();
   },
 
   setTool(tool) {
-    set({ tool, pending: null, cursor: null, error: null });
+    set({ tool, pending: null, pending2: null, cursor: null, snap: null, error: null });
   },
 
-  /** Live pointer position on the plane (sketch coords) — preview only, no mutation. */
+  /**
+   * Live pointer position on the plane (sketch coords) — preview only, no
+   * mutation. Also resolves the current **snap target**: the nearest existing
+   * point within SNAP, so the view can show a snap marker and the rubber-band
+   * can lock onto it (matching where `getOrCreatePoint` will actually place the
+   * click).
+   */
   hover(x, y) {
-    set({ cursor: { x, y } });
+    const { sk } = get();
+    const id = hitTestPoint(sk, x, y, SNAP);
+    const p = id != null ? sk.entities.get(id) : null;
+    set({ cursor: { x, y }, snap: p ? { x: p.x, y: p.y, id } : null });
   },
 
-  /** Escape: drop the in-progress line/rectangle/circle without committing it. */
+  /** Escape: drop the in-progress draw (line/rectangle/circle/arc) without committing it. */
   cancelPending() {
-    if (get().pending != null) set({ pending: null });
+    if (get().pending != null || get().pending2 != null) set({ pending: null, pending2: null });
   },
 
   /**
@@ -178,6 +189,37 @@ export const useSketchStore = create((set, get) => ({
         set({ pending: null });
         get()._bump();
       }
+    } else if (tool === 'arc') {
+      // Arc tool — three clicks: centre, then start (sets the radius), then end.
+      // The end click is projected onto the rim so the arc starts consistent;
+      // planegcs' arc_rules keep it that way through solves.
+      const { pending, pending2 } = get();
+      if (pending == null) {
+        set({ pending: getOrCreatePoint(sk, x, y, SNAP) });
+      } else if (pending2 == null) {
+        const s = getOrCreatePoint(sk, x, y, SNAP);
+        if (s !== pending) set({ pending2: s });
+      } else {
+        const center = sk.entities.get(pending);
+        const start = sk.entities.get(pending2);
+        const r = Math.hypot(start.x - center.x, start.y - center.y);
+        const dx = x - center.x;
+        const dy = y - center.y;
+        const d = Math.hypot(dx, dy);
+        if (r > 1e-6 && d > 1e-6) {
+          const end = getOrCreatePoint(sk, center.x + (dx / d) * r, center.y + (dy / d) * r, SNAP);
+          if (end !== pending && end !== pending2) {
+            get()._snapshot();
+            addArc(sk, pending, pending2, end, r);
+            set({ pending: null, pending2: null });
+            get()._bump();
+            get().solve();
+            return;
+          }
+        }
+        set({ pending: null, pending2: null });
+        get()._bump();
+      }
     } else if (tool === 'rectangle') {
       // Rectangle tool: first click sets corner A; second click sets the opposite
       // corner. Builds 4 axis-aligned lines that *share* their corner points, plus
@@ -217,6 +259,8 @@ export const useSketchStore = create((set, get) => ({
       if (lineHit != null) { get().toggleSelect(lineHit); return; }
       const circleHit = hitTestCircle(sk, x, y, SNAP);
       if (circleHit != null) { get().toggleSelect(circleHit); return; }
+      const arcHit = hitTestArc(sk, x, y, SNAP);
+      if (arcHit != null) { get().toggleSelect(arcHit); return; }
       set({ selection: [] });
     }
   },
@@ -358,13 +402,13 @@ export const useSketchStore = create((set, get) => ({
 
   loadDemo() {
     get()._snapshot();
-    set({ sk: demoSketch(), selection: [], pending: null, solveResult: null, error: null });
+    set({ sk: demoSketch(), selection: [], pending: null, pending2: null, snap: null, solveResult: null, error: null });
     get()._bump();
   },
 
   clear() {
     get()._snapshot();
-    set({ sk: newSketch(), selection: [], pending: null, solveResult: null, error: null });
+    set({ sk: newSketch(), selection: [], pending: null, pending2: null, snap: null, solveResult: null, error: null });
     get()._bump();
   },
 }));

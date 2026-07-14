@@ -100,6 +100,36 @@ export function hitTestCircle(sk, x, y, tol = 1e-6) {
 }
 
 /**
+ * Nearest arc entity whose drawn sweep passes within `tol` of (x, y), or null.
+ * Like `hitTestCircle` but only counts the point if it also falls within the
+ * arc's angular span — planegcs sweeps counter-clockwise from start to end, so
+ * that is the span we test against.
+ */
+export function hitTestArc(sk, x, y, tol = 1e-6) {
+  let best = null;
+  let bestErr = tol;
+  for (const e of sk.entities.values()) {
+    if (e.type !== 'arc') continue;
+    const c = sk.entities.get(e.center);
+    const s = sk.entities.get(e.start);
+    const en = sk.entities.get(e.end);
+    if (!c || !s || !en) continue;
+    const err = Math.abs(Math.hypot(c.x - x, c.y - y) - e.r);
+    if (err > bestErr) continue;
+    const norm = (a) => ((a % (2 * Math.PI)) + 2 * Math.PI) % (2 * Math.PI);
+    const a0 = norm(Math.atan2(s.y - c.y, s.x - c.x));
+    const a1 = norm(Math.atan2(en.y - c.y, en.x - c.x));
+    const at = norm(Math.atan2(y - c.y, x - c.x));
+    const span = norm(a1 - a0);
+    if (norm(at - a0) <= span) {
+      bestErr = err;
+      best = e.id;
+    }
+  }
+  return best;
+}
+
+/**
  * Return the id of an existing point within `tol` of (x, y), or create one.
  * This is what makes clicking a shared corner reuse the same point — the whole
  * reason the model is point-based — so closed profiles are coincident for free.
@@ -109,12 +139,16 @@ export function getOrCreatePoint(sk, x, y, tol = 1e-6) {
   return hit ?? addPoint(sk, x, y);
 }
 
-/** Entity ids that reference `id` directly (lines via endpoints, circles via centre). */
+/**
+ * Entity ids that reference `id` directly: lines via endpoints, circles via
+ * centre, arcs via centre or either endpoint.
+ */
 function dependents(sk, id) {
   const out = [];
   for (const e of sk.entities.values()) {
     if (e.type === 'line' && (e.p1 === id || e.p2 === id)) out.push(e.id);
     else if (e.type === 'circle' && e.center === id) out.push(e.id);
+    else if (e.type === 'arc' && (e.center === id || e.start === id || e.end === id)) out.push(e.id);
   }
   return out;
 }

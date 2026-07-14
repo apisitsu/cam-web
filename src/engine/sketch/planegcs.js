@@ -29,6 +29,20 @@ export function toPlanegcs(sk) {
       prims.push({ id: sid(e.id), type: 'line', p1_id: sid(e.p1), p2_id: sid(e.p2) });
     } else if (e.type === 'circle') {
       prims.push({ id: sid(e.id), type: 'circle', c_id: sid(e.center), radius: e.r });
+    } else if (e.type === 'arc') {
+      // planegcs needs the sweep angles too; derive them from the current point
+      // positions (counter-clockwise start→end). `arc_rules` then pins the two
+      // endpoint points to the rim at those angles so the arc stays consistent.
+      const c = sk.entities.get(e.center);
+      const s = sk.entities.get(e.start);
+      const en = sk.entities.get(e.end);
+      prims.push({
+        id: sid(e.id), type: 'arc', c_id: sid(e.center), radius: e.r,
+        start_id: sid(e.start), end_id: sid(e.end),
+        start_angle: Math.atan2(s.y - c.y, s.x - c.x),
+        end_angle: Math.atan2(en.y - c.y, en.x - c.x),
+      });
+      prims.push({ id: `arc_rules_${e.id}`, type: 'arc_rules', a_id: sid(e.id) });
     }
   }
   let n = 0;
@@ -104,6 +118,8 @@ export async function createSolver({ wasmPath } = {}) {
           e.y = pt.y;
         } else if (e.type === 'circle') {
           e.r = gcs.sketch_index.get_sketch_circle(sid(e.id)).radius;
+        } else if (e.type === 'arc') {
+          e.r = gcs.sketch_index.get_sketch_arc(sid(e.id)).radius;
         }
       }
       return {

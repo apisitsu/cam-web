@@ -21,7 +21,7 @@ import { STANDARD_TURN_TOOLS } from './engine/sim/turning.js';
 import { SAMPLE_GCODE, SAMPLE_TURNING } from './SAMPLE_GCODE.js';
 import Viewport from './components/Viewport.jsx';
 import GcodePanel from './components/GcodePanel.jsx';
-import SketchPanel from './components/SketchPanel.jsx';
+import SketchToolbar from './components/SketchToolbar.jsx';
 import { invalidate } from '@react-three/fiber';
 import { getBuf } from './engine/bufferCache.js';
 
@@ -296,7 +296,6 @@ export default function App() {
         <Layout>
           <Sider width={430} style={{ background: '#111827', padding: 16, overflow: 'auto' }}>
             <Space direction="vertical" size="middle" style={{ width: '100%' }}>
-              <SketchPanel />
               <Space wrap>
                 <Button
                   type="primary"
@@ -726,6 +725,9 @@ export default function App() {
             </Space>
           </Sider>
           <Content style={{ position: 'relative' }}>
+            {/* Sketcher controls float over the viewport as an icon toolbar. */}
+            <SketchToolbar />
+
             {dragActive && (
               <div style={{
                 position: 'absolute', inset: 0, zIndex: 10,

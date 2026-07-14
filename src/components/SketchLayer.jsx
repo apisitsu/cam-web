@@ -16,6 +16,21 @@ import { useSketchStore } from '../stores/sketchStore.js';
 const noRaycast = () => null;
 const Z = 0.05; // lift a hair above the grid to avoid z-fighting
 const PREVIEW = '#f59e0b'; // amber rubber-band while drawing
+const SNAP_COLOR = '#f0abfc'; // magenta snap indicator
+
+const TWO_PI = Math.PI * 2;
+const norm = (a) => ((a % TWO_PI) + TWO_PI) % TWO_PI;
+
+/** Polyline sweeping counter-clockwise from angle a0 to a1 (planegcs arc order). */
+function arcRing(cx, cy, r, a0, a1, segs = 48) {
+  const span = norm(a1 - a0) || TWO_PI;
+  const pts = [];
+  for (let i = 0; i <= segs; i++) {
+    const a = a0 + (span * i) / segs;
+    pts.push([cx + r * Math.cos(a), cy + r * Math.sin(a), Z]);
+  }
+  return pts;
+}
 
 export default function SketchLayer() {
   const version = useSketchStore((s) => s.version);
@@ -24,6 +39,8 @@ export default function SketchLayer() {
   const selection = useSketchStore((s) => s.selection);
   const pending = useSketchStore((s) => s.pending);
   const cursor = useSketchStore((s) => s.cursor);
+  const snap = useSketchStore((s) => s.snap);
+  const pending2 = useSketchStore((s) => s.pending2);
   const clickAt = useSketchStore((s) => s.clickAt);
   const hover = useSketchStore((s) => s.hover);
   const toggleSelect = useSketchStore((s) => s.toggleSelect);
@@ -32,10 +49,11 @@ export default function SketchLayer() {
   const undo = useSketchStore((s) => s.undo);
   const redo = useSketchStore((s) => s.redo);
 
-  const { points, lines, circles } = useMemo(() => {
+  const { points, lines, circles, arcs } = useMemo(() => {
     const pts = [];
     const lns = [];
     const circs = [];
+    const ars = [];
     for (const e of sk.entities.values()) if (e.type === 'point') pts.push(e);
     for (const e of sk.entities.values()) {
       if (e.type === 'line') {
@@ -45,16 +63,27 @@ export default function SketchLayer() {
       } else if (e.type === 'circle') {
         const c = sk.entities.get(e.center);
         if (c) circs.push({ id: e.id, cx: c.x, cy: c.y, r: e.r });
+      } else if (e.type === 'arc') {
+        const c = sk.entities.get(e.center);
+        const s = sk.entities.get(e.start);
+        const en = sk.entities.get(e.end);
+        if (c && s && en) {
+          ars.push({
+            id: e.id, cx: c.x, cy: c.y, r: e.r,
+            a0: Math.atan2(s.y - c.y, s.x - c.x),
+            a1: Math.atan2(en.y - c.y, en.x - c.x),
+          });
+        }
       }
     }
-    return { points: pts, lines: lns, circles: circs };
+    return { points: pts, lines: lns, circles: circs, arcs: ars };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [sk, version]);
 
   // Redraw on geometry change and on every pointer move (rubber-band preview).
   useEffect(() => {
     invalidate();
-  }, [version, cursor]);
+  }, [version, cursor, snap]);
 
   // Keyboard: Esc cancels a pending draw, Delete removes the selection,
   // Ctrl/Cmd+Z undoes and Ctrl/Cmd+Y (or Shift+Z) redoes. Ignore while typing.
@@ -78,36 +107,45 @@ export default function SketchLayer() {
     return () => window.removeEventListener('keydown', onKey);
   }, [cancelPending, deleteSelected, undo, redo]);
 
-  const drawing = tool === 'point' || tool === 'line' || tool === 'rectangle' || tool === 'circle';
+  const drawing = tool === 'point' || tool === 'line' || tool === 'rectangle'
+    || tool === 'circle' || tool === 'arc';
   const picking = tool === 'select' || tool === 'dimension'; // geometry is clickable
   const selected = new Set(selection);
 
-  // Rubber-band preview from the pending corner/centre to the live cursor.
+  // The live cursor, snapped to a nearby existing point when there is one — so the
+  // rubber-band lands exactly where the click will (getOrCreatePoint snaps too).
+  const tip = snap ?? cursor;
+
+  // Rubber-band preview from the pending point(s) to the live (snapped) cursor.
   const anchor = pending != null ? sk.entities.get(pending) : null;
+  const arcStart = pending2 != null ? sk.entities.get(pending2) : null;
   const preview = useMemo(() => {
-    if (!anchor || !cursor) return null;
+    if (!anchor || !tip) return null;
     if (tool === 'line') {
-      return [[anchor.x, anchor.y, Z], [cursor.x, cursor.y, Z]];
+      return [[anchor.x, anchor.y, Z], [tip.x, tip.y, Z]];
     }
     if (tool === 'rectangle') {
       return [
-        [anchor.x, anchor.y, Z], [cursor.x, anchor.y, Z],
-        [cursor.x, cursor.y, Z], [anchor.x, cursor.y, Z],
+        [anchor.x, anchor.y, Z], [tip.x, anchor.y, Z],
+        [tip.x, tip.y, Z], [anchor.x, tip.y, Z],
         [anchor.x, anchor.y, Z],
       ];
     }
     if (tool === 'circle') {
-      const r = Math.hypot(cursor.x - anchor.x, cursor.y - anchor.y);
-      const segs = 64;
-      const ring = [];
-      for (let i = 0; i <= segs; i++) {
-        const a = (i / segs) * Math.PI * 2;
-        ring.push([anchor.x + r * Math.cos(a), anchor.y + r * Math.sin(a), Z]);
-      }
-      return ring;
+      const r = Math.hypot(tip.x - anchor.x, tip.y - anchor.y);
+      return arcRing(anchor.x, anchor.y, r, 0, TWO_PI, 64);
+    }
+    if (tool === 'arc') {
+      // Click 1 done (centre = anchor): show the radius as a spoke to the cursor.
+      // Click 2 done (start = arcStart): show the arc swept CCW to the cursor.
+      if (!arcStart) return [[anchor.x, anchor.y, Z], [tip.x, tip.y, Z]];
+      const r = Math.hypot(arcStart.x - anchor.x, arcStart.y - anchor.y);
+      const a0 = Math.atan2(arcStart.y - anchor.y, arcStart.x - anchor.x);
+      const a1 = Math.atan2(tip.y - anchor.y, tip.x - anchor.x);
+      return arcRing(anchor.x, anchor.y, r, a0, a1, 48);
     }
     return null;
-  }, [anchor, cursor, tool]);
+  }, [anchor, arcStart, tip, tool]);
 
   return (
     <group>
@@ -134,13 +172,25 @@ export default function SketchLayer() {
             clickAt(e.point.x, e.point.y);
           }}
         >
-          <planeGeometry args={[4000, 4000]} />
+          {/* Large enough that clicks still land on the plane when zoomed far out. */}
+          <planeGeometry args={[200000, 200000]} />
           <meshBasicMaterial transparent opacity={0} depthWrite={false} side={THREE.DoubleSide} />
         </mesh>
       )}
 
       {preview && (
         <Line points={preview} color={PREVIEW} lineWidth={1.5} dashed dashSize={0.8} gapSize={0.5} raycast={noRaycast} />
+      )}
+
+      {/* Snap indicator: a magenta ring on the existing point the cursor will
+          snap to, so connecting geometry to a shared corner is unambiguous. */}
+      {drawing && snap && (
+        <Line
+          points={arcRing(snap.x, snap.y, 1.6, 0, TWO_PI, 24)}
+          color={SNAP_COLOR}
+          lineWidth={1.5}
+          raycast={noRaycast}
+        />
       )}
 
       {lines.map((l) => {
@@ -179,6 +229,21 @@ export default function SketchLayer() {
             points={ring}
             color="#38bdf8"
             lineWidth={2}
+            raycast={noRaycast}
+          />
+        );
+      })}
+
+      {arcs.map((a) => {
+        // Outline only (endpoints/centre render via the points loop). Picked
+        // through the pick plane's hitTestArc, like circles — so raycast off.
+        const isSel = selected.has(a.id);
+        return (
+          <Line
+            key={a.id}
+            points={arcRing(a.cx, a.cy, a.r, a.a0, a.a1, 64)}
+            color={isSel ? '#f43f5e' : '#38bdf8'}
+            lineWidth={isSel ? 4 : 2}
             raycast={noRaycast}
           />
         );

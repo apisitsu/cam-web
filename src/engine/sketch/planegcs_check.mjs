@@ -12,6 +12,7 @@ import {
   addPoint,
   addLine,
   addCircleXY,
+  addArc,
   addConstraint,
 } from './model.js';
 import { createSolver, toPlanegcs } from './planegcs.js';
@@ -79,6 +80,26 @@ test('radius constraint drives a circle to the requested size', () => {
   const res = solver.solve(sk);
   assert.ok(res.success, `solve status ${res.status}`);
   assert.ok(near(sk.entities.get(circle).r, 7.5));
+});
+
+test('arc_rules pins both endpoints to the rim (radius = centre→start distance)', () => {
+  const sk = createSketch();
+  const c = addPoint(sk, 0, 0);
+  const s = addPoint(sk, 10, 0); // start on the rim at 0°
+  const e = addPoint(sk, 1, 9); // end deliberately OFF the rim
+  addArc(sk, c, s, e, 10);
+  addConstraint(sk, 'lockX', [c], 0);
+  addConstraint(sk, 'lockY', [c], 0);
+  addConstraint(sk, 'lockX', [s], 10); // pin start → forces radius to 10
+  addConstraint(sk, 'lockY', [s], 0);
+
+  const res = solver.solve(sk);
+  assert.ok(res.success, `solve status ${res.status}`);
+  const dist = (p, q) => Math.hypot(p.x - q.x, p.y - q.y);
+  const pt = (id) => sk.entities.get(id);
+  // Both endpoints sit on the rim; the end was pulled onto radius 10.
+  assert.ok(near(dist(pt(c), pt(s)), 10, 1e-4), 'start on rim');
+  assert.ok(near(dist(pt(c), pt(e)), 10, 1e-4), `end pulled to rim (got ${dist(pt(c), pt(e))})`);
 });
 
 test('over-constraint is detected as conflicting/redundant, not a silent wrong answer', () => {

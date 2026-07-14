@@ -21,12 +21,23 @@
  *   point  : 2 (x, y)          — 0 if fixed
  *   line   : 0 (two point refs)
  *   circle : 1 (radius; centre is a point)
+ *   arc    : 3 (radius + start/end angle; centre + 2 endpoints are point refs)
+ *
+ * An arc references a centre and two endpoint points, and owns radius plus its
+ * two sweep angles. Its endpoints are pinned to the rim by the solver's built-in
+ * `arc_rules` (see planegcs.js), which removes 4 DOF (2 per endpoint); that
+ * internal removal is accounted for in `dof()`, not here, since it is not a
+ * user-visible constraint.
  */
 export const ENTITY_KINDS = {
   point: { refs: 0, ownParams: 2 },
   line: { refs: 2, refTypes: ['point', 'point'], ownParams: 0 },
   circle: { refs: 1, refTypes: ['point'], ownParams: 1 },
+  arc: { refs: 3, refTypes: ['point', 'point', 'point'], ownParams: 3 },
 };
+
+/** DOF removed by an arc's built-in rim coupling (arc_rules): 2 per endpoint. */
+const ARC_INTERNAL_DOF = 4;
 
 /**
  * Constraint kinds: which entity types they reference, whether they carry a
@@ -100,6 +111,22 @@ export function addCircleXY(sk, cx, cy, r) {
 }
 
 /**
+ * Add an arc from three existing point ids — a centre, a start, and an end — plus
+ * a radius. planegcs sweeps **counter-clockwise** from start to end, so the caller
+ * decides orientation by which endpoint is `start`. The two endpoints should sit
+ * on (or near) the rim of radius `r`; the solver's arc_rules pull them exact.
+ * Returns the arc id.
+ */
+export function addArc(sk, center, start, end, r) {
+  requireEntity(sk, center, 'point');
+  requireEntity(sk, start, 'point');
+  requireEntity(sk, end, 'point');
+  const id = sk.nextId++;
+  sk.entities.set(id, { id, type: 'arc', center, start, end, r });
+  return id;
+}
+
+/**
  * Add a constraint. `refs` are entity ids whose types must match the kind;
  * `value` is required for dimensional kinds and forbidden otherwise. Returns
  * the constraint index.
@@ -139,6 +166,8 @@ export function dof(sk) {
   const params = totalDof(sk);
   let removed = 0;
   for (const c of sk.constraints) removed += CONSTRAINT_KINDS[c.kind].dof;
+  // Each arc carries its built-in rim coupling (arc_rules), not a user constraint.
+  for (const e of sk.entities.values()) if (e.type === 'arc') removed += ARC_INTERNAL_DOF;
   const free = params - removed;
   const state = free > 0 ? 'under' : free === 0 ? 'full' : 'over';
   return { params, removed, free, state };

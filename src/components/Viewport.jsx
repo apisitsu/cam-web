@@ -7,7 +7,7 @@
  * machine XY plane and a small RGB axes gizmo marks the work origin (G54-ish).
  */
 import { useMemo, useRef, useEffect } from 'react';
-import { Canvas, useThree, invalidate } from '@react-three/fiber';
+import { Canvas, useThree, useFrame, invalidate } from '@react-three/fiber';
 import { Grid, OrbitControls, Html } from '@react-three/drei';
 import * as THREE from 'three';
 import Backplot from './Backplot.jsx';
@@ -128,6 +128,34 @@ function CameraRig({ bounds, view, viewNonce, controlsRef, mode }) {
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [fitKey]);
   return null;
+}
+
+/**
+ * The machine XY grid, sized to the view. drei's Grid fades (and scales its
+ * infinite plane) by a fixed `fadeDistance` in world units measured from the
+ * camera — so on an **orthographic** camera, zooming out widens the visible span
+ * past that radius and the ground appears to stop growing, leaving empty space.
+ * Here we drive `fadeDistance` from the live zoom every rendered frame (the
+ * canvas is demand-mode, so this only runs when something actually redraws),
+ * keeping the grid filling the viewport at any zoom. Updated imperatively on the
+ * material uniform to avoid a per-frame React re-render.
+ */
+function AdaptiveGrid(props) {
+  const ref = useRef();
+  useFrame(({ camera, size }) => {
+    const grid = ref.current;
+    if (!grid) return;
+    const zoom = camera.zoom || 1;
+    // Ortho visible half-height in world units; cover the diagonal + margin so
+    // the corners stay gridded too.
+    const halfSpan = size.height / (2 * zoom);
+    const fade = Math.max(halfSpan * 2.5, 40);
+    const u = grid.material?.uniforms;
+    if (u?.fadeDistance && Math.abs(u.fadeDistance.value - fade) > 0.5) {
+      u.fadeDistance.value = fade;
+    }
+  });
+  return <Grid ref={ref} {...props} />;
 }
 
 /**
@@ -483,8 +511,9 @@ export default function Viewport({
       <ambientLight intensity={0.8} />
       <directionalLight position={[100, 100, 200]} intensity={0.6} />
 
-      {/* Machine XY plane. Grid's own plane is XZ, so rotate it flat about X. */}
-      <Grid
+      {/* Machine XY plane. Grid's own plane is XZ, so rotate it flat about X.
+          fadeDistance is driven per-frame from the zoom (see AdaptiveGrid). */}
+      <AdaptiveGrid
         position={gridPos}
         rotation={[Math.PI / 2, 0, 0]}
         args={[400, 400]}

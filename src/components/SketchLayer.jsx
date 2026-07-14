@@ -17,6 +17,9 @@ const noRaycast = () => null;
 const Z = 0.05; // lift a hair above the grid to avoid z-fighting
 const PREVIEW = '#f59e0b'; // amber rubber-band while drawing
 const SNAP_COLOR = '#f0abfc'; // magenta snap indicator
+const HOVER = '#fbbf24'; // amber pre-select highlight (the entity a click will pick)
+const SELECTED = '#f43f5e'; // red selected highlight
+const GEOM = '#38bdf8'; // default geometry colour
 
 const TWO_PI = Math.PI * 2;
 const norm = (a) => ((a % TWO_PI) + TWO_PI) % TWO_PI;
@@ -41,8 +44,10 @@ export default function SketchLayer() {
   const cursor = useSketchStore((s) => s.cursor);
   const snap = useSketchStore((s) => s.snap);
   const pending2 = useSketchStore((s) => s.pending2);
+  const hoverId = useSketchStore((s) => s.hoverId);
   const clickAt = useSketchStore((s) => s.clickAt);
   const hover = useSketchStore((s) => s.hover);
+  const clearHover = useSketchStore((s) => s.clearHover);
   const toggleSelect = useSketchStore((s) => s.toggleSelect);
   const cancelPending = useSketchStore((s) => s.cancelPending);
   const deleteSelected = useSketchStore((s) => s.deleteSelected);
@@ -80,10 +85,10 @@ export default function SketchLayer() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [sk, version]);
 
-  // Redraw on geometry change and on every pointer move (rubber-band preview).
+  // Redraw on geometry change and on every pointer move (rubber-band + hover).
   useEffect(() => {
     invalidate();
-  }, [version, cursor, snap]);
+  }, [version, cursor, snap, hoverId]);
 
   // Keyboard: Esc cancels a pending draw, Delete removes the selection,
   // Ctrl/Cmd+Z undoes and Ctrl/Cmd+Y (or Shift+Z) redoes. Ignore while typing.
@@ -176,6 +181,7 @@ export default function SketchLayer() {
               hover(e.point.x, e.point.y);
             }
           }}
+          onPointerLeave={() => clearHover()}
           onClick={(e) => {
             if (!picking) return;
             e.stopPropagation();
@@ -206,6 +212,7 @@ export default function SketchLayer() {
 
       {lines.map((l) => {
         const isSel = selected.has(l.id);
+        const isHover = picking && !isSel && hoverId === l.id;
         return (
           <Line
             key={l.id}
@@ -213,8 +220,8 @@ export default function SketchLayer() {
               [l.a.x, l.a.y, Z],
               [l.b.x, l.b.y, Z],
             ]}
-            color={isSel ? '#f43f5e' : '#38bdf8'}
-            lineWidth={isSel ? 4 : 2}
+            color={isSel ? SELECTED : isHover ? HOVER : GEOM}
+            lineWidth={isSel ? 4 : isHover ? 3 : 2}
             // Pickable only in select mode, same convention as points below.
             raycast={picking ? undefined : noRaycast}
             onClick={(e) => {
@@ -231,6 +238,7 @@ export default function SketchLayer() {
       {circles.map((c) => {
         // Outline only — the centre point already renders via the points loop.
         const isSel = selected.has(c.id);
+        const isHover = selecting && !isSel && hoverId === c.id;
         const segs = 64;
         const ring = [];
         for (let i = 0; i <= segs; i++) {
@@ -241,8 +249,8 @@ export default function SketchLayer() {
           <Line
             key={c.id}
             points={ring}
-            color={isSel ? '#f43f5e' : '#38bdf8'}
-            lineWidth={isSel ? 4 : 2}
+            color={isSel ? SELECTED : isHover ? HOVER : GEOM}
+            lineWidth={isSel ? 4 : isHover ? 3 : 2}
             // Directly pickable when selecting (the pick plane's hitTestCircle is
             // a tolerant fallback); off while trimming/drawing.
             raycast={selecting ? undefined : noRaycast}
@@ -259,12 +267,13 @@ export default function SketchLayer() {
         // Outline only (endpoints/centre render via the points loop). Directly
         // pickable when selecting; the pick plane's hitTestArc is the fallback.
         const isSel = selected.has(a.id);
+        const isHover = selecting && !isSel && hoverId === a.id;
         return (
           <Line
             key={a.id}
             points={arcRing(a.cx, a.cy, a.r, a.a0, a.a1, 64)}
-            color={isSel ? '#f43f5e' : '#38bdf8'}
-            lineWidth={isSel ? 4 : 2}
+            color={isSel ? SELECTED : isHover ? HOVER : GEOM}
+            lineWidth={isSel ? 4 : isHover ? 3 : 2}
             raycast={selecting ? undefined : noRaycast}
             onClick={(e) => {
               if (!selecting) return;
@@ -278,10 +287,12 @@ export default function SketchLayer() {
       {points.map((p) => {
         const isSel = selected.has(p.id);
         const isPending = p.id === pending;
+        const isHover = selecting && !isSel && hoverId === p.id;
         // Origin: fixed green reference point (a touch larger); still selectable
-        // so you can dimension/constrain from it. Selection tint wins over green.
-        const color = isPending ? '#f59e0b' : isSel ? '#f43f5e' : p.origin ? '#22c55e' : '#e2e8f0';
-        const radius = p.origin ? 1.3 : isSel || isPending ? 1.2 : 0.8;
+        // so you can dimension/constrain from it. Precedence: pending → selected →
+        // hover (amber "lock") → origin → plain vertex.
+        const color = isPending ? '#f59e0b' : isSel ? SELECTED : isHover ? HOVER : p.origin ? '#22c55e' : '#e2e8f0';
+        const radius = p.origin ? 1.3 : isSel || isPending || isHover ? 1.3 : 0.8;
         return (
           <mesh
             key={p.id}

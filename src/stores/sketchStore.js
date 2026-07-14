@@ -77,6 +77,7 @@ export const useSketchStore = create((set, get) => ({
   pending2: null, // second click for a 3-click tool — the arc's start point
   cursor: null, // { x, y } live pointer on the plane — drives rubber-band preview
   snap: null, // { x, y, id } existing point the cursor is snapping to, or null
+  hoverId: null, // entity id a click would pick right now — drives the pre-select highlight
   selection: [], // selected entity ids — points, lines, circles, and/or arcs (mixed)
   dimensionPending: null, // { kind, refs, label, current } set on a dimension-mode empty-click → shows the inline value input
   past: [], // undo stack (serialized snapshots, oldest first)
@@ -121,21 +122,32 @@ export const useSketchStore = create((set, get) => ({
   },
 
   setTool(tool) {
-    set({ tool, pending: null, pending2: null, cursor: null, snap: null, error: null, dimensionPending: null });
+    set({ tool, pending: null, pending2: null, cursor: null, snap: null, hoverId: null, error: null, dimensionPending: null });
   },
 
   /**
    * Live pointer position on the plane (sketch coords) — preview only, no
-   * mutation. Also resolves the current **snap target**: the nearest existing
-   * point within SNAP, so the view can show a snap marker and the rubber-band
-   * can lock onto it (matching where `getOrCreatePoint` will actually place the
-   * click).
+   * mutation. Resolves two things for the view:
+   *  - `snap`: the nearest existing **point** within SNAP, so the rubber-band can
+   *    lock onto it (matching where `getOrCreatePoint` will place the click);
+   *  - `hoverId`: the entity a click would pick *right now*, using the same
+   *    point→line→circle→arc priority as `clickAt`, so the view can pre-highlight
+   *    ("lock") the target **before** you click it.
    */
   hover(x, y) {
     const { sk } = get();
-    const id = hitTestPoint(sk, x, y, SNAP);
-    const p = id != null ? sk.entities.get(id) : null;
-    set({ cursor: { x, y }, snap: p ? { x: p.x, y: p.y, id } : null });
+    const pid = hitTestPoint(sk, x, y, SNAP);
+    const p = pid != null ? sk.entities.get(pid) : null;
+    let hoverId = pid;
+    if (hoverId == null) hoverId = hitTestLine(sk, x, y, SNAP);
+    if (hoverId == null) hoverId = hitTestCircle(sk, x, y, SNAP);
+    if (hoverId == null) hoverId = hitTestArc(sk, x, y, SNAP);
+    set({ cursor: { x, y }, snap: p ? { x: p.x, y: p.y, id: pid } : null, hoverId });
+  },
+
+  /** Clear all hover state (pointer left the plane). */
+  clearHover() {
+    set({ cursor: null, snap: null, hoverId: null });
   },
 
   /** Escape: drop the in-progress draw (line/rectangle/circle/arc) without committing it. */

@@ -55,6 +55,7 @@ export const CONSTRAINT_KINDS = {
   perpendicular: { refTypes: ['line', 'line'], value: false, dof: 1 },
   pointOnLine: { refTypes: ['point', 'line'], value: false, dof: 1 },
   distance: { refTypes: ['point', 'point'], value: true, dof: 1 },
+  pointLineDistance: { refTypes: ['point', 'line'], value: true, dof: 1 },
   radius: { refTypes: ['circle'], value: true, dof: 1 },
   equalLength: { refTypes: ['line', 'line'], value: false, dof: 1 },
 };

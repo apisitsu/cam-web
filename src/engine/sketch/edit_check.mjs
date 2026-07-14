@@ -10,6 +10,7 @@ import assert from 'node:assert/strict';
 import { createSketch, addPoint, addLine, addCircleXY, addArc, addConstraint } from './model.js';
 import {
   hitTestPoint, getOrCreatePoint, deleteEntity, removeConstraint, chamfer, hitTestArc,
+  trimLine, distancePointToLine, farEndpointFromLine,
 } from './edit.js';
 
 /** Build an L: a corner point shared by two lines going -x and +y. Returns ids. */
@@ -198,4 +199,106 @@ test('hitTestArc only picks within the swept (CCW start→end) span', () => {
   assert.equal(hitTestArc(sk, -on, -on, 0.5), null);
   // way off the ring is a miss regardless of angle
   assert.equal(hitTestArc(sk, 2, 2, 0.5), null);
+});
+
+test('distancePointToLine gives the perpendicular gap to the infinite line', () => {
+  const sk = createSketch();
+  const a = addPoint(sk, 0, 0);
+  const b = addPoint(sk, 10, 0); // line along the x-axis
+  const l = addLine(sk, a, b);
+  const p = addPoint(sk, 3, 4); // 4 above the line, beyond the segment is fine
+  assert.equal(distancePointToLine(sk, p, l), 4);
+  const q = addPoint(sk, 100, -2.5);
+  assert.equal(distancePointToLine(sk, q, l), 2.5);
+  assert.equal(distancePointToLine(sk, a, l), 0); // a point on the line
+});
+
+test('farEndpointFromLine picks the endpoint farther from the reference line', () => {
+  const sk = createSketch();
+  // reference line along the x-axis
+  const ra = addPoint(sk, 0, 0);
+  const rb = addPoint(sk, 10, 0);
+  const ref = addLine(sk, ra, rb);
+  // a line whose p1 sits on the x-axis (dist 0) and p2 is 5 above it
+  const p1 = addPoint(sk, 2, 0);
+  const p2 = addPoint(sk, 2, 5);
+  const l = addLine(sk, p1, p2);
+  assert.equal(farEndpointFromLine(sk, l, ref), p2);
+  // parallel lines: both endpoints equidistant → p1 returned
+  const q1 = addPoint(sk, 0, 3);
+  const q2 = addPoint(sk, 8, 3);
+  const par = addLine(sk, q1, q2);
+  assert.equal(farEndpointFromLine(sk, par, ref), q1);
+});
+
+test('trimLine leaves a line with no crossings untouched (no-op, never deletes)', () => {
+  const sk = createSketch();
+  const a = addPoint(sk, 0, 0);
+  const b = addPoint(sk, 10, 0);
+  const l = addLine(sk, a, b);
+  assert.equal(trimLine(sk, l, 5, 0), null);
+  assert.equal(sk.entities.has(l), true); // still there — Delete is a separate tool
+});
+
+test('trimLine shortens a line to the crossing when the click is on an end piece', () => {
+  const sk = createSketch();
+  // horizontal line 0..10 crossed by a vertical line at x=6
+  const a = addPoint(sk, 0, 0);
+  const b = addPoint(sk, 10, 0);
+  const l = addLine(sk, a, b);
+  addLine(sk, addPoint(sk, 6, -5), addPoint(sk, 6, 5));
+  // click near the right end (x=9) → drop [6,10], keep [0,6]
+  const res = trimLine(sk, l, 9, 0);
+  assert.equal(res.added, null);
+  const line = sk.entities.get(l);
+  const p1 = sk.entities.get(line.p1);
+  const p2 = sk.entities.get(line.p2);
+  const xs = [p1.x, p2.x].sort((m, n) => m - n);
+  assert.deepEqual(xs, [0, 6]);
+});
+
+test('trimLine cuts at a circle crossing', () => {
+  const sk = createSketch();
+  // horizontal line 0..10 through a circle centred at (5,0) r=2 → cuts at x=3,7
+  const a = addPoint(sk, 0, 0);
+  const b = addPoint(sk, 10, 0);
+  const l = addLine(sk, a, b);
+  addCircleXY(sk, 5, 0, 2);
+  // click the far-right piece (x=9) → keep [0,7]
+  const res = trimLine(sk, l, 9, 0);
+  assert.equal(res.added, null);
+  const line = sk.entities.get(l);
+  const xs = [sk.entities.get(line.p1).x, sk.entities.get(line.p2).x].sort((m, n) => m - n);
+  assert.deepEqual(xs.map((v) => Math.round(v)), [0, 7]);
+});
+
+test('trimLine splits into two lines when the click is on a middle piece', () => {
+  const sk = createSketch();
+  // horizontal 0..10 crossed at x=3 and x=7 → pieces [0,3] [3,7] [7,10]
+  const a = addPoint(sk, 0, 0);
+  const b = addPoint(sk, 10, 0);
+  const l = addLine(sk, a, b);
+  addLine(sk, addPoint(sk, 3, -5), addPoint(sk, 3, 5));
+  addLine(sk, addPoint(sk, 7, -5), addPoint(sk, 7, 5));
+  const before = [...sk.entities.values()].filter((e) => e.type === 'line').length;
+  // click the middle piece (x=5) → keep [0,3] and [7,10]
+  const res = trimLine(sk, l, 5, 0);
+  assert.notEqual(res.added, null);
+  const after = [...sk.entities.values()].filter((e) => e.type === 'line').length;
+  assert.equal(after, before + 1); // one line became two
+  // the original keeps [0,3]
+  const orig = sk.entities.get(l);
+  const oxs = [sk.entities.get(orig.p1).x, sk.entities.get(orig.p2).x].sort((m, n) => m - n);
+  assert.deepEqual(oxs, [0, 3]);
+  // the new line spans [7,10]
+  const nw = sk.entities.get(res.added);
+  const nxs = [sk.entities.get(nw.p1).x, sk.entities.get(nw.p2).x].sort((m, n) => m - n);
+  assert.deepEqual(nxs, [7, 10]);
+});
+
+test('trimLine returns null on a non-line id', () => {
+  const sk = createSketch();
+  const p = addPoint(sk, 0, 0);
+  assert.equal(trimLine(sk, p, 0, 0), null);
+  assert.equal(trimLine(sk, 999, 0, 0), null);
 });

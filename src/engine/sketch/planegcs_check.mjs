@@ -102,6 +102,36 @@ test('arc_rules pins both endpoints to the rim (radius = centre→start distance
   assert.ok(near(dist(pt(c), pt(e)), 10, 1e-4), `end pulled to rim (got ${dist(pt(c), pt(e))})`);
 });
 
+test('pointLineDistance drives a point to a set perpendicular gap from a line', () => {
+  const sk = createSketch();
+  // fixed horizontal line along the x-axis
+  const a = addPoint(sk, 0, 0, true);
+  const b = addPoint(sk, 10, 0, true);
+  const line = addLine(sk, a, b);
+  // a free point starting 3 above the line, pinned in x so only y solves
+  const p = addPoint(sk, 4, 3);
+  addConstraint(sk, 'lockX', [p], 4);
+  addConstraint(sk, 'pointLineDistance', [p, line], 7);
+
+  const res = solver.solve(sk);
+  assert.ok(res.success, `solve status ${res.status}`);
+  const pt = sk.entities.get(p);
+  assert.ok(near(Math.abs(pt.y), 7, 1e-4), `point moved to gap 7 (got y=${pt.y})`);
+});
+
+test('pointLineDistance maps to p2l_distance', () => {
+  const sk = createSketch();
+  const a = addPoint(sk, 0, 0);
+  const b = addPoint(sk, 10, 0);
+  const line = addLine(sk, a, b);
+  const p = addPoint(sk, 4, 3);
+  addConstraint(sk, 'pointLineDistance', [p, line], 5);
+  const prims = toPlanegcs(sk);
+  const c = prims.find((x) => x.type === 'p2l_distance');
+  assert.ok(c, 'emitted a p2l_distance primitive');
+  assert.equal(c.distance, 5);
+});
+
 test('over-constraint is detected as conflicting/redundant, not a silent wrong answer', () => {
   const sk = createSketch();
   const p1 = addPoint(sk, 0, 0);

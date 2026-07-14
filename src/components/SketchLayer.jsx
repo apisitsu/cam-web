@@ -109,7 +109,11 @@ export default function SketchLayer() {
 
   const drawing = tool === 'point' || tool === 'line' || tool === 'rectangle'
     || tool === 'circle' || tool === 'arc';
-  const picking = tool === 'select' || tool === 'dimension'; // geometry is clickable
+  // Geometry is clickable in select/dimension (pick) and trim (cut) modes.
+  const picking = tool === 'select' || tool === 'dimension' || tool === 'trim';
+  // Circles/arcs are directly selectable (their own raycast) only when picking
+  // a selection — not while trimming (trim acts on lines).
+  const selecting = tool === 'select' || tool === 'dimension';
   const selected = new Set(selection);
 
   // The live cursor, snapped to a nearby existing point when there is one — so the
@@ -162,9 +166,15 @@ export default function SketchLayer() {
             clickAt(e.point.x, e.point.y);
           }}
           onPointerMove={(e) => {
-            if (!drawing) return;
-            e.stopPropagation();
-            hover(e.point.x, e.point.y);
+            // Track the cursor for the rubber-band (draw) and the snap indicator
+            // (both). In pick modes don't stopPropagation, so OrbitControls still
+            // rotates the view while snapping shows which point a click will grab.
+            if (drawing) {
+              e.stopPropagation();
+              hover(e.point.x, e.point.y);
+            } else if (picking) {
+              hover(e.point.x, e.point.y);
+            }
           }}
           onClick={(e) => {
             if (!picking) return;
@@ -183,8 +193,9 @@ export default function SketchLayer() {
       )}
 
       {/* Snap indicator: a magenta ring on the existing point the cursor will
-          snap to, so connecting geometry to a shared corner is unambiguous. */}
-      {drawing && snap && (
+          snap to — while drawing (connect to a shared corner) and while picking
+          (lock onto the point a click will select). */}
+      {(drawing || picking) && snap && (
         <Line
           points={arcRing(snap.x, snap.y, 1.6, 0, TWO_PI, 24)}
           color={SNAP_COLOR}
@@ -209,7 +220,9 @@ export default function SketchLayer() {
             onClick={(e) => {
               if (!picking) return;
               e.stopPropagation();
-              toggleSelect(l.id);
+              // Trim cuts the segment at the click point; select toggles the line.
+              if (tool === 'trim') clickAt(e.point.x, e.point.y);
+              else toggleSelect(l.id);
             }}
           />
         );
@@ -217,6 +230,7 @@ export default function SketchLayer() {
 
       {circles.map((c) => {
         // Outline only — the centre point already renders via the points loop.
+        const isSel = selected.has(c.id);
         const segs = 64;
         const ring = [];
         for (let i = 0; i <= segs; i++) {
@@ -227,16 +241,23 @@ export default function SketchLayer() {
           <Line
             key={c.id}
             points={ring}
-            color="#38bdf8"
-            lineWidth={2}
-            raycast={noRaycast}
+            color={isSel ? '#f43f5e' : '#38bdf8'}
+            lineWidth={isSel ? 4 : 2}
+            // Directly pickable when selecting (the pick plane's hitTestCircle is
+            // a tolerant fallback); off while trimming/drawing.
+            raycast={selecting ? undefined : noRaycast}
+            onClick={(e) => {
+              if (!selecting) return;
+              e.stopPropagation();
+              toggleSelect(c.id);
+            }}
           />
         );
       })}
 
       {arcs.map((a) => {
-        // Outline only (endpoints/centre render via the points loop). Picked
-        // through the pick plane's hitTestArc, like circles — so raycast off.
+        // Outline only (endpoints/centre render via the points loop). Directly
+        // pickable when selecting; the pick plane's hitTestArc is the fallback.
         const isSel = selected.has(a.id);
         return (
           <Line
@@ -244,7 +265,12 @@ export default function SketchLayer() {
             points={arcRing(a.cx, a.cy, a.r, a.a0, a.a1, 64)}
             color={isSel ? '#f43f5e' : '#38bdf8'}
             lineWidth={isSel ? 4 : 2}
-            raycast={noRaycast}
+            raycast={selecting ? undefined : noRaycast}
+            onClick={(e) => {
+              if (!selecting) return;
+              e.stopPropagation();
+              toggleSelect(a.id);
+            }}
           />
         );
       })}

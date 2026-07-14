@@ -19,7 +19,8 @@ import {
 } from '../engine/sketch/model.js';
 import {
   getOrCreatePoint, hitTestPoint, hitTestLine, hitTestCircle, hitTestArc,
-  deleteEntity, removeConstraint, chamfer as chamferEdit,
+  deleteEntity, removeConstraint, chamfer as chamferEdit, trimLine,
+  distancePointToLine, farEndpointFromLine,
 } from '../engine/sketch/edit.js';
 
 const SNAP = 1.5; // mm — click snap / pick tolerance
@@ -71,12 +72,13 @@ function demoSketch() {
 export const useSketchStore = create((set, get) => ({
   sk: newSketch(),
   version: 0, // bump to re-render after any mutation
-  tool: 'select', // select | point | line | rectangle | circle | arc | dimension
+  tool: 'select', // select | point | line | rectangle | circle | arc | dimension | trim
   pending: null, // first click while drawing (line/rect/circle centre, arc centre)
   pending2: null, // second click for a 3-click tool — the arc's start point
   cursor: null, // { x, y } live pointer on the plane — drives rubber-band preview
   snap: null, // { x, y, id } existing point the cursor is snapping to, or null
   selection: [], // selected entity ids — points, lines, circles, and/or arcs (mixed)
+  dimensionPending: null, // { kind, refs, label, current } set on a dimension-mode empty-click → shows the inline value input
   past: [], // undo stack (serialized snapshots, oldest first)
   future: [], // redo stack
   solveResult: null, // { success, status, conflicting, redundant }
@@ -119,7 +121,7 @@ export const useSketchStore = create((set, get) => ({
   },
 
   setTool(tool) {
-    set({ tool, pending: null, pending2: null, cursor: null, snap: null, error: null });
+    set({ tool, pending: null, pending2: null, cursor: null, snap: null, error: null, dimensionPending: null });
   },
 
   /**
@@ -250,9 +252,22 @@ export const useSketchStore = create((set, get) => ({
         set({ pending: null });
         get()._bump();
       }
+    } else if (tool === 'trim') {
+      // Trim: click a line to cut away the segment under the cursor at its
+      // intersections with the other lines. Empty space is a no-op.
+      const lineHit = hitTestLine(sk, x, y, SNAP);
+      if (lineHit == null) return;
+      get()._snapshot();
+      const res = trimLine(sk, lineHit, x, y);
+      if (res == null) { get()._undoSnapshot(); return; }
+      set({ selection: [], error: null });
+      get()._bump();
+      get().solve();
     } else {
       // select / dimension: points take priority over lines, then circles, under
-      // the cursor; empty space clears. All route through toggleSelect.
+      // the cursor; all route through toggleSelect. Empty space clears the
+      // selection — except in dimension mode, where an empty click with a
+      // dimensionable selection asks the view to prompt for a value.
       const hit = hitTestPoint(sk, x, y, SNAP);
       if (hit != null) { get().toggleSelect(hit); return; }
       const lineHit = hitTestLine(sk, x, y, SNAP);
@@ -261,6 +276,13 @@ export const useSketchStore = create((set, get) => ({
       if (circleHit != null) { get().toggleSelect(circleHit); return; }
       const arcHit = hitTestArc(sk, x, y, SNAP);
       if (arcHit != null) { get().toggleSelect(arcHit); return; }
+      if (tool === 'dimension') {
+        const spec = get().resolveDimension();
+        // Empty click with a dimensionable selection → open the inline input;
+        // otherwise clear (a click on nothing with nothing to dimension).
+        set(spec ? { dimensionPending: spec } : { selection: [] });
+        return;
+      }
       set({ selection: [] });
     }
   },
@@ -303,36 +325,86 @@ export const useSketchStore = create((set, get) => ({
   },
 
   /**
-   * Dimension the current selection — the CAD "smart dimension" flow: a single
-   * line dimensions its length, two points their distance, a single circle its
-   * radius. Drives the matching constraint from whatever is selected.
+   * Resolve the current selection into a "smart dimension" — the constraint kind,
+   * the ordered refs it applies to, a human label, and the current geometric
+   * value (to seed the input). Pure: no mutation, so the view can use it both to
+   * enable the Dimension control and to prefill a prompt. Returns null when the
+   * selection is not dimensionable. Supported combos:
+   *   - 2 points          → point-to-point distance
+   *   - 1 line            → the line's length
+   *   - 1 circle          → radius
+   *   - 2 lines           → gap between them (point-to-line from the far endpoint)
+   *   - 1 line + 1 circle → line to the circle's centre (point-to-line)
+   *   - 2 circles         → centre-to-centre distance
    */
-  dimension(value) {
+  resolveDimension() {
     const { sk, selection } = get();
     const ents = selection.map((id) => sk.entities.get(id)).filter(Boolean);
-    let kind;
-    let refs;
+    if (ents.length !== selection.length) return null;
+    const pdist = (aId, bId) => {
+      const a = sk.entities.get(aId);
+      const b = sk.entities.get(bId);
+      return Math.hypot(a.x - b.x, a.y - b.y);
+    };
+
+    if (ents.length === 2 && ents.every((e) => e.type === 'point')) {
+      return { kind: 'distance', refs: selection.slice(), label: 'Distance', current: pdist(selection[0], selection[1]) };
+    }
     if (ents.length === 1 && ents[0].type === 'line') {
-      kind = 'distance'; refs = [ents[0].p1, ents[0].p2];
-    } else if (ents.length === 2 && ents.every((e) => e.type === 'point')) {
-      kind = 'distance'; refs = selection.slice();
-    } else if (ents.length === 1 && ents[0].type === 'circle') {
-      kind = 'radius'; refs = [selection[0]];
-    } else {
-      set({ error: 'Dimension needs 1 line, 2 points, or 1 circle' });
+      return { kind: 'distance', refs: [ents[0].p1, ents[0].p2], label: 'Length', current: pdist(ents[0].p1, ents[0].p2) };
+    }
+    if (ents.length === 1 && ents[0].type === 'circle') {
+      return { kind: 'radius', refs: [selection[0]], label: 'Radius', current: ents[0].r };
+    }
+    if (ents.length === 2 && ents.every((e) => e.type === 'line')) {
+      const [l1, l2] = selection;
+      const pid = farEndpointFromLine(sk, l1, l2);
+      return { kind: 'pointLineDistance', refs: [pid, l2], label: 'Line ↔ line', current: distancePointToLine(sk, pid, l2) };
+    }
+    const lineEnt = ents.find((e) => e.type === 'line');
+    const circEnt = ents.find((e) => e.type === 'circle');
+    if (ents.length === 2 && lineEnt && circEnt) {
+      return {
+        kind: 'pointLineDistance', refs: [circEnt.center, lineEnt.id],
+        label: 'Line ↔ centre', current: distancePointToLine(sk, circEnt.center, lineEnt.id),
+      };
+    }
+    if (ents.length === 2 && ents.every((e) => e.type === 'circle')) {
+      return { kind: 'distance', refs: [ents[0].center, ents[1].center], label: 'Centre ↔ centre', current: pdist(ents[0].center, ents[1].center) };
+    }
+    return null;
+  },
+
+  /**
+   * Dimension the current selection with `value`, driving the constraint that
+   * `resolveDimension` picked for whatever is selected, then re-solve. Prefers a
+   * `dimensionPending` spec captured at empty-click time (so it applies even if
+   * `resolveDimension` would re-derive differently), else resolves from the
+   * live selection (the popover Dimension button).
+   */
+  dimension(value) {
+    const spec = get().dimensionPending || get().resolveDimension();
+    if (!spec) {
+      set({ error: 'Dimension needs 2 points, 1 line, 1 circle, 2 lines, a line + circle, or 2 circles' });
       return;
     }
+    const { sk } = get();
     get()._snapshot();
     try {
-      addConstraint(sk, kind, refs, value);
+      addConstraint(sk, spec.kind, spec.refs, value);
     } catch (e) {
       get()._undoSnapshot();
       set({ error: String(e?.message || e) });
       return;
     }
-    set({ selection: [], error: null });
+    set({ selection: [], error: null, dimensionPending: null });
     get()._bump();
     get().solve();
+  },
+
+  /** Dismiss the inline dimension input without applying. */
+  cancelDimension() {
+    set({ dimensionPending: null });
   },
 
   /** Chamfer the corner between the two selected lines by `dist`. */

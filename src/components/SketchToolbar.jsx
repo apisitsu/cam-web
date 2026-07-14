@@ -13,7 +13,7 @@ import {
   UndoOutlined, RedoOutlined, DeleteOutlined, ThunderboltOutlined,
   NodeIndexOutlined, EllipsisOutlined, BulbOutlined, ClearOutlined,
 } from '@ant-design/icons';
-import { useState } from 'react';
+import { useState, useEffect } from 'react';
 import { useSketchStore } from '../stores/sketchStore.js';
 
 const { Text } = Typography;
@@ -40,6 +40,7 @@ const RectIcon = glyph(<rect x="4.5" y="6.5" width="15" height="11" />);
 const CircleIcon = glyph(<circle cx="12" cy="12" r="7.5" />);
 const ArcIcon = glyph(<><path d="M4 18A14 14 0 0 1 18 4" /><circle cx="4" cy="18" r="1.8" fill="currentColor" /><circle cx="18" cy="4" r="1.8" fill="currentColor" /></>);
 const DimIcon = glyph(<><path d="M4 7v10M20 7v10M4 12h16" /><path d="M7 9l-3 3 3 3M17 9l3 3-3 3" /></>);
+const TrimIcon = glyph(<><circle cx="6" cy="7" r="2.4" /><circle cx="6" cy="17" r="2.4" /><path d="M8 8.4L20 16M8 15.6L20 8" /></>);
 
 const TOOLS = [
   { value: 'select', label: 'Select', Icon: SelectIcon, hint: 'Click points, lines, circles or arcs to select' },
@@ -48,7 +49,8 @@ const TOOLS = [
   { value: 'rectangle', label: 'Rectangle', Icon: RectIcon, hint: 'Click two opposite corners' },
   { value: 'circle', label: 'Circle', Icon: CircleIcon, hint: 'Click centre, then a point on the rim' },
   { value: 'arc', label: 'Arc', Icon: ArcIcon, hint: 'Click centre, start, then end (sweeps CCW) · Esc cancels' },
-  { value: 'dimension', label: 'Dimension', Icon: DimIcon, hint: 'Pick 1 line / 2 points / 1 circle, set a value → Dimension' },
+  { value: 'dimension', label: 'Dimension', Icon: DimIcon, hint: 'Pick 2 pts / 1 line / 1 circle / 2 lines / line+circle / 2 circles — set value, or click empty space to apply' },
+  { value: 'trim', label: 'Trim', Icon: TrimIcon, hint: 'Click a line segment to trim it at its intersections' },
 ];
 
 // Point-selection constraints.
@@ -71,7 +73,8 @@ const LINE_CONSTRAINTS = [
 /** The contextual constraint/dimension controls shown inside the popover. */
 function ConstraintsPanel() {
   const {
-    sk, selection, applyConstraint, applyConstraintRefs, dimension, chamfer, removeConstraintAt,
+    sk, selection, applyConstraint, applyConstraintRefs, dimension, chamfer,
+    removeConstraintAt, resolveDimension,
   } = useSketchStore();
   const [value, setValue] = useState(10);
 
@@ -80,17 +83,16 @@ function ConstraintsPanel() {
   const twoLinesSelected = selection.length === 2 && lineIds.length === 2;
   const pointAndLineSelected = selection.length === 2 && pointIds.length === 1 && lineIds.length === 1;
   const isCircleSelection = selection.length === 1 && sk.entities.get(selection[0])?.type === 'circle';
-  const oneLine = selection.length === 1 && lineIds.length === 1;
-  const twoPoints = selection.length === 2 && pointIds.length === 2;
-  const canDimension = oneLine || twoPoints || isCircleSelection;
+  // What (if anything) a dimension would apply to for the current selection.
+  const dimSpec = resolveDimension();
 
   return (
     <div style={{ width: 268 }}>
       <Space size={4}>
         <Text type="secondary" style={{ fontSize: 12 }}>value</Text>
         <InputNumber size="small" value={value} onChange={(v) => setValue(v ?? 0)} style={{ width: 90 }} />
-        <Button size="small" type="primary" ghost disabled={!canDimension} onClick={() => dimension(value)}>
-          Dimension
+        <Button size="small" type="primary" ghost disabled={!dimSpec} onClick={() => dimension(value)}>
+          {dimSpec ? `Dim: ${dimSpec.label}` : 'Dimension'}
         </Button>
       </Space>
 
@@ -162,6 +164,53 @@ function ConstraintsPanel() {
   );
 }
 
+/**
+ * Inline dimension value entry — appears under the toolbar when a dimension-mode
+ * empty-click captured a dimensionable selection (`dimensionPending`). Replaces
+ * the old window.prompt: auto-focused, Enter applies, Esc/✕ cancels.
+ */
+function DimensionInput() {
+  const dimensionPending = useSketchStore((s) => s.dimensionPending);
+  const dimension = useSketchStore((s) => s.dimension);
+  const cancelDimension = useSketchStore((s) => s.cancelDimension);
+  const [val, setVal] = useState(10);
+
+  useEffect(() => {
+    if (dimensionPending) {
+      const cur = dimensionPending.current;
+      setVal(Number.isFinite(cur) ? Math.round(cur * 1000) / 1000 : 10);
+    }
+  }, [dimensionPending]);
+
+  if (!dimensionPending) return null;
+  const apply = () => { if (Number.isFinite(val)) dimension(val); };
+
+  return (
+    <div
+      onKeyDown={(e) => { if (e.key === 'Escape') cancelDimension(); }}
+      style={{
+        position: 'absolute', top: 60, left: 12, zIndex: 6,
+        display: 'flex', gap: 6, alignItems: 'center',
+        background: 'rgba(15,23,42,0.95)', border: '1px solid #38bdf8',
+        padding: '6px 10px', borderRadius: 8,
+      }}
+    >
+      <Text style={{ color: '#cbd5e1', fontSize: 12 }}>{dimensionPending.label}</Text>
+      <InputNumber
+        autoFocus
+        size="small"
+        value={val}
+        onChange={(v) => setVal(v ?? 0)}
+        onPressEnter={apply}
+        style={{ width: 96 }}
+        addonAfter="mm"
+      />
+      <Button size="small" type="primary" onClick={apply}>Set</Button>
+      <Button size="small" type="text" style={{ color: '#94a3b8' }} onClick={cancelDimension}>✕</Button>
+    </div>
+  );
+}
+
 export default function SketchToolbar() {
   const tool = useSketchStore((s) => s.tool);
   const selection = useSketchStore((s) => s.selection);
@@ -181,16 +230,19 @@ export default function SketchToolbar() {
   const activeHint = TOOLS.find((t) => t.value === tool)?.hint;
 
   const railBtn = () => ({ width: 34, height: 34 });
+  // Vertical hairline separating groups in the horizontal rail.
+  const sep = <div style={{ width: 1, height: 24, background: '#334155', margin: '0 2px' }} />;
 
   return (
+    <>
     <div style={{
       position: 'absolute', top: 12, left: 12, zIndex: 5,
-      display: 'flex', flexDirection: 'column', gap: 6, alignItems: 'stretch',
+      display: 'flex', flexDirection: 'row', gap: 6, alignItems: 'center', flexWrap: 'wrap',
       background: 'rgba(15,23,42,0.82)', border: '1px solid #334155',
-      padding: 6, borderRadius: 8, maxWidth: 46,
+      padding: 6, borderRadius: 8, maxWidth: 'calc(100% - 24px)',
     }}>
       {TOOLS.map((t) => (
-        <Tooltip key={t.value} title={`${t.label} — ${t.hint}`} placement="right">
+        <Tooltip key={t.value} title={`${t.label} — ${t.hint}`} placement="bottom">
           <Button
             type={tool === t.value ? 'primary' : 'text'}
             icon={<t.Icon />}
@@ -200,35 +252,35 @@ export default function SketchToolbar() {
         </Tooltip>
       ))}
 
-      <div style={{ height: 1, background: '#334155', margin: '2px 0' }} />
+      {sep}
 
       <Popover
         trigger="click"
-        placement="rightTop"
+        placement="bottomLeft"
         title="Constraints & dimensions"
         content={<ConstraintsPanel />}
       >
-        <Tooltip title="Constraints & dimensions" placement="right">
+        <Tooltip title="Constraints & dimensions" placement="bottom">
           <Button type="text" icon={<NodeIndexOutlined />} style={{ ...railBtn(), color: '#cbd5e1' }} />
         </Tooltip>
       </Popover>
 
-      <Tooltip title="Solve (apply constraints)" placement="right">
+      <Tooltip title="Solve (apply constraints)" placement="bottom">
         <Button type="text" icon={<ThunderboltOutlined />} onClick={() => solve()} style={{ ...railBtn(), color: '#38bdf8' }} />
       </Tooltip>
-      <Tooltip title="Undo (Ctrl+Z)" placement="right">
+      <Tooltip title="Undo (Ctrl+Z)" placement="bottom">
         <Button type="text" icon={<UndoOutlined />} disabled={!past.length} onClick={() => undo()} style={{ ...railBtn(), color: '#cbd5e1' }} />
       </Tooltip>
-      <Tooltip title="Redo (Ctrl+Y)" placement="right">
+      <Tooltip title="Redo (Ctrl+Y)" placement="bottom">
         <Button type="text" icon={<RedoOutlined />} disabled={!future.length} onClick={() => redo()} style={{ ...railBtn(), color: '#cbd5e1' }} />
       </Tooltip>
-      <Tooltip title="Delete selection (Del)" placement="right">
+      <Tooltip title="Delete selection (Del)" placement="bottom">
         <Button type="text" danger icon={<DeleteOutlined />} disabled={!selection.length} onClick={() => deleteSelected()} style={railBtn()} />
       </Tooltip>
 
       <Popover
         trigger="click"
-        placement="rightTop"
+        placement="bottomLeft"
         content={(
           <Space direction="vertical" size={4}>
             <Button size="small" icon={<BulbOutlined />} onClick={() => loadDemo()} block>Demo sketch</Button>
@@ -236,38 +288,40 @@ export default function SketchToolbar() {
           </Space>
         )}
       >
-        <Tooltip title="More" placement="right">
+        <Tooltip title="More" placement="bottom">
           <Button type="text" icon={<EllipsisOutlined />} style={{ ...railBtn(), color: '#cbd5e1' }} />
         </Tooltip>
       </Popover>
 
       {/* Compact status: active-tool hint, DOF, solve result. */}
-      <div style={{ height: 1, background: '#334155', margin: '2px 0' }} />
-      <div style={{ maxWidth: 34 }}>
+      {sep}
+      <Space size={4}>
         {dofState && (
           <Tooltip
-            placement="right"
+            placement="bottom"
             title={`${dofState.free} free DOF — ${dofState.state}${activeHint ? ` · ${activeHint}` : ''}`}
           >
             <Tag
               color={dofState.state === 'full' ? 'green' : dofState.state === 'over' ? 'red' : 'blue'}
-              style={{ margin: 0, width: 34, textAlign: 'center', fontSize: 10, padding: 0 }}
+              style={{ margin: 0, minWidth: 28, textAlign: 'center', fontSize: 10, padding: '0 4px' }}
             >
               {dofState.state === 'full' ? '✓' : dofState.free}
             </Tag>
           </Tooltip>
         )}
         {solveResult && !solveResult.success && (
-          <Tooltip title={`solve status ${solveResult.status}`} placement="right">
-            <Tag color="red" style={{ margin: '4px 0 0', width: 34, textAlign: 'center', fontSize: 10, padding: 0 }}>!</Tag>
+          <Tooltip title={`solve status ${solveResult.status}`} placement="bottom">
+            <Tag color="red" style={{ margin: 0, minWidth: 20, textAlign: 'center', fontSize: 10, padding: '0 4px' }}>!</Tag>
           </Tooltip>
         )}
         {error && (
-          <Tooltip title={error} placement="right">
-            <Tag color="orange" style={{ margin: '4px 0 0', width: 34, textAlign: 'center', fontSize: 10, padding: 0 }}>?</Tag>
+          <Tooltip title={error} placement="bottom">
+            <Tag color="orange" style={{ margin: 0, minWidth: 20, textAlign: 'center', fontSize: 10, padding: '0 4px' }}>?</Tag>
           </Tooltip>
         )}
-      </div>
+      </Space>
     </div>
+    <DimensionInput />
+    </>
   );
 }

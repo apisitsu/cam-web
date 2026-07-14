@@ -19,6 +19,15 @@ function unit(from, to) {
   return { x: dx / len, y: dy / len };
 }
 
+/** Perpendicular distance from (px, py) to the infinite line through a and b. */
+function pointLineDist(px, py, a, b) {
+  const abx = b.x - a.x;
+  const aby = b.y - a.y;
+  const len = Math.hypot(abx, aby);
+  if (len < 1e-9) return Math.hypot(px - a.x, py - a.y);
+  return Math.abs((px - a.x) * aby - (py - a.y) * abx) / len;
+}
+
 /**
  * Nearest point entity to (x, y) within `tol`, or null. Used for click snapping
  * and hover highlight.
@@ -207,4 +216,180 @@ export function chamfer(sk, l1Id, l2Id, dist) {
   const line = addLine(sk, c1, c2);
   deleteEntity(sk, shared); // orphaned corner + any constraint referencing it
   return line;
+}
+
+/**
+ * Perpendicular distance from a point entity to a line entity's infinite line,
+ * or null if either id is wrong. Used to seed dimension prompts (line↔point,
+ * line↔circle-centre) with the current geometric value.
+ */
+export function distancePointToLine(sk, pointId, lineId) {
+  const p = sk.entities.get(pointId);
+  const l = sk.entities.get(lineId);
+  if (!p || p.type !== 'point' || !l || l.type !== 'line') return null;
+  const a = sk.entities.get(l.p1);
+  const b = sk.entities.get(l.p2);
+  if (!a || !b) return null;
+  return pointLineDist(p.x, p.y, a, b);
+}
+
+/**
+ * Of line `lineId`'s two endpoints, the id of the one farther (perpendicular)
+ * from the infinite line through `refLineId`. Used to dimension the gap between
+ * two lines robustly: if the lines share a corner that endpoint sits at distance
+ * 0, so the *other* endpoint is picked and the dimension stays meaningful. For
+ * parallel lines both endpoints are equidistant and p1 is returned.
+ */
+export function farEndpointFromLine(sk, lineId, refLineId) {
+  const l = sk.entities.get(lineId);
+  const r = sk.entities.get(refLineId);
+  if (!l || l.type !== 'line' || !r || r.type !== 'line') return null;
+  const ra = sk.entities.get(r.p1);
+  const rb = sk.entities.get(r.p2);
+  const p1 = sk.entities.get(l.p1);
+  const p2 = sk.entities.get(l.p2);
+  const d1 = pointLineDist(p1.x, p1.y, ra, rb);
+  const d2 = pointLineDist(p2.x, p2.y, ra, rb);
+  return d2 > d1 ? l.p2 : l.p1;
+}
+
+/** Intersection of segment a-b with segment c-d, or null if they don't cross
+ *  within both spans (also null when parallel/collinear). `t` is the parameter
+ *  along a-b in [0, 1]. */
+function segIntersect(a, b, c, d) {
+  const rx = b.x - a.x;
+  const ry = b.y - a.y;
+  const sx = d.x - c.x;
+  const sy = d.y - c.y;
+  const denom = rx * sy - ry * sx;
+  if (Math.abs(denom) < 1e-12) return null; // parallel or collinear
+  const t = ((c.x - a.x) * sy - (c.y - a.y) * sx) / denom;
+  const u = ((c.x - a.x) * ry - (c.y - a.y) * rx) / denom;
+  if (t < -1e-9 || t > 1 + 1e-9 || u < -1e-9 || u > 1 + 1e-9) return null;
+  return { t, x: a.x + t * rx, y: a.y + t * ry };
+}
+
+/** Drop a point only if nothing references it and it is not the origin/fixed. */
+function removeIfOrphan(sk, pointId) {
+  const p = sk.entities.get(pointId);
+  if (!p || p.type !== 'point' || p.origin || p.fixed) return;
+  if (dependents(sk, pointId).length === 0) deleteEntity(sk, pointId);
+}
+
+const TAU = Math.PI * 2;
+const normAngle = (x) => ((x % TAU) + TAU) % TAU;
+
+/**
+ * Parameters t (along segment a→b) where the segment meets the circle of radius
+ * r centred at (cx, cy). Returns 0–2 roots (not yet clamped to [0, 1]).
+ */
+function lineCircleParams(a, b, cx, cy, r) {
+  const dx = b.x - a.x;
+  const dy = b.y - a.y;
+  const A = dx * dx + dy * dy;
+  if (A < 1e-12) return [];
+  const fx = a.x - cx;
+  const fy = a.y - cy;
+  const B = 2 * (fx * dx + fy * dy);
+  const C = fx * fx + fy * fy - r * r;
+  const disc = B * B - 4 * A * C;
+  if (disc < 0) return [];
+  const sq = Math.sqrt(disc);
+  return [(-B - sq) / (2 * A), (-B + sq) / (2 * A)];
+}
+
+/** Whether (px, py) lies within arc `e`'s CCW start→end angular span. */
+function arcSpanContains(sk, e, px, py) {
+  const c = sk.entities.get(e.center);
+  const s = sk.entities.get(e.start);
+  const en = sk.entities.get(e.end);
+  if (!c || !s || !en) return false;
+  const a0 = normAngle(Math.atan2(s.y - c.y, s.x - c.x));
+  const a1 = normAngle(Math.atan2(en.y - c.y, en.x - c.x));
+  const at = normAngle(Math.atan2(py - c.y, px - c.x));
+  const span = normAngle(a1 - a0) || TAU;
+  return normAngle(at - a0) <= span;
+}
+
+/**
+ * Trim a line at its intersections with the *other* geometry (lines, circles and
+ * arcs), removing only the sub-segment the click (x, y) falls in — the CAD "trim"
+ * gesture. Interior crossings split the line into pieces; the piece under the
+ * click is removed and the rest kept:
+ *   - click on an end piece   → shorten the line back to the nearest crossing;
+ *   - click on a middle piece → split into two lines (original shortened + a new
+ *     line for the far remainder).
+ * A line with no crossings is left untouched (trim never deletes a whole entity —
+ * use Delete for that). New endpoints are created at the cut points; endpoints
+ * orphaned by re-pointing are cleaned up. Returns { line, added } describing what
+ * changed, or null if `lineId` is not a usable line or nothing could be trimmed.
+ */
+export function trimLine(sk, lineId, x, y) {
+  const l = sk.entities.get(lineId);
+  if (!l || l.type !== 'line') return null;
+  const a = sk.entities.get(l.p1);
+  const b = sk.entities.get(l.p2);
+  if (!a || !b) return null;
+  const abx = b.x - a.x;
+  const aby = b.y - a.y;
+  const len2 = abx * abx + aby * aby;
+  if (len2 < 1e-12) return null;
+
+  // Parameters (0..1 along the line) where other geometry crosses it, strictly
+  // interior so we never make a zero-length stub at an existing endpoint.
+  const cuts = [];
+  const interior = (t) => t > 1e-6 && t < 1 - 1e-6;
+  for (const e of sk.entities.values()) {
+    if (e.id === lineId) continue;
+    if (e.type === 'line') {
+      const c = sk.entities.get(e.p1);
+      const d = sk.entities.get(e.p2);
+      if (!c || !d) continue;
+      const hit = segIntersect(a, b, c, d);
+      if (hit && interior(hit.t)) cuts.push(hit.t);
+    } else if (e.type === 'circle') {
+      const c = sk.entities.get(e.center);
+      if (!c) continue;
+      for (const t of lineCircleParams(a, b, c.x, c.y, e.r)) if (interior(t)) cuts.push(t);
+    } else if (e.type === 'arc') {
+      const c = sk.entities.get(e.center);
+      if (!c) continue;
+      for (const t of lineCircleParams(a, b, c.x, c.y, e.r)) {
+        if (!interior(t)) continue;
+        if (arcSpanContains(sk, e, a.x + abx * t, a.y + aby * t)) cuts.push(t);
+      }
+    }
+  }
+  cuts.sort((p, q) => p - q);
+  if (cuts.length === 0) return null; // nothing crosses this line → nothing to trim
+
+  // Sub-interval [t0, t1] the click falls in (click projected onto the line).
+  let tc = ((x - a.x) * abx + (y - a.y) * aby) / len2;
+  tc = Math.max(0, Math.min(1, tc));
+  const bounds = [0, ...cuts, 1];
+  let i = 0;
+  while (i < bounds.length - 1 && tc > bounds[i + 1]) i++;
+  const t0 = bounds[i];
+  const t1 = bounds[i + 1];
+
+  const at = (t) => addPoint(sk, a.x + abx * t, a.y + aby * t);
+  const keepLow = t0 > 1e-9; // segment [0, t0] survives
+  const keepHigh = t1 < 1 - 1e-9; // segment [t1, 1] survives
+  if (!keepLow && !keepHigh) return null; // defensive — cuts guarantee one side
+
+  const oldP1 = l.p1;
+  const oldP2 = l.p2;
+  let added = null;
+  if (keepLow && keepHigh) {
+    // Interior click → split: original keeps [0, t0], a new line gets [t1, 1].
+    l.p2 = at(t0);
+    added = addLine(sk, at(t1), oldP2);
+  } else if (keepLow) {
+    l.p2 = at(t0); // click reached the b end → shorten to [0, t0]
+  } else {
+    l.p1 = at(t1); // click reached the a end → shorten to [t1, 1]
+  }
+  removeIfOrphan(sk, oldP1);
+  removeIfOrphan(sk, oldP2);
+  return { line: lineId, added };
 }

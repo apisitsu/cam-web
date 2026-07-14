@@ -77,6 +77,9 @@ export function toPlanegcs(sk) {
       case 'distance':
         prims.push({ id: cid(), type: 'p2p_distance', p1_id: a, p2_id: b, distance: c.value });
         break;
+      case 'pointLineDistance':
+        prims.push({ id: cid(), type: 'p2l_distance', p_id: a, l_id: b, distance: c.value });
+        break;
       case 'radius':
         prims.push({ id: cid(), type: 'circle_radius', c_id: a, radius: c.value });
         break;

@@ -8,7 +8,7 @@
  * Node-tested store/edit layer; this component is just render + event wiring.
  */
 import { useMemo, useEffect } from 'react';
-import { Line } from '@react-three/drei';
+import { Line, Html } from '@react-three/drei';
 import { invalidate } from '@react-three/fiber';
 import * as THREE from 'three';
 import { useSketchStore } from '../stores/sketchStore.js';
@@ -20,6 +20,8 @@ const SNAP_COLOR = '#f0abfc'; // magenta snap indicator
 const HOVER = '#fbbf24'; // amber pre-select highlight (the entity a click will pick)
 const SELECTED = '#f43f5e'; // red selected highlight
 const GEOM = '#38bdf8'; // default geometry colour
+const ANGLE_BASE = '#22d3ee'; // cyan — the fixed reference line of an angle dimension
+const ANGLE_ROTATE = '#f59e0b'; // amber — the line the angle rotates
 
 const TWO_PI = Math.PI * 2;
 const norm = (a) => ((a % TWO_PI) + TWO_PI) % TWO_PI;
@@ -35,6 +37,90 @@ function arcRing(cx, cy, r, a0, a1, segs = 48) {
   return pts;
 }
 
+const DIM_COLOR = '#facc15'; // yellow — placed dimensions (witness/dimension lines)
+/** Trim a value to at most 2 decimals, dropping trailing zeros. */
+const fmtDim = (v) => String(Math.round(v * 100) / 100);
+const dimLabelStyle = {
+  color: '#fde68a', background: 'rgba(15,23,42,0.85)', border: '1px solid #a16207',
+  borderRadius: 4, font: '600 11px monospace', padding: '0 4px',
+  whiteSpace: 'nowrap', userSelect: 'none', pointerEvents: 'none',
+};
+
+/**
+ * On-canvas annotations for every *dimensional* constraint (one carrying a value)
+ * so it's visible which lines / distances are already sized: distances draw a
+ * parallel dimension line with witness lines + value; radius / angle / lockX /
+ * lockY / point-line show a value tag on the geometry. Non-dimensional
+ * constraints (horizontal, coincident, …) are not drawn here — they remove DOF
+ * but aren't "sizes". Purely visual: labels use `pointerEvents:none` and the
+ * lines opt out of raycasting, so picking is unaffected.
+ */
+function DimensionAnnotations({ sk, version }) {
+  const { segs, labels } = useMemo(() => {
+    const P = (id) => sk.entities.get(id);
+    const ls = [];
+    const bs = [];
+    let k = 0;
+    sk.constraints.forEach((c) => {
+      if (c.value == null) return;
+      if (c.kind === 'distance') {
+        const a = P(c.refs[0]);
+        const b = P(c.refs[1]);
+        if (!a || !b) return;
+        const dx = b.x - a.x;
+        const dy = b.y - a.y;
+        const len = Math.hypot(dx, dy) || 1;
+        const px = -dy / len;
+        const py = dx / len;
+        const off = Math.max(len * 0.14, 4); // stand the dimension line off the geometry
+        const a2 = [a.x + px * off, a.y + py * off, Z];
+        const b2 = [b.x + px * off, b.y + py * off, Z];
+        ls.push({ key: `s${k++}`, pts: [[a.x, a.y, Z], a2] }); // witness lines
+        ls.push({ key: `s${k++}`, pts: [[b.x, b.y, Z], b2] });
+        ls.push({ key: `s${k++}`, pts: [a2, b2] }); // dimension line
+        bs.push({ key: `b${k++}`, pos: [(a2[0] + b2[0]) / 2, (a2[1] + b2[1]) / 2, Z], text: fmtDim(c.value) });
+      } else if (c.kind === 'pointLineDistance') {
+        const p = P(c.refs[0]);
+        if (!p) return;
+        bs.push({ key: `b${k++}`, pos: [p.x + 1.6, p.y + 1.6, Z], text: fmtDim(c.value) });
+      } else if (c.kind === 'radius') {
+        const circ = P(c.refs[0]);
+        const ctr = circ && P(circ.center);
+        if (!ctr) return;
+        bs.push({ key: `b${k++}`, pos: [ctr.x + circ.r * 0.7, ctr.y + circ.r * 0.7, Z], text: `R${fmtDim(c.value)}` });
+      } else if (c.kind === 'angle') {
+        const l1 = P(c.refs[0]);
+        const l2 = P(c.refs[1]);
+        if (!l1 || !l2) return;
+        const shared = [l1.p1, l1.p2].find((id) => id === l2.p1 || id === l2.p2);
+        const anchor = P(shared != null ? shared : l1.p1);
+        if (!anchor) return;
+        bs.push({ key: `b${k++}`, pos: [anchor.x + 2, anchor.y + 2, Z], text: `${fmtDim((c.value * 180) / Math.PI)}°` });
+      } else if (c.kind === 'lockX' || c.kind === 'lockY') {
+        const p = P(c.refs[0]);
+        if (!p) return;
+        const dyOff = c.kind === 'lockY' ? 2 : -2;
+        bs.push({ key: `b${k++}`, pos: [p.x + 1.6, p.y + dyOff, Z], text: `${c.kind === 'lockX' ? 'X' : 'Y'}${fmtDim(c.value)}` });
+      }
+    });
+    return { segs: ls, labels: bs };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [sk, version]);
+
+  return (
+    <group>
+      {segs.map((s) => (
+        <Line key={s.key} points={s.pts} color={DIM_COLOR} lineWidth={1} dashed dashSize={0.6} gapSize={0.4} transparent opacity={0.85} raycast={noRaycast} />
+      ))}
+      {labels.map((b) => (
+        <Html key={b.key} position={b.pos} center zIndexRange={[2, 0]}>
+          <div style={dimLabelStyle}>{b.text}</div>
+        </Html>
+      ))}
+    </group>
+  );
+}
+
 export default function SketchLayer() {
   const version = useSketchStore((s) => s.version);
   const sk = useSketchStore((s) => s.sk);
@@ -45,6 +131,7 @@ export default function SketchLayer() {
   const snap = useSketchStore((s) => s.snap);
   const pending2 = useSketchStore((s) => s.pending2);
   const hoverId = useSketchStore((s) => s.hoverId);
+  const dimensionPending = useSketchStore((s) => s.dimensionPending);
   const clickAt = useSketchStore((s) => s.clickAt);
   const hover = useSketchStore((s) => s.hover);
   const clearHover = useSketchStore((s) => s.clearHover);
@@ -114,12 +201,17 @@ export default function SketchLayer() {
 
   const drawing = tool === 'point' || tool === 'line' || tool === 'rectangle'
     || tool === 'circle' || tool === 'arc';
-  // Geometry is clickable in select/dimension (pick) and trim (cut) modes.
-  const picking = tool === 'select' || tool === 'dimension' || tool === 'trim';
-  // Circles/arcs are directly selectable (their own raycast) only when picking
-  // a selection — not while trimming (trim acts on lines).
+  // Geometry is clickable in select/dimension (pick), trim (cut) and chamfer
+  // (pick two lines) modes.
+  const picking = tool === 'select' || tool === 'dimension' || tool === 'trim' || tool === 'chamfer';
+  // Circles/arcs are directly selectable (their own raycast) only when picking a
+  // selection — not while trimming/chamfering (both act on lines).
   const selecting = tool === 'select' || tool === 'dimension';
   const selected = new Set(selection);
+  // While an angle dimension is being entered, colour its base (fixed reference)
+  // and rotating line distinctly so it's clear which one moves to the set angle.
+  const angleBase = dimensionPending?.angular ? dimensionPending.refs[0] : null;
+  const angleRotate = dimensionPending?.angular ? dimensionPending.refs[1] : null;
 
   // The live cursor, snapped to a nearby existing point when there is one — so the
   // rubber-band lands exactly where the click will (getOrCreatePoint snaps too).
@@ -158,6 +250,8 @@ export default function SketchLayer() {
 
   return (
     <group>
+      <DimensionAnnotations sk={sk} version={version} />
+
       {/* Pick plane. In draw mode it takes pointer-downs immediately and tracks
           moves for the rubber-band. In pick mode (select/dimension) it handles
           `onClick` only — a tap, not a drag — so OrbitControls still rotates the
@@ -211,8 +305,13 @@ export default function SketchLayer() {
       )}
 
       {lines.map((l) => {
+        const isBase = l.id === angleBase;
+        const isRotate = l.id === angleRotate;
         const isSel = selected.has(l.id);
         const isHover = picking && !isSel && hoverId === l.id;
+        // Angle base/rotate colouring wins over the normal selected/hover styling.
+        const color = isBase ? ANGLE_BASE : isRotate ? ANGLE_ROTATE
+          : isSel ? SELECTED : isHover ? HOVER : GEOM;
         return (
           <Line
             key={l.id}
@@ -220,8 +319,8 @@ export default function SketchLayer() {
               [l.a.x, l.a.y, Z],
               [l.b.x, l.b.y, Z],
             ]}
-            color={isSel ? SELECTED : isHover ? HOVER : GEOM}
-            lineWidth={isSel ? 4 : isHover ? 3 : 2}
+            color={color}
+            lineWidth={isBase || isRotate || isSel ? 4 : isHover ? 3 : 2}
             // Pickable only in select mode, same convention as points below.
             raycast={picking ? undefined : noRaycast}
             onClick={(e) => {
@@ -238,7 +337,7 @@ export default function SketchLayer() {
       {circles.map((c) => {
         // Outline only — the centre point already renders via the points loop.
         const isSel = selected.has(c.id);
-        const isHover = selecting && !isSel && hoverId === c.id;
+        const isHover = picking && !isSel && hoverId === c.id;
         const segs = 64;
         const ring = [];
         for (let i = 0; i <= segs; i++) {
@@ -267,7 +366,7 @@ export default function SketchLayer() {
         // Outline only (endpoints/centre render via the points loop). Directly
         // pickable when selecting; the pick plane's hitTestArc is the fallback.
         const isSel = selected.has(a.id);
-        const isHover = selecting && !isSel && hoverId === a.id;
+        const isHover = picking && !isSel && hoverId === a.id;
         return (
           <Line
             key={a.id}

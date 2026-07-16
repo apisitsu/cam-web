@@ -19,9 +19,11 @@ import {
 } from '../engine/sketch/model.js';
 import {
   getOrCreatePoint, hitTestPoint, hitTestLine, hitTestCircle, hitTestArc,
-  deleteEntity, removeConstraint, chamfer as chamferEdit, trimLine,
-  distancePointToLine, farEndpointFromLine,
+  deleteEntity, removeConstraint, chamfer as chamferEdit, trimLine, trimCircle, trimArc,
+  distancePointToLine, farEndpointFromLine, nearestRimPoint,
 } from '../engine/sketch/edit.js';
+
+const DEG = Math.PI / 180;
 
 const SNAP = 1.5; // mm — click snap / pick tolerance
 const HISTORY = 50; // max undo depth
@@ -138,11 +140,41 @@ export const useSketchStore = create((set, get) => ({
     const { sk } = get();
     const pid = hitTestPoint(sk, x, y, SNAP);
     const p = pid != null ? sk.entities.get(pid) : null;
+    // Snap target: an existing vertex first; otherwise the nearest circle/arc rim
+    // point, so a draw click can latch onto (and stay tangent-connectable with)
+    // the ring. `id` is set only for a real vertex; a rim snap carries `onCurve`.
+    let snap = p ? { x: p.x, y: p.y, id: pid } : null;
+    if (!snap) {
+      const rim = nearestRimPoint(sk, x, y, SNAP);
+      if (rim) snap = { x: rim.x, y: rim.y, onCurve: rim.id, curveType: rim.type };
+    }
     let hoverId = pid;
     if (hoverId == null) hoverId = hitTestLine(sk, x, y, SNAP);
     if (hoverId == null) hoverId = hitTestCircle(sk, x, y, SNAP);
     if (hoverId == null) hoverId = hitTestArc(sk, x, y, SNAP);
-    set({ cursor: { x, y }, snap: p ? { x: p.x, y: p.y, id: pid } : null, hoverId });
+    set({ cursor: { x, y }, snap, hoverId });
+  },
+
+  /**
+   * Resolve a draw click at (x, y) to a point id, honouring snaps: an existing
+   * vertex within SNAP is reused; otherwise, if the click lands on a circle/arc
+   * rim, a new point is created *on* the rim and pinned there with a
+   * point-on-circle / point-on-arc constraint (so a line drawn to a circle stays
+   * attached through solves); failing both, a plain point is created at (x, y).
+   */
+  _pointAt(x, y) {
+    const { sk } = get();
+    const hit = hitTestPoint(sk, x, y, SNAP);
+    if (hit != null) return hit;
+    const rim = nearestRimPoint(sk, x, y, SNAP);
+    if (rim) {
+      const id = addPoint(sk, rim.x, rim.y);
+      try {
+        addConstraint(sk, rim.type === 'arc' ? 'pointOnArc' : 'pointOnCircle', [id, rim.id]);
+      } catch { /* leave the point unconstrained if the coupling can't be added */ }
+      return id;
+    }
+    return addPoint(sk, x, y);
   },
 
   /** Clear all hover state (pointer left the plane). */
@@ -172,14 +204,14 @@ export const useSketchStore = create((set, get) => ({
     const { sk, tool } = get();
     if (tool === 'point') {
       get()._snapshot();
-      getOrCreatePoint(sk, x, y, SNAP);
+      get()._pointAt(x, y);
       get()._bump();
     } else if (tool === 'line') {
       const { pending } = get();
       if (pending == null) {
-        set({ pending: getOrCreatePoint(sk, x, y, SNAP) });
+        set({ pending: get()._pointAt(x, y) });
       } else {
-        const p = getOrCreatePoint(sk, x, y, SNAP);
+        const p = get()._pointAt(x, y);
         if (p !== pending) {
           get()._snapshot();
           addLine(sk, pending, p);
@@ -265,16 +297,30 @@ export const useSketchStore = create((set, get) => ({
         get()._bump();
       }
     } else if (tool === 'trim') {
-      // Trim: click a line to cut away the segment under the cursor at its
-      // intersections with the other lines. Empty space is a no-op.
+      // Trim: click a line, circle, or arc to cut away the piece under the cursor
+      // at its intersections with the other geometry. Empty space is a no-op, and
+      // a curve with nothing crossing it is left whole (trim never deletes an
+      // entity outright — use Delete for that). Line takes priority under the
+      // cursor, then circle rim, then arc.
       const lineHit = hitTestLine(sk, x, y, SNAP);
-      if (lineHit == null) return;
+      const circleHit = lineHit == null ? hitTestCircle(sk, x, y, SNAP) : null;
+      const arcHit = lineHit == null && circleHit == null ? hitTestArc(sk, x, y, SNAP) : null;
+      if (lineHit == null && circleHit == null && arcHit == null) return;
       get()._snapshot();
-      const res = trimLine(sk, lineHit, x, y);
+      const res = lineHit != null ? trimLine(sk, lineHit, x, y)
+        : circleHit != null ? trimCircle(sk, circleHit, x, y)
+        : trimArc(sk, arcHit, x, y);
       if (res == null) { get()._undoSnapshot(); return; }
       set({ selection: [], error: null });
       get()._bump();
       get().solve();
+    } else if (tool === 'chamfer') {
+      // Chamfer tool: pick the two lines that share a corner (line-only); the
+      // inline ChamferInput applies the size once two are selected. Empty space
+      // clears the pick.
+      const lineHit = hitTestLine(sk, x, y, SNAP);
+      if (lineHit != null) get().toggleSelect(lineHit);
+      else set({ selection: [] });
     } else {
       // select / dimension: points take priority over lines, then circles, under
       // the cursor; all route through toggleSelect. Empty space clears the
@@ -342,10 +388,12 @@ export const useSketchStore = create((set, get) => ({
    * value (to seed the input). Pure: no mutation, so the view can use it both to
    * enable the Dimension control and to prefill a prompt. Returns null when the
    * selection is not dimensionable. Supported combos:
+   *   - 1 point           → distance from that point to the origin
    *   - 2 points          → point-to-point distance
    *   - 1 line            → the line's length
    *   - 1 circle          → radius
-   *   - 2 lines           → gap between them (point-to-line from the far endpoint)
+   *   - 1 point + 1 line  → perpendicular point-to-line distance
+   *   - 2 lines           → angle, or the gap when (near) parallel
    *   - 1 line + 1 circle → line to the circle's centre (point-to-line)
    *   - 2 circles         → centre-to-centre distance
    */
@@ -358,7 +406,14 @@ export const useSketchStore = create((set, get) => ({
       const b = sk.entities.get(bId);
       return Math.hypot(a.x - b.x, a.y - b.y);
     };
+    const originId = [...sk.entities.values()].find((e) => e.origin)?.id;
 
+    // A single non-origin point → dimension its distance to the origin, the most
+    // common "locate this relative to the datum" case (2 points where one is the
+    // origin works too, but that needs the origin explicitly picked).
+    if (ents.length === 1 && ents[0].type === 'point' && !ents[0].origin && originId != null) {
+      return { kind: 'distance', refs: [originId, selection[0]], label: 'To origin', current: pdist(originId, selection[0]) };
+    }
     if (ents.length === 2 && ents.every((e) => e.type === 'point')) {
       return { kind: 'distance', refs: selection.slice(), label: 'Distance', current: pdist(selection[0], selection[1]) };
     }
@@ -368,8 +423,34 @@ export const useSketchStore = create((set, get) => ({
     if (ents.length === 1 && ents[0].type === 'circle') {
       return { kind: 'radius', refs: [selection[0]], label: 'Radius', current: ents[0].r };
     }
+    // Point + line (either pick order) → perpendicular distance. This is what
+    // dimensions a point (e.g. the origin) to a line.
+    const pForLine = ents.find((e) => e.type === 'point');
+    const lForPoint = ents.find((e) => e.type === 'line');
+    if (ents.length === 2 && pForLine && lForPoint) {
+      return {
+        kind: 'pointLineDistance', refs: [pForLine.id, lForPoint.id],
+        label: 'Point ↔ line', current: distancePointToLine(sk, pForLine.id, lForPoint.id),
+      };
+    }
     if (ents.length === 2 && ents.every((e) => e.type === 'line')) {
       const [l1, l2] = selection;
+      // Smart dimension on two lines: their angle when they actually meet at an
+      // angle, the perpendicular gap when they're (near) parallel. Directed angle
+      // l1→l2 in degrees, normalised to (−180, 180].
+      const dir = (id) => {
+        const l = sk.entities.get(id);
+        const a = sk.entities.get(l.p1);
+        const b = sk.entities.get(l.p2);
+        return Math.atan2(b.y - a.y, b.x - a.x);
+      };
+      let deg = ((dir(l2) - dir(l1)) * 180) / Math.PI;
+      deg = ((deg % 360) + 360) % 360;
+      if (deg > 180) deg -= 360;
+      const parallel = Math.abs(deg) < 0.5 || Math.abs(Math.abs(deg) - 180) < 0.5;
+      if (!parallel) {
+        return { kind: 'angle', refs: [l1, l2], label: 'Angle', unit: '°', angular: true, current: deg };
+      }
       const pid = farEndpointFromLine(sk, l1, l2);
       return { kind: 'pointLineDistance', refs: [pid, l2], label: 'Line ↔ line', current: distancePointToLine(sk, pid, l2) };
     }
@@ -397,13 +478,15 @@ export const useSketchStore = create((set, get) => ({
   dimension(value) {
     const spec = get().dimensionPending || get().resolveDimension();
     if (!spec) {
-      set({ error: 'Dimension needs 2 points, 1 line, 1 circle, 2 lines, a line + circle, or 2 circles' });
+      set({ error: 'Dimension needs 1 point (to origin), 2 points, 1 line, 1 circle, a point + line, 2 lines, a line + circle, or 2 circles' });
       return;
     }
     const { sk } = get();
+    // Angular dimensions are entered/seeded in degrees but stored in radians.
+    const modelValue = spec.angular ? value * DEG : value;
     get()._snapshot();
     try {
-      addConstraint(sk, spec.kind, spec.refs, value);
+      addConstraint(sk, spec.kind, spec.refs, modelValue);
     } catch (e) {
       get()._undoSnapshot();
       set({ error: String(e?.message || e) });
@@ -417,6 +500,28 @@ export const useSketchStore = create((set, get) => ({
   /** Dismiss the inline dimension input without applying. */
   cancelDimension() {
     set({ dimensionPending: null });
+  },
+
+  /**
+   * Flip an angular dimension's base/rotating line (swap refs[0]/refs[1]) and
+   * re-read the current angle for the new order, so the seeded value stays
+   * truthful. No-op for non-angular dimensions.
+   */
+  swapDimensionRefs() {
+    const dp = get().dimensionPending;
+    if (!dp || !dp.angular) return;
+    const { sk } = get();
+    const refs = [dp.refs[1], dp.refs[0]];
+    const dir = (id) => {
+      const l = sk.entities.get(id);
+      const a = sk.entities.get(l.p1);
+      const b = sk.entities.get(l.p2);
+      return Math.atan2(b.y - a.y, b.x - a.x);
+    };
+    let deg = ((dir(refs[1]) - dir(refs[0])) * 180) / Math.PI;
+    deg = ((deg % 360) + 360) % 360;
+    if (deg > 180) deg -= 360;
+    set({ dimensionPending: { ...dp, refs, current: deg } });
   },
 
   /** Chamfer the corner between the two selected lines by `dist`. */

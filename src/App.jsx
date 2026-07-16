@@ -16,6 +16,8 @@ import {
   ExpandOutlined,
 } from '@ant-design/icons';
 import { useCamStore } from './stores/camStore.js';
+import { useSketchStore } from './stores/sketchStore.js';
+import { sketchBounds } from './engine/sketch/edit.js';
 import { lineAt, timeAt, rotaryAt, toolAt, segmentAtTime, toolPointAt } from './engine/gcode/path.js';
 import { STANDARD_TURN_TOOLS } from './engine/sim/turning.js';
 import { SAMPLE_GCODE, SAMPLE_TURNING } from './SAMPLE_GCODE.js';
@@ -42,13 +44,59 @@ const MODES = [
   { label: 'Turning', value: 'turn' },
 ];
 
+/**
+ * Isometric view-cube glyphs for the view presets (SolidWorks-style standard
+ * views). The cube is drawn from the iso eye (+X, −Y, +Z) so its three visible
+ * faces are Top (+Z, upper diamond), Front (−Y, lower-left) and Right (+X,
+ * lower-right). Each preset highlights the face you'd be looking down:
+ *   - solid accent  → that face is toward you (top / front / right / iso)
+ *   - medium accent → the *opposite* (hidden) face, for back / left, which share
+ *     a projected rhombus with front / right; the tooltip names the exact view.
+ * Pure SVG on `currentColor`, so the glyph inherits the Segmented item's colour
+ * (selected vs idle) automatically.
+ */
+const CUBE_FACES = {
+  top: [[12, 3], [20, 7.5], [12, 12], [4, 7.5]],
+  front: [[4, 7.5], [12, 12], [12, 21], [4, 16.5]],
+  right: [[20, 7.5], [20, 16.5], [12, 21], [12, 12]],
+};
+function CubeGlyph({ face, whole = false, hollow = false }) {
+  const op = (f) => {
+    if (whole) return f === 'top' ? 0.42 : f === 'front' ? 0.3 : 0.18;
+    if (f !== face) return 0.12;
+    return hollow ? 0.45 : 0.95;
+  };
+  const poly = (f) => (
+    <polygon
+      points={CUBE_FACES[f].map((p) => p.join(',')).join(' ')}
+      fill="currentColor"
+      fillOpacity={op(f)}
+      stroke="currentColor"
+      strokeWidth="1"
+      strokeLinejoin="round"
+    />
+  );
+  return (
+    <span role="img" className="anticon" style={{ display: 'inline-flex' }}>
+      <svg viewBox="0 0 24 24" width="18" height="18" style={{ display: 'block' }}>
+        {poly('top')}
+        {poly('front')}
+        {poly('right')}
+      </svg>
+    </span>
+  );
+}
+const viewGlyph = (title, glyph) => ({
+  title,
+  label: <span title={title} style={{ display: 'inline-flex', padding: '1px 2px' }}>{glyph}</span>,
+});
 const VIEWS = [
-  { label: 'Iso', value: 'iso' },
-  { label: 'Top', value: 'top' },
-  { label: 'Front', value: 'front' },
-  { label: 'Back', value: 'back' },
-  { label: 'Left', value: 'left' },
-  { label: 'Right', value: 'right' },
+  { value: 'iso', ...viewGlyph('Isometric', <CubeGlyph whole />) },
+  { value: 'top', ...viewGlyph('Top', <CubeGlyph face="top" />) },
+  { value: 'front', ...viewGlyph('Front', <CubeGlyph face="front" />) },
+  { value: 'back', ...viewGlyph('Back', <CubeGlyph face="front" hollow />) },
+  { value: 'left', ...viewGlyph('Left', <CubeGlyph face="right" hollow />) },
+  { value: 'right', ...viewGlyph('Right', <CubeGlyph face="right" />) },
 ];
 
 /** Seconds → `1:02:03` / `2:03` / `0:03`, the way a control posts cycle time. */
@@ -164,6 +212,16 @@ export default function App() {
 
   const warnings = stats?.warnings ?? [];
   const rotaryIndices = stats?.aIndices ?? [0];
+  // Live sketch bounds, so "Fit" frames what's drawn on the plane even with no
+  // program loaded. Merged into the fit inside CameraRig (kept out of the fit
+  // *key* there so drawing doesn't snap the camera — only an explicit Fit does).
+  const sketchSk = useSketchStore((s) => s.sk);
+  const sketchVersion = useSketchStore((s) => s.version);
+  const sketchFit = useMemo(
+    () => sketchBounds(sketchSk),
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [sketchSk, sketchVersion],
+  );
   // Frame the camera to the cutting geometry (the part), not the rapid retracts.
   // Deliberately NOT keyed on bufVer: the values don't change as the sim carves,
   // and refitting on every playback tick was resetting the user's zoom.
@@ -279,7 +337,7 @@ export default function App() {
         <Header style={{ display: 'flex', alignItems: 'center', gap: 12, background: '#0b1220' }}>
           <ThunderboltOutlined style={{ color: token.colorPrimary, fontSize: 22 }} />
           <Title level={4} style={{ color: '#e2e8f0', margin: 0 }}>
-            CAM Web · Backplot + Sim + Playback
+            Engineer CAD/CAM
           </Title>
           <Segmented
             value={mode}
@@ -289,8 +347,8 @@ export default function App() {
           />
           {fileName && <Tag color="blue">{fileName}</Tag>}
           <Text style={{ color: '#64748b', marginLeft: 'auto' }}>
-            rapid = <span style={{ color: '#ef4444' }}>red</span> · feed ={' '}
-            <span style={{ color: '#22c55e' }}>green</span>
+            Rapid <span style={{ color: '#ef4444' }}>-----</span>   Feed {' '}
+            <span style={{ color: '#22c55e' }}>-----</span>
           </Text>
         </Header>
         <Layout>
@@ -334,7 +392,7 @@ export default function App() {
                   <span style={{ color: '#94a3b8' }}>Rapid</span>
                 </Tooltip>
                 <Space.Compact>
-                  <InputNumber
+                  <InputNumber controls={false}
                     min={1}
                     step={500}
                     value={rapidRate}
@@ -435,7 +493,7 @@ export default function App() {
                                 {holder?.adjustable && (
                                   <>
                                     <span style={{ color: '#94a3b8' }}>insert°</span>
-                                    <InputNumber
+                                    <InputNumber controls={false}
                                       size="small"
                                       min={20}
                                       max={100}
@@ -451,7 +509,7 @@ export default function App() {
                           })() : (
                             <>
                               <span style={{ color: '#94a3b8' }}>⌀</span>
-                              <InputNumber
+                              <InputNumber controls={false}
                                 size="small"
                                 min={0.1}
                                 step={0.5}
@@ -469,7 +527,7 @@ export default function App() {
                               <Tooltip title="Gauge length — tip to the collet face (stick-out)">
                                 <span style={{ color: '#94a3b8' }}>L</span>
                               </Tooltip>
-                              <InputNumber
+                              <InputNumber controls={false}
                                 size="small"
                                 min={0}
                                 step={1}
@@ -518,7 +576,7 @@ export default function App() {
                       <span style={{ color: '#94a3b8' }}>Stock ⌀ oversize</span>
                     </Tooltip>
                     <Space.Compact>
-                      <InputNumber
+                      <InputNumber controls={false}
                         min={0}
                         step={0.5}
                         value={stockOversize}
@@ -591,7 +649,7 @@ export default function App() {
                   <Space wrap align="center">
                     <span style={{ color: '#94a3b8' }}>Tool ⌀</span>
                     <Space.Compact>
-                      <InputNumber
+                      <InputNumber controls={false}
                         min={0.1}
                         step={0.5}
                         value={toolRadius * 2}
@@ -609,7 +667,7 @@ export default function App() {
                   <Space align="center" wrap>
                     <span style={{ color: '#94a3b8' }}>Grid</span>
                     <Space.Compact>
-                      <InputNumber
+                      <InputNumber controls={false}
                         min={0.1}
                         step={0.1}
                         value={cellSize}
@@ -626,7 +684,7 @@ export default function App() {
                     <Tooltip title="Billet top Z (blank = highest move)">
                       <Space.Compact>
                         <span className="ant-input-group-addon" style={addonStyle('left')}>T</span>
-                        <InputNumber
+                        <InputNumber controls={false}
                           placeholder="top auto"
                           value={stockTop}
                           onChange={(v) => setTool({ stockTop: v ?? null })}
@@ -637,7 +695,7 @@ export default function App() {
                     <Tooltip title="Billet bottom Z (blank = below deepest cut)">
                       <Space.Compact>
                         <span className="ant-input-group-addon" style={addonStyle('left')}>B</span>
-                        <InputNumber
+                        <InputNumber controls={false}
                           placeholder="bot auto"
                           value={stockBase}
                           onChange={(v) => setTool({ stockBase: v ?? null })}
@@ -648,7 +706,7 @@ export default function App() {
                     <Tooltip title="XY overhang around the toolpath">
                       <Space.Compact>
                         <span className="ant-input-group-addon" style={addonStyle('left')}>M</span>
-                        <InputNumber
+                        <InputNumber controls={false}
                           min={0}
                           value={stockMargin}
                           onChange={(v) => setTool({ stockMargin: v ?? 0 })}
@@ -681,7 +739,7 @@ export default function App() {
                         >
                           Voxel
                         </Button>
-                        <InputNumber
+                        <InputNumber controls={false}
                           min={0.5}
                           step={0.5}
                           value={voxelSize}
@@ -785,6 +843,7 @@ export default function App() {
             <Viewport
               bounds={bounds}
               fitBounds={fitBounds}
+              sketchFit={sketchFit}
               turnChuck={turnChuck}
               showStock={showStock}
               toolPos={toolPos}

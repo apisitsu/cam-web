@@ -22,4 +22,7 @@ export {
 
 export { createSolver, toPlanegcs } from './planegcs.js';
 
-export { hitTestPoint, getOrCreatePoint, deleteEntity, removeConstraint } from './edit.js';
+export {
+  hitTestPoint, getOrCreatePoint, deleteEntity, removeConstraint,
+  trimLine, trimCircle, trimArc, sketchBounds, nearestRimPoint, circleIntersections,
+} from './edit.js';

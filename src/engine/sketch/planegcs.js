@@ -74,6 +74,12 @@ export function toPlanegcs(sk) {
       case 'pointOnLine':
         prims.push({ id: cid(), type: 'point_on_line_pl', p_id: a, l_id: b });
         break;
+      case 'pointOnCircle':
+        prims.push({ id: cid(), type: 'point_on_circle', p_id: a, c_id: b });
+        break;
+      case 'pointOnArc':
+        prims.push({ id: cid(), type: 'point_on_arc', p_id: a, a_id: b });
+        break;
       case 'distance':
         prims.push({ id: cid(), type: 'p2p_distance', p1_id: a, p2_id: b, distance: c.value });
         break;
@@ -85,6 +91,16 @@ export function toPlanegcs(sk) {
         break;
       case 'equalLength':
         prims.push({ id: cid(), type: 'equal_length', l1_id: a, l2_id: b });
+        break;
+      case 'angle':
+        // c.value is the angle between the two lines, in radians.
+        prims.push({ id: cid(), type: 'l2l_angle_ll', l1_id: a, l2_id: b, angle: c.value });
+        break;
+      case 'tangent':
+        prims.push({ id: cid(), type: 'tangent_lc', l_id: a, c_id: b });
+        break;
+      case 'tangentArc':
+        prims.push({ id: cid(), type: 'tangent_la', l_id: a, a_id: b });
         break;
       default:
         throw new Error(`no planegcs mapping for constraint ${c.kind}`);

@@ -47,7 +47,7 @@ export const VIEW_DIRS = {
  * fill — where the old 3D-diagonal fit zoomed out for an out-of-plane dimension
  * (a 4-axis part's rotated rapid retracts) and shrank the part to a sliver.
  */
-function CameraRig({ bounds, view, viewNonce, controlsRef, mode }) {
+function CameraRig({ bounds, sketchFit, view, viewNonce, controlsRef, mode }) {
   const { camera, size: canvasSize } = useThree();
   // Refit ONLY when the view, the fit request, or the bounds *values* change —
   // never on an incidental re-render. Keying the effect on this string means
@@ -65,8 +65,23 @@ function CameraRig({ bounds, view, viewNonce, controlsRef, mode }) {
     let key = view;
     if (mode === 'turn') key = view === 'front' ? 'back' : view === 'back' ? 'front' : view;
     const dir = new THREE.Vector3(...(VIEW_DIRS[key] ?? VIEW_DIRS.iso)).normalize();
-    const min = new THREE.Vector3(...(bounds ? bounds.min : [-1, -1, -1]));
-    const max = new THREE.Vector3(...(bounds ? bounds.max : [1, 1, 1]));
+    // Fit target = toolpath bounds unioned with the live sketch bounds, so an
+    // explicit Fit frames whichever exists (or both). `sketchFit` is intentionally
+    // read here but excluded from `fitKey`, so ongoing sketch edits don't refit.
+    let fmin = bounds ? bounds.min : null;
+    let fmax = bounds ? bounds.max : null;
+    if (sketchFit) {
+      fmin = fmin ? fmin.map((v, i) => Math.min(v, sketchFit.min[i])) : sketchFit.min;
+      fmax = fmax ? fmax.map((v, i) => Math.max(v, sketchFit.max[i])) : sketchFit.max;
+    }
+    // Nothing loaded or drawn yet → frame a sensible working area around the
+    // origin rather than the degenerate ±1 box. That box fits so tightly on the
+    // origin point that the camera zooms in absurdly far (and the 10 mm grid
+    // falls entirely between lines, so the ground looks blank). ±80 mm ≈ the
+    // Canvas' initial zoom, so the app opens on a calm, gridded work area.
+    const D = 80;
+    const min = new THREE.Vector3(...(fmin ?? [-D, -D, 0]));
+    const max = new THREE.Vector3(...(fmax ?? [D, D, 0]));
     const center = min.clone().add(max).multiplyScalar(0.5);
 
     // World up: milling is Z-up. Turning is drawn with the spindle along Z and
@@ -132,24 +147,42 @@ function CameraRig({ bounds, view, viewNonce, controlsRef, mode }) {
 
 /**
  * The machine XY grid, sized to the view. drei's Grid fades (and scales its
- * infinite plane) by a fixed `fadeDistance` in world units measured from the
- * camera — so on an **orthographic** camera, zooming out widens the visible span
- * past that radius and the ground appears to stop growing, leaving empty space.
- * Here we drive `fadeDistance` from the live zoom every rendered frame (the
- * canvas is demand-mode, so this only runs when something actually redraws),
- * keeping the grid filling the viewport at any zoom. Updated imperatively on the
- * material uniform to avoid a per-frame React re-render.
+ * infinite plane) by `fadeDistance` in world units, measured from the camera's
+ * *projection onto the ground plane* — not from the view centre. On an oblique
+ * (iso) orthographic view that projection lands far from the part, so a fade
+ * radius sized only to the viewport leaves most of the grid — especially the far
+ * (top-of-screen) region — beyond the fade and invisible, giving only a thin
+ * sliver of ground to draw on. We drive `fadeDistance` every rendered frame (the
+ * canvas is demand-mode, so this only runs on an actual redraw) from BOTH the
+ * visible span AND the camera's in-plane offset from the orbit target, so the
+ * grid fills the viewport in every view and at every zoom. Updated imperatively
+ * on the material uniform to avoid a per-frame React re-render.
  */
-function AdaptiveGrid(props) {
+function AdaptiveGrid({ controlsRef, normal = [0, 0, 1], ...props }) {
   const ref = useRef();
+  const n = useMemo(() => new THREE.Vector3(...normal).normalize(), [normal]);
+  const rel = useRef(new THREE.Vector3());
   useFrame(({ camera, size }) => {
     const grid = ref.current;
     if (!grid) return;
     const zoom = camera.zoom || 1;
-    // Ortho visible half-height in world units; cover the diagonal + margin so
-    // the corners stay gridded too.
-    const halfSpan = size.height / (2 * zoom);
-    const fade = Math.max(halfSpan * 2.5, 40);
+    // Ortho visible half-diagonal in world units — reaches the viewport corners.
+    const halfDiag = Math.hypot(size.width, size.height) / (2 * zoom);
+    // In-plane distance from the camera's projection (the grid's fade origin) to
+    // the orbit target, measured on the grid's *own* plane (normal `n`). A view
+    // looking straight at the plane → ~0 (uniform fill); the oblique iso ground
+    // view → large, and the fade must span it or the grid vanishes off-centre.
+    const t = controlsRef?.current?.target;
+    let offset = 0;
+    if (t) {
+      const r = rel.current.copy(camera.position).sub(t);
+      const perp = r.dot(n);
+      offset = Math.sqrt(Math.max(r.lengthSq() - perp * perp, 0));
+    }
+    // ×3 (plus a low fadeStrength on the Grid) keeps the whole viewport well
+    // inside the fade radius, so the grid reads as *full* on every view — top,
+    // front, iso alike — not just a bright patch that trails off toward the top.
+    const fade = Math.max((offset + halfDiag) * 3, 40);
     const u = grid.material?.uniforms;
     if (u?.fadeDistance && Math.abs(u.fadeDistance.value - fade) > 0.5) {
       u.fadeDistance.value = fade;
@@ -472,12 +505,25 @@ function SpindleAxis({ bounds }) {
 }
 
 export default function Viewport({
-  bounds, fitBounds, turnChuck, showStock, toolPos, toolRotary, toolRadius, toolType,
+  bounds, fitBounds, sketchFit, turnChuck, showStock, toolPos, toolRotary, toolRadius, toolType,
   toolLength, turnInsert, bufVer, playhead,
   mode = 'mill', view = 'iso', viewNonce = 0,
 }) {
   const controlsRef = useRef();
   const gridPos = useMemo(() => [0, 0, 0], []);
+
+  // Put the grid on the principal plane most face-on to the current view, so it
+  // fills the viewport in *every* standard view — not just Top, where a fixed XY
+  // ground grid would be seen edge-on (a single line) from Front/Back/Left/Right.
+  // Iso keeps the XY ground plane (the sketch plane). Turning is left on the
+  // ground grid, matching its existing lathe framing.
+  const grid = useMemo(() => {
+    if (mode !== 'turn') {
+      if (view === 'front' || view === 'back') return { rotation: [0, 0, 0], normal: [0, 1, 0] };          // XZ (y=0)
+      if (view === 'left' || view === 'right') return { rotation: [0, 0, Math.PI / 2], normal: [1, 0, 0] };  // YZ (x=0)
+    }
+    return { rotation: [Math.PI / 2, 0, 0], normal: [0, 0, 1] };                                             // XY ground
+  }, [view, mode]);
 
   // Resolve which rapids/feeds to draw (full backplot, or the sliced sub-path
   // during playback) and stash them in the module view-cache. Children read
@@ -514,8 +560,10 @@ export default function Viewport({
       {/* Machine XY plane. Grid's own plane is XZ, so rotate it flat about X.
           fadeDistance is driven per-frame from the zoom (see AdaptiveGrid). */}
       <AdaptiveGrid
+        controlsRef={controlsRef}
+        normal={grid.normal}
         position={gridPos}
-        rotation={[Math.PI / 2, 0, 0]}
+        rotation={grid.rotation}
         args={[400, 400]}
         cellSize={10}
         cellColor="#1e293b"
@@ -523,6 +571,7 @@ export default function Viewport({
         sectionColor="#334155"
         infiniteGrid
         fadeDistance={800}
+        fadeStrength={0.6}
       />
 
       <axesHelper args={[20]} />
@@ -547,6 +596,7 @@ export default function Viewport({
 
       <CameraRig
         bounds={fitBounds ?? bounds}
+        sketchFit={sketchFit}
         view={view}
         viewNonce={viewNonce}
         controlsRef={controlsRef}

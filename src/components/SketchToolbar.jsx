@@ -17,6 +17,7 @@ import { useState, useEffect } from 'react';
 import { useSketchStore } from '../stores/sketchStore.js';
 
 const { Text } = Typography;
+const DEG = Math.PI / 180;
 
 /** Wrap an SVG path set as an antd-compatible icon. */
 const glyph = (node) => function Glyph() {
@@ -41,6 +42,7 @@ const CircleIcon = glyph(<circle cx="12" cy="12" r="7.5" />);
 const ArcIcon = glyph(<><path d="M4 18A14 14 0 0 1 18 4" /><circle cx="4" cy="18" r="1.8" fill="currentColor" /><circle cx="18" cy="4" r="1.8" fill="currentColor" /></>);
 const DimIcon = glyph(<><path d="M4 7v10M20 7v10M4 12h16" /><path d="M7 9l-3 3 3 3M17 9l3 3-3 3" /></>);
 const TrimIcon = glyph(<><circle cx="6" cy="7" r="2.4" /><circle cx="6" cy="17" r="2.4" /><path d="M8 8.4L20 16M8 15.6L20 8" /></>);
+const ChamferIcon = glyph(<path d="M5 20V10L11 4H20" />);
 
 const TOOLS = [
   { value: 'select', label: 'Select', Icon: SelectIcon, hint: 'Click points, lines, circles or arcs to select' },
@@ -49,8 +51,9 @@ const TOOLS = [
   { value: 'rectangle', label: 'Rectangle', Icon: RectIcon, hint: 'Click two opposite corners' },
   { value: 'circle', label: 'Circle', Icon: CircleIcon, hint: 'Click centre, then a point on the rim' },
   { value: 'arc', label: 'Arc', Icon: ArcIcon, hint: 'Click centre, start, then end (sweeps CCW) · Esc cancels' },
-  { value: 'dimension', label: 'Dimension', Icon: DimIcon, hint: 'Pick 2 pts / 1 line / 1 circle / 2 lines / line+circle / 2 circles — set value, or click empty space to apply' },
-  { value: 'trim', label: 'Trim', Icon: TrimIcon, hint: 'Click a line segment to trim it at its intersections' },
+  { value: 'dimension', label: 'Dimension', Icon: DimIcon, hint: 'Pick 1 pt (to origin) / 2 pts / 1 line / 1 circle / pt+line / 2 lines (gap or angle) / line+circle / 2 circles — set value, or click empty space to apply' },
+  { value: 'trim', label: 'Trim', Icon: TrimIcon, hint: 'Click a line, circle or arc to trim it at its intersections' },
+  { value: 'chamfer', label: 'Chamfer', Icon: ChamferIcon, hint: 'Click the two lines that share a corner, then type the chamfer size' },
 ];
 
 // Point-selection constraints.
@@ -73,15 +76,19 @@ const LINE_CONSTRAINTS = [
 /** The contextual constraint/dimension controls shown inside the popover. */
 function ConstraintsPanel() {
   const {
-    sk, selection, applyConstraint, applyConstraintRefs, dimension, chamfer,
+    sk, selection, applyConstraint, applyConstraintRefs, dimension,
     removeConstraintAt, resolveDimension,
   } = useSketchStore();
   const [value, setValue] = useState(10);
 
   const lineIds = selection.filter((id) => sk.entities.get(id)?.type === 'line');
   const pointIds = selection.filter((id) => sk.entities.get(id)?.type === 'point');
+  const circleIds = selection.filter((id) => sk.entities.get(id)?.type === 'circle');
+  const arcIds = selection.filter((id) => sk.entities.get(id)?.type === 'arc');
   const twoLinesSelected = selection.length === 2 && lineIds.length === 2;
   const pointAndLineSelected = selection.length === 2 && pointIds.length === 1 && lineIds.length === 1;
+  const lineAndCircle = selection.length === 2 && lineIds.length === 1 && circleIds.length === 1;
+  const lineAndArc = selection.length === 2 && lineIds.length === 1 && arcIds.length === 1;
   const isCircleSelection = selection.length === 1 && sk.entities.get(selection[0])?.type === 'circle';
   // What (if anything) a dimension would apply to for the current selection.
   const dimSpec = resolveDimension();
@@ -90,7 +97,7 @@ function ConstraintsPanel() {
     <div style={{ width: 268 }}>
       <Space size={4}>
         <Text type="secondary" style={{ fontSize: 12 }}>value</Text>
-        <InputNumber size="small" value={value} onChange={(v) => setValue(v ?? 0)} style={{ width: 90 }} />
+        <InputNumber controls={false} size="small" value={value} onChange={(v) => setValue(v ?? 0)} style={{ width: 90 }} />
         <Button size="small" type="primary" ghost disabled={!dimSpec} onClick={() => dimension(value)}>
           {dimSpec ? `Dim: ${dimSpec.label}` : 'Dimension'}
         </Button>
@@ -134,8 +141,21 @@ function ConstraintsPanel() {
         >
           Point on Line
         </Button>
-        <Button size="small" disabled={!twoLinesSelected} onClick={() => chamfer(value)}>
-          Chamfer
+        <Button
+          size="small"
+          disabled={!twoLinesSelected}
+          onClick={() => applyConstraintRefs('angle', lineIds, value * DEG)}
+        >
+          Angle°
+        </Button>
+        <Button
+          size="small"
+          disabled={!(lineAndCircle || lineAndArc)}
+          onClick={() => (lineAndCircle
+            ? applyConstraintRefs('tangent', [lineIds[0], circleIds[0]])
+            : applyConstraintRefs('tangentArc', [lineIds[0], arcIds[0]]))}
+        >
+          Tangent
         </Button>
       </Space>
 
@@ -146,7 +166,8 @@ function ConstraintsPanel() {
         {sk.constraints.map((c, i) => (
           <Space key={i} size={4} style={{ width: '100%', justifyContent: 'space-between' }}>
             <Text style={{ fontSize: 11, color: '#9ca3af' }}>
-              {c.kind} [{c.refs.join(', ')}]{c.value != null ? ` = ${c.value}` : ''}
+              {c.kind} [{c.refs.join(', ')}]
+              {c.value != null ? ` = ${c.kind === 'angle' ? `${(c.value / DEG).toFixed(1)}°` : c.value}` : ''}
             </Text>
             <Button
               size="small"
@@ -173,6 +194,7 @@ function DimensionInput() {
   const dimensionPending = useSketchStore((s) => s.dimensionPending);
   const dimension = useSketchStore((s) => s.dimension);
   const cancelDimension = useSketchStore((s) => s.cancelDimension);
+  const swapDimensionRefs = useSketchStore((s) => s.swapDimensionRefs);
   const [val, setVal] = useState(10);
 
   useEffect(() => {
@@ -184,6 +206,10 @@ function DimensionInput() {
 
   if (!dimensionPending) return null;
   const apply = () => { if (Number.isFinite(val)) dimension(val); };
+  // For an angle the two lines aren't symmetric: the constraint is measured FROM
+  // the base line (highlighted cyan in the viewport) TO the rotating line (amber).
+  // Swap flips which is which so the user controls the reference.
+  const angular = !!dimensionPending.angular;
 
   return (
     <div
@@ -196,7 +222,58 @@ function DimensionInput() {
       }}
     >
       <Text style={{ color: '#cbd5e1', fontSize: 12 }}>{dimensionPending.label}</Text>
-      <InputNumber
+      {angular && (
+        <>
+          <Text style={{ color: '#22d3ee', fontSize: 11 }}>base L{dimensionPending.refs[0]}</Text>
+          <Text style={{ color: '#64748b', fontSize: 11 }}>→</Text>
+          <Text style={{ color: '#f59e0b', fontSize: 11 }}>rotate L{dimensionPending.refs[1]}</Text>
+          <Tooltip title="Swap base / rotating line">
+            <Button size="small" onClick={swapDimensionRefs} style={{ padding: '0 6px' }}>⇄</Button>
+          </Tooltip>
+        </>
+      )}
+      <InputNumber controls={false}
+        autoFocus
+        size="small"
+        value={val}
+        onChange={(v) => setVal(v ?? 0)}
+        onPressEnter={apply}
+        style={{ width: 96 }}
+        addonAfter={dimensionPending.unit ?? 'mm'}
+      />
+      <Button size="small" type="primary" onClick={apply}>Set</Button>
+      <Button size="small" type="text" style={{ color: '#94a3b8' }} onClick={cancelDimension}>✕</Button>
+    </div>
+  );
+}
+
+/**
+ * Inline chamfer size entry — the Chamfer tool's companion, shown once two lines
+ * that share a corner are picked. Type a size and Set applies it (typed value
+ * only, no spinner). Picking elsewhere clears the selection and hides this.
+ */
+function ChamferInput() {
+  const tool = useSketchStore((s) => s.tool);
+  const selection = useSketchStore((s) => s.selection);
+  const sk = useSketchStore((s) => s.sk);
+  const chamfer = useSketchStore((s) => s.chamfer);
+  const [val, setVal] = useState(3);
+
+  const lineIds = selection.filter((id) => sk.entities.get(id)?.type === 'line');
+  if (tool !== 'chamfer' || lineIds.length !== 2) return null;
+  const apply = () => { if (Number.isFinite(val) && val > 0) chamfer(val); };
+
+  return (
+    <div
+      style={{
+        position: 'absolute', top: 60, left: 12, zIndex: 6,
+        display: 'flex', gap: 6, alignItems: 'center',
+        background: 'rgba(15,23,42,0.95)', border: '1px solid #f59e0b',
+        padding: '6px 10px', borderRadius: 8,
+      }}
+    >
+      <Text style={{ color: '#cbd5e1', fontSize: 12 }}>Chamfer</Text>
+      <InputNumber controls={false}
         autoFocus
         size="small"
         value={val}
@@ -206,7 +283,6 @@ function DimensionInput() {
         addonAfter="mm"
       />
       <Button size="small" type="primary" onClick={apply}>Set</Button>
-      <Button size="small" type="text" style={{ color: '#94a3b8' }} onClick={cancelDimension}>✕</Button>
     </div>
   );
 }
@@ -322,6 +398,7 @@ export default function SketchToolbar() {
       </Space>
     </div>
     <DimensionInput />
+    <ChamferInput />
     </>
   );
 }

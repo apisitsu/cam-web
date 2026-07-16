@@ -6,7 +6,7 @@
  * Screen→sketch coordinate mapping and event handling live in the view layer;
  * everything here is testable under plain Node.
  */
-import { addPoint, addLine } from './model.js';
+import { addPoint, addLine, addArc } from './model.js';
 
 const dist2 = (ax, ay, bx, by) => (ax - bx) ** 2 + (ay - by) ** 2;
 
@@ -392,4 +392,238 @@ export function trimLine(sk, lineId, x, y) {
   removeIfOrphan(sk, oldP1);
   removeIfOrphan(sk, oldP2);
   return { line: lineId, added };
+}
+
+/**
+ * Intersection points of two circles (centres c0/c1, radii r0/r1), each lying on
+ * *both* rims. Returns 0–2 points; empty for concentric, separate, or one-inside
+ * -the-other circles (no tangent double-root special-case — a grazing touch
+ * yields the single midpoint).
+ */
+function circleCircleInts(c0x, c0y, r0, c1x, c1y, r1) {
+  const dx = c1x - c0x;
+  const dy = c1y - c0y;
+  const d = Math.hypot(dx, dy);
+  if (d < 1e-9) return []; // concentric
+  if (d > r0 + r1 + 1e-9) return []; // too far apart
+  if (d < Math.abs(r0 - r1) - 1e-9) return []; // one inside the other
+  const a = (r0 * r0 - r1 * r1 + d * d) / (2 * d);
+  const h2 = r0 * r0 - a * a;
+  const h = h2 > 0 ? Math.sqrt(h2) : 0;
+  const xm = c0x + (a * dx) / d;
+  const ym = c0y + (a * dy) / d;
+  const ox = (-dy / d) * h;
+  const oy = (dx / d) * h;
+  if (h < 1e-9) return [{ x: xm, y: ym }];
+  return [{ x: xm + ox, y: ym + oy }, { x: xm - ox, y: ym - oy }];
+}
+
+/**
+ * Points where the circle of radius `r` centred at (cx, cy) crosses every *other*
+ * entity, respecting each other entity's real extent: line **segments**, full
+ * circles, and an arc's swept **span**. `selfId` is skipped. Used by trimCircle /
+ * trimArc to find the cut points on the curve being trimmed.
+ */
+export function circleIntersections(sk, cx, cy, r, selfId) {
+  const out = [];
+  for (const e of sk.entities.values()) {
+    if (e.id === selfId) continue;
+    if (e.type === 'line') {
+      const a = sk.entities.get(e.p1);
+      const b = sk.entities.get(e.p2);
+      if (!a || !b) continue;
+      for (const t of lineCircleParams(a, b, cx, cy, r)) {
+        if (t >= -1e-9 && t <= 1 + 1e-9) out.push({ x: a.x + (b.x - a.x) * t, y: a.y + (b.y - a.y) * t });
+      }
+    } else if (e.type === 'circle') {
+      const oc = sk.entities.get(e.center);
+      if (!oc) continue;
+      for (const p of circleCircleInts(cx, cy, r, oc.x, oc.y, e.r)) out.push(p);
+    } else if (e.type === 'arc') {
+      const oc = sk.entities.get(e.center);
+      if (!oc) continue;
+      for (const p of circleCircleInts(cx, cy, r, oc.x, oc.y, e.r)) {
+        if (arcSpanContains(sk, e, p.x, p.y)) out.push(p);
+      }
+    }
+  }
+  return out;
+}
+
+/** Crossing angles of `pts` about (cx, cy), sorted CCW and de-duplicated. */
+function sortedCutAngles(pts, cx, cy) {
+  const angs = pts
+    .map((p) => normAngle(Math.atan2(p.y - cy, p.x - cx)))
+    .sort((u, v) => u - v);
+  const uniq = [];
+  for (const a of angs) {
+    if (!uniq.length || normAngle(a - uniq[uniq.length - 1]) > 1e-6) uniq.push(a);
+  }
+  if (uniq.length >= 2 && normAngle(uniq[0] - uniq[uniq.length - 1]) < 1e-6) uniq.pop();
+  return uniq;
+}
+
+/**
+ * Trim a **circle** at its crossings with other geometry: remove the rim segment
+ * the click (x, y) falls in and keep the rest, turning the circle into an arc that
+ * sweeps CCW around the surviving portion. Needs ≥2 crossings (a full circle has
+ * no free end to trim back to otherwise); fewer is a no-op. The circle's radius
+ * constraints go with it. Returns { removed, added } (old circle id, new arc id),
+ * or null if nothing could be trimmed.
+ */
+export function trimCircle(sk, circleId, x, y) {
+  const circle = sk.entities.get(circleId);
+  if (!circle || circle.type !== 'circle') return null;
+  const c = sk.entities.get(circle.center);
+  if (!c) return null;
+  const r = circle.r;
+  const cuts = sortedCutAngles(circleIntersections(sk, c.x, c.y, r, circleId), c.x, c.y);
+  if (cuts.length < 2) return null;
+
+  // Which gap between consecutive crossings (cyclic) does the click fall in?
+  const ac = normAngle(Math.atan2(y - c.y, x - c.x));
+  let i = 0;
+  for (let k = 0; k < cuts.length; k++) {
+    const span = normAngle(cuts[(k + 1) % cuts.length] - cuts[k]) || TAU;
+    if (normAngle(ac - cuts[k]) <= span) { i = k; break; }
+  }
+  const lo = cuts[i]; // start of the removed segment (CCW)
+  const hi = cuts[(i + 1) % cuts.length]; // end of the removed segment
+  // Surviving arc sweeps CCW from hi back around to lo.
+  const startId = addPoint(sk, c.x + r * Math.cos(hi), c.y + r * Math.sin(hi));
+  const endId = addPoint(sk, c.x + r * Math.cos(lo), c.y + r * Math.sin(lo));
+  const arc = addArc(sk, circle.center, startId, endId, r);
+  deleteEntity(sk, circleId);
+  return { removed: circleId, added: arc };
+}
+
+/**
+ * Trim an **arc** at its crossings with other geometry — the arc analogue of
+ * `trimLine`. Interior crossings split the arc's span; the sub-arc under the
+ * click is removed:
+ *   - click on an end sub-arc → shorten the arc to the nearest crossing;
+ *   - click on a middle sub-arc → split into two arcs (original + a new one).
+ * An arc with no interior crossings is left untouched. New endpoint points are
+ * created at the cuts; endpoints orphaned by re-pointing are cleaned up. Returns
+ * { arc, added } or null.
+ */
+export function trimArc(sk, arcId, x, y) {
+  const arc = sk.entities.get(arcId);
+  if (!arc || arc.type !== 'arc') return null;
+  const c = sk.entities.get(arc.center);
+  const s = sk.entities.get(arc.start);
+  const en = sk.entities.get(arc.end);
+  if (!c || !s || !en) return null;
+  const r = arc.r;
+  const a0 = normAngle(Math.atan2(s.y - c.y, s.x - c.x));
+  const span = normAngle(normAngle(Math.atan2(en.y - c.y, en.x - c.x)) - a0) || TAU;
+
+  const cuts = [];
+  for (const p of circleIntersections(sk, c.x, c.y, r, arcId)) {
+    const off = normAngle(normAngle(Math.atan2(p.y - c.y, p.x - c.x)) - a0);
+    if (off > 1e-6 && off < span - 1e-6) cuts.push(off);
+  }
+  cuts.sort((u, v) => u - v);
+  if (cuts.length === 0) return null;
+
+  let tc = normAngle(normAngle(Math.atan2(y - c.y, x - c.x)) - a0);
+  tc = Math.max(0, Math.min(span, tc));
+  const bounds = [0, ...cuts, span];
+  let i = 0;
+  while (i < bounds.length - 1 && tc > bounds[i + 1]) i++;
+  const o0 = bounds[i];
+  const o1 = bounds[i + 1];
+
+  const ptAt = (off) => addPoint(sk, c.x + r * Math.cos(a0 + off), c.y + r * Math.sin(a0 + off));
+  const keepLow = o0 > 1e-9; // sub-arc [0, o0] survives
+  const keepHigh = o1 < span - 1e-9; // sub-arc [o1, span] survives
+  if (!keepLow && !keepHigh) return null; // defensive — cuts guarantee one side
+
+  const oldStart = arc.start;
+  const oldEnd = arc.end;
+  let added = null;
+  if (keepLow && keepHigh) {
+    arc.end = ptAt(o0); // original keeps [start, o0]
+    added = addArc(sk, arc.center, ptAt(o1), oldEnd, r); // new arc [o1, end]
+  } else if (keepLow) {
+    arc.end = ptAt(o0);
+  } else {
+    arc.start = ptAt(o1);
+  }
+  removeIfOrphan(sk, oldStart);
+  removeIfOrphan(sk, oldEnd);
+  return { arc: arcId, added };
+}
+
+/**
+ * Axis-aligned XY bounds of the drawn sketch geometry as { min:[x,y,z],
+ * max:[x,y,z] } (z = 0 — the sketch lies on the machine XY plane), or null when
+ * there is nothing to frame. The lone origin point is ignored so an empty sketch
+ * returns null (callers fall back to their default framing); every other point,
+ * whole circle, and arc sweep is included. Used to fit the camera to the sketch.
+ */
+export function sketchBounds(sk) {
+  let minx = Infinity;
+  let miny = Infinity;
+  let maxx = -Infinity;
+  let maxy = -Infinity;
+  let has = false;
+  const acc = (px, py) => {
+    if (px < minx) minx = px;
+    if (py < miny) miny = py;
+    if (px > maxx) maxx = px;
+    if (py > maxy) maxy = py;
+    has = true;
+  };
+  for (const e of sk.entities.values()) {
+    if (e.type === 'point') {
+      if (e.origin) continue; // origin alone shouldn't define the frame
+      acc(e.x, e.y);
+    } else if (e.type === 'circle') {
+      const c = sk.entities.get(e.center);
+      if (c) { acc(c.x - e.r, c.y - e.r); acc(c.x + e.r, c.y + e.r); }
+    } else if (e.type === 'arc') {
+      const c = sk.entities.get(e.center);
+      const s = sk.entities.get(e.start);
+      const en = sk.entities.get(e.end);
+      if (!c || !s || !en) continue;
+      acc(s.x, s.y);
+      acc(en.x, en.y);
+      const a0 = normAngle(Math.atan2(s.y - c.y, s.x - c.x));
+      const sp = normAngle(normAngle(Math.atan2(en.y - c.y, en.x - c.x)) - a0) || TAU;
+      // Add each axis extreme (0/90/180/270°) that the sweep actually passes.
+      for (const ext of [0, Math.PI / 2, Math.PI, 3 * Math.PI / 2]) {
+        if (normAngle(ext - a0) <= sp) acc(c.x + e.r * Math.cos(ext), c.y + e.r * Math.sin(ext));
+      }
+    }
+  }
+  if (!has) return null;
+  return { min: [minx, miny, 0], max: [maxx, maxy, 0] };
+}
+
+/**
+ * Nearest point on a circle or arc **rim** within `tol` of (x, y), or null. The
+ * returned { id, type, x, y } gives the entity and the projected rim coordinate,
+ * so a draw click can drop its point exactly on the ring (and be tied there with
+ * a point-on-circle/arc constraint). Existing vertices take priority over this —
+ * callers try `hitTestPoint` first.
+ */
+export function nearestRimPoint(sk, x, y, tol = 1e-6) {
+  let best = null;
+  let bestErr = tol;
+  for (const e of sk.entities.values()) {
+    if (e.type !== 'circle' && e.type !== 'arc') continue;
+    const c = sk.entities.get(e.center);
+    if (!c) continue;
+    const d = Math.hypot(x - c.x, y - c.y);
+    if (d < 1e-9) continue;
+    const err = Math.abs(d - e.r);
+    if (err > bestErr) continue;
+    const px = c.x + ((x - c.x) / d) * e.r;
+    const py = c.y + ((y - c.y) / d) * e.r;
+    if (e.type === 'arc' && !arcSpanContains(sk, e, px, py)) continue;
+    bestErr = err;
+    best = { id: e.id, type: e.type, x: px, y: py };
+  }
+  return best;
 }

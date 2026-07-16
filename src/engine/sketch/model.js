@@ -54,10 +54,18 @@ export const CONSTRAINT_KINDS = {
   parallel: { refTypes: ['line', 'line'], value: false, dof: 1 },
   perpendicular: { refTypes: ['line', 'line'], value: false, dof: 1 },
   pointOnLine: { refTypes: ['point', 'line'], value: false, dof: 1 },
+  pointOnCircle: { refTypes: ['point', 'circle'], value: false, dof: 1 },
+  pointOnArc: { refTypes: ['point', 'arc'], value: false, dof: 1 },
   distance: { refTypes: ['point', 'point'], value: true, dof: 1 },
   pointLineDistance: { refTypes: ['point', 'line'], value: true, dof: 1 },
   radius: { refTypes: ['circle'], value: true, dof: 1 },
   equalLength: { refTypes: ['line', 'line'], value: false, dof: 1 },
+  // Angle between two lines (value in radians — the model's angle unit; the UI
+  // dimensions it in degrees and converts).
+  angle: { refTypes: ['line', 'line'], value: true, dof: 1 },
+  // Tangency of a line to a circle / arc (line stays touching the rim).
+  tangent: { refTypes: ['line', 'circle'], value: false, dof: 1 },
+  tangentArc: { refTypes: ['line', 'arc'], value: false, dof: 1 },
 };
 
 /** Create an empty sketch document. */

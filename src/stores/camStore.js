@@ -44,7 +44,11 @@ export const useCamStore = create((set, get) => ({
   error: null,
 
   // ---- Machine ----
-  mode: 'mill',        // mill | turn
+  mode: 'mill',        // mill | turn — machine interpretation of the program
+  // Top-level workspace tab. Milling / Turning map 1:1 to the machine `mode`;
+  // Sketch is a standalone design page that leaves the loaded program (and its
+  // machine mode) untouched — it just swaps the viewport UI to the sketcher.
+  page: 'mill',        // mill | turn | sketch
   diameterMode: true,  // turn only: the X word is a diameter
   rapidRate: 5000,     // mm/min — times G0 moves for the cycle-time estimate
 
@@ -95,6 +99,23 @@ export const useCamStore = create((set, get) => ({
   setViewPreset: (view) => set((s) => ({ view, viewNonce: s.viewNonce + 1 })),
 
   /**
+   * Switch the top-level workspace tab. Milling / Turning are machine modes and
+   * re-interpret the program (delegated to setMode); Sketch is a standalone
+   * design page that leaves the loaded program and its machine mode as they were.
+   */
+  async setPage(page) {
+    if (page === get().page) return;
+    if (page === 'sketch') {
+      set({ page: 'sketch', playing: false });
+      return;
+    }
+    // Milling / Turning: the tab *is* the machine mode. setMode re-parses when it
+    // actually changes and is a no-op when the mode already matches.
+    set({ page });
+    await get().setMode(page);
+  },
+
+  /**
    * Switch between milling and turning. The two modes disagree about what the
    * X word and G98/G99 mean, so the program has to be re-interpreted. Turning
    * has no dexel simulation, so any carved stock is dropped.
@@ -104,6 +125,7 @@ export const useCamStore = create((set, get) => ({
     setBuffers({ sim: null });
     set({
       mode,
+      page: mode, // Milling / Turning tabs mirror the machine mode
       bufVer: get().bufVer + 1, // drop the stale carved stock from the viewport
       // Lathe: the Front preset is remapped (in CameraRig) to the correct lathe
       // side view — +Z (face) right, −Z (chuck) left, X up — so default to it.

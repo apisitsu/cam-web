@@ -1,7 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import { useSketchStore } from './sketchStore.js';
 import {
-  createSketch, addPoint, addLine,
+  createSketch, addPoint, addLine, addCircle,
 } from '../engine/sketch/model.js';
 
 const near = (a, b, eps = 1e-6) => Math.abs(a - b) <= eps;
@@ -75,6 +75,41 @@ describe('resolveDimension — dimensioning to the origin', () => {
     expect(spec.kind).toBe('pointLineDistance');
     expect(spec.refs).toEqual([origin, line]);
     expect(near(spec.current, 5)).toBe(true);
+  });
+});
+
+describe('line guides — angle lock & tangent snap (hover)', () => {
+  it('locks the rubber-band to the nearest 45° axis when close, and reports the angle', () => {
+    const sk = createSketch();
+    const anchor = addPoint(sk, 0, 0);
+    useSketchStore.setState({ sk, tool: 'line', pending: anchor, snap: null, axisSnap: null });
+    // Cursor at ~87° — within 5° of the vertical axis → lock to 90°.
+    useSketchStore.getState().hover(0.5, 9.9);
+    const s1 = useSketchStore.getState();
+    expect(s1.axisSnap).not.toBeNull();
+    expect(s1.axisSnap.deg).toBe(90);
+    expect(near(s1.axisSnap.x, 0)).toBe(true); // snapped onto the vertical axis
+    expect(near(s1.lineAngle, 90)).toBe(true);
+    // Cursor at 30° — far from any 45° axis → no lock, raw angle reported.
+    useSketchStore.getState().hover(10, 5.77);
+    const s2 = useSketchStore.getState();
+    expect(s2.axisSnap).toBeNull();
+    expect(near(s2.lineAngle, 30, 0.2)).toBe(true);
+  });
+
+  it('offers a tangent snap when the line approaches a circle rim', () => {
+    const sk = createSketch();
+    const anchor = addPoint(sk, 30, 0); // external anchor
+    const c = addPoint(sk, 0, 0);
+    const circle = addCircle(sk, c, 10);
+    useSketchStore.setState({ sk, tool: 'line', pending: anchor, snap: null, axisSnap: null });
+    // Hover near the upper-right rim → tangent target, not a plain rim landing.
+    useSketchStore.getState().hover(7, 7.4);
+    const { snap } = useSketchStore.getState();
+    expect(snap).not.toBeNull();
+    expect(snap.tangent).toBe(true);
+    expect(snap.tangentOf).toBe(circle);
+    expect(near(Math.hypot(snap.x, snap.y), 10, 1e-6)).toBe(true); // lies on the rim
   });
 });
 

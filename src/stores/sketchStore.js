@@ -19,13 +19,15 @@ import {
 } from '../engine/sketch/model.js';
 import {
   getOrCreatePoint, hitTestPoint, hitTestLine, hitTestCircle, hitTestArc,
-  deleteEntity, removeConstraint, chamfer as chamferEdit, trimLine, trimCircle, trimArc,
-  distancePointToLine, farEndpointFromLine, nearestRimPoint,
+  deleteEntity, removeConstraint, chamfer as chamferEdit, fillet as filletEdit,
+  trimLine, trimCircle, trimArc,
+  distancePointToLine, farEndpointFromLine, nearestRimPoint, nearestTangent,
 } from '../engine/sketch/edit.js';
 
 const DEG = Math.PI / 180;
 
 const SNAP = 1.5; // mm — click snap / pick tolerance
+const ANGLE_SNAP_DEG = 5; // ° — lock the line rubber-band to the nearest 45° axis within this
 const HISTORY = 50; // max undo depth
 
 let sketchApi = null;
@@ -78,7 +80,10 @@ export const useSketchStore = create((set, get) => ({
   pending: null, // first click while drawing (line/rect/circle centre, arc centre)
   pending2: null, // second click for a 3-click tool — the arc's start point
   cursor: null, // { x, y } live pointer on the plane — drives rubber-band preview
-  snap: null, // { x, y, id } existing point the cursor is snapping to, or null
+  snap: null, // positional snap target: { x, y, id? (vertex) | onCurve+curveType (rim) | tangent+tangentOf+curveType }
+  axisSnap: null, // { x, y, deg } line-tool angle lock to the nearest 45° axis, or null
+  lineAngle: null, // ° the line rubber-band currently points at (readout while drawing a line)
+  chamferKind: 'C', // 'C' straight chamfer | 'R' rounded fillet — which the Chamfer tool applies
   hoverId: null, // entity id a click would pick right now — drives the pre-select highlight
   selection: [], // selected entity ids — points, lines, circles, and/or arcs (mixed)
   dimensionPending: null, // { kind, refs, label, current } set on a dimension-mode empty-click → shows the inline value input
@@ -106,7 +111,7 @@ export const useSketchStore = create((set, get) => ({
       sk: deserialize(past[past.length - 1]),
       past: past.slice(0, -1),
       future: future.concat([serialize(sk)]),
-      selection: [], pending: null, pending2: null, error: null,
+      selection: [], pending: null, pending2: null, snap: null, axisSnap: null, lineAngle: null, error: null,
     });
     get()._bump();
   },
@@ -118,13 +123,18 @@ export const useSketchStore = create((set, get) => ({
       sk: deserialize(future[future.length - 1]),
       future: future.slice(0, -1),
       past: past.concat([serialize(sk)]),
-      selection: [], pending: null, pending2: null, error: null,
+      selection: [], pending: null, pending2: null, snap: null, axisSnap: null, lineAngle: null, error: null,
     });
     get()._bump();
   },
 
   setTool(tool) {
-    set({ tool, pending: null, pending2: null, cursor: null, snap: null, hoverId: null, error: null, dimensionPending: null });
+    set({ tool, pending: null, pending2: null, cursor: null, snap: null, axisSnap: null, lineAngle: null, hoverId: null, error: null, dimensionPending: null });
+  },
+
+  /** Pick whether the Chamfer tool cuts a straight chamfer ('C') or rounds ('R'). */
+  setChamferKind(chamferKind) {
+    set({ chamferKind });
   },
 
   /**
@@ -137,22 +147,51 @@ export const useSketchStore = create((set, get) => ({
    *    ("lock") the target **before** you click it.
    */
   hover(x, y) {
-    const { sk } = get();
+    const { sk, tool, pending } = get();
+    // While drawing a line, the pending point is the anchor the rubber-band (and
+    // the tangent / angle guides) are measured from.
+    const anchor = tool === 'line' && pending != null ? sk.entities.get(pending) : null;
+
     const pid = hitTestPoint(sk, x, y, SNAP);
     const p = pid != null ? sk.entities.get(pid) : null;
-    // Snap target: an existing vertex first; otherwise the nearest circle/arc rim
-    // point, so a draw click can latch onto (and stay tangent-connectable with)
-    // the ring. `id` is set only for a real vertex; a rim snap carries `onCurve`.
+    // Snap target priority: an existing vertex first; then (line only) the point
+    // where the line from the anchor would touch a nearby ring **tangentially**;
+    // then the nearest circle/arc rim point. `id` marks a real vertex, `tangent`
+    // a tangent target, `onCurve` a plain rim landing.
     let snap = p ? { x: p.x, y: p.y, id: pid } : null;
+    if (!snap && anchor) {
+      const tan = nearestTangent(sk, anchor.x, anchor.y, x, y, SNAP);
+      if (tan) snap = { x: tan.x, y: tan.y, tangent: true, tangentOf: tan.id, curveType: tan.type };
+    }
     if (!snap) {
       const rim = nearestRimPoint(sk, x, y, SNAP);
       if (rim) snap = { x: rim.x, y: rim.y, onCurve: rim.id, curveType: rim.type };
     }
+
+    // Angle guide (line only): report the current rubber-band angle, and — when no
+    // positional snap already owns the endpoint — lock it to the nearest standard
+    // 45° axis (0/45/90/…/315) once it's within ANGLE_SNAP_DEG.
+    let axisSnap = null;
+    let lineAngle = null;
+    if (anchor) {
+      let deg = ((Math.atan2(y - anchor.y, x - anchor.x) / DEG) % 360 + 360) % 360;
+      if (!snap) {
+        const step = ((Math.round(deg / 45) * 45) % 360 + 360) % 360;
+        if (Math.abs(deg - Math.round(deg / 45) * 45) <= ANGLE_SNAP_DEG) {
+          const lockRad = step * DEG;
+          const len = Math.hypot(x - anchor.x, y - anchor.y);
+          axisSnap = { x: anchor.x + Math.cos(lockRad) * len, y: anchor.y + Math.sin(lockRad) * len, deg: step };
+          deg = step;
+        }
+      }
+      lineAngle = deg;
+    }
+
     let hoverId = pid;
     if (hoverId == null) hoverId = hitTestLine(sk, x, y, SNAP);
     if (hoverId == null) hoverId = hitTestCircle(sk, x, y, SNAP);
     if (hoverId == null) hoverId = hitTestArc(sk, x, y, SNAP);
-    set({ cursor: { x, y }, snap, hoverId });
+    set({ cursor: { x, y }, snap, axisSnap, lineAngle, hoverId });
   },
 
   /**
@@ -179,12 +218,14 @@ export const useSketchStore = create((set, get) => ({
 
   /** Clear all hover state (pointer left the plane). */
   clearHover() {
-    set({ cursor: null, snap: null, hoverId: null });
+    set({ cursor: null, snap: null, axisSnap: null, lineAngle: null, hoverId: null });
   },
 
   /** Escape: drop the in-progress draw (line/rectangle/circle/arc) without committing it. */
   cancelPending() {
-    if (get().pending != null || get().pending2 != null) set({ pending: null, pending2: null });
+    if (get().pending != null || get().pending2 != null) {
+      set({ pending: null, pending2: null, axisSnap: null, lineAngle: null });
+    }
   },
 
   /**
@@ -207,17 +248,42 @@ export const useSketchStore = create((set, get) => ({
       get()._pointAt(x, y);
       get()._bump();
     } else if (tool === 'line') {
-      const { pending } = get();
+      const { pending, snap, axisSnap } = get();
       if (pending == null) {
-        set({ pending: get()._pointAt(x, y) });
+        set({ pending: get()._pointAt(x, y), axisSnap: null, lineAngle: null });
       } else {
-        const p = get()._pointAt(x, y);
+        // Resolve the endpoint from the active snap so the click lands exactly where
+        // the guides showed: tangent → point on the ring + a tangency constraint;
+        // vertex → reuse it; rim → point on the ring; axis lock → the locked point;
+        // otherwise the plain click (with its own vertex/rim snapping).
+        let p;
+        let tangentKind = null;
+        if (snap?.tangent) {
+          p = addPoint(sk, snap.x, snap.y);
+          const onKind = snap.curveType === 'arc' ? 'pointOnArc' : 'pointOnCircle';
+          try { addConstraint(sk, onKind, [p, snap.tangentOf]); } catch { /* leave endpoint free */ }
+          tangentKind = { kind: snap.curveType === 'arc' ? 'tangentArc' : 'tangent', curve: snap.tangentOf };
+        } else if (snap?.id != null) {
+          p = snap.id;
+        } else if (snap?.onCurve != null) {
+          p = addPoint(sk, snap.x, snap.y);
+          const onKind = snap.curveType === 'arc' ? 'pointOnArc' : 'pointOnCircle';
+          try { addConstraint(sk, onKind, [p, snap.onCurve]); } catch { /* leave endpoint free */ }
+        } else if (axisSnap) {
+          p = addPoint(sk, axisSnap.x, axisSnap.y);
+        } else {
+          p = get()._pointAt(x, y);
+        }
         if (p !== pending) {
           get()._snapshot();
-          addLine(sk, pending, p);
+          const line = addLine(sk, pending, p);
+          if (tangentKind) {
+            try { addConstraint(sk, tangentKind.kind, [line, tangentKind.curve]); } catch { /* skip if redundant */ }
+          }
         }
-        set({ pending: null });
+        set({ pending: null, snap: null, axisSnap: null, lineAngle: null });
         get()._bump();
+        if (tangentKind) get().solve();
       }
     } else if (tool === 'circle') {
       // Circle tool: first click sets the centre (held in `pending`, same as the
@@ -537,6 +603,26 @@ export const useSketchStore = create((set, get) => ({
     if (res == null) {
       get()._undoSnapshot();
       set({ error: 'Lines must share a corner and the distance must fit' });
+      return;
+    }
+    set({ selection: [], error: null });
+    get()._bump();
+    get().solve();
+  },
+
+  /** Round the corner between the two selected lines with a tangent arc of `radius`. */
+  fillet(radius) {
+    const { sk, selection } = get();
+    const lines = selection.filter((id) => sk.entities.get(id)?.type === 'line');
+    if (lines.length !== 2) {
+      set({ error: 'Fillet needs exactly 2 lines' });
+      return;
+    }
+    get()._snapshot();
+    const res = filletEdit(sk, lines[0], lines[1], radius);
+    if (res == null) {
+      get()._undoSnapshot();
+      set({ error: 'Lines must share a corner and the radius must fit' });
       return;
     }
     set({ selection: [], error: null });

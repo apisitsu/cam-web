@@ -7,16 +7,44 @@
  * coordinates — no manual raycasting. All geometry/selection logic lives in the
  * Node-tested store/edit layer; this component is just render + event wiring.
  */
-import { useMemo, useEffect } from 'react';
+import { useMemo, useEffect, useRef } from 'react';
 import { Line, Html } from '@react-three/drei';
-import { invalidate } from '@react-three/fiber';
+import { invalidate, useFrame } from '@react-three/fiber';
 import * as THREE from 'three';
 import { useSketchStore } from '../stores/sketchStore.js';
 
 const noRaycast = () => null;
-const Z = 0.05; // lift a hair above the grid to avoid z-fighting
+const Z = 0.05; // lift a hair above the Z=0 pick plane to avoid z-fighting
 const PREVIEW = '#f59e0b'; // amber rubber-band while drawing
-const SNAP_COLOR = '#f0abfc'; // magenta snap indicator
+const SNAP_COLOR = '#f0abfc'; // magenta snap indicator (vertex / rim)
+const TANGENT_COLOR = '#34d399'; // green — tangent snap indicator
+const AXIS_COLOR = '#22d3ee'; // cyan — angle-lock guide axis
+
+// Unit circle in the XY plane (local coords), for the screen-scaled snap ring.
+const UNIT_RING = (() => {
+  const a = [];
+  for (let i = 0; i <= 32; i++) { const t = (i / 32) * Math.PI * 2; a.push([Math.cos(t), Math.sin(t), 0]); }
+  return a;
+})();
+
+/**
+ * A ring drawn at a **constant pixel size** regardless of zoom. The snap
+ * indicator used to be a fixed 1.6 mm circle, which shrank to invisibility when
+ * zoomed far out; here the group is rescaled every frame to `pixels / zoom` world
+ * units so the ring always reads the same on screen. (Demand-mode canvas → this
+ * only runs on real redraws, e.g. while zooming or hovering.)
+ */
+function ScreenRing({ x, y, color, pixels = 10 }) {
+  const ref = useRef();
+  useFrame(({ camera }) => {
+    if (ref.current) ref.current.scale.setScalar(pixels / (camera.zoom || 1));
+  });
+  return (
+    <group ref={ref} position={[x, y, Z]}>
+      <Line points={UNIT_RING} color={color} lineWidth={1.5} raycast={noRaycast} />
+    </group>
+  );
+}
 const HOVER = '#fbbf24'; // amber pre-select highlight (the entity a click will pick)
 const SELECTED = '#f43f5e'; // red selected highlight
 const GEOM = '#38bdf8'; // default geometry colour
@@ -46,14 +74,28 @@ const dimLabelStyle = {
   whiteSpace: 'nowrap', userSelect: 'none', pointerEvents: 'none',
 };
 
+/** Live angle/length readout shown at the line rubber-band's tip while drawing. */
+const angleReadoutStyle = (locked) => ({
+  color: locked ? '#0f172a' : '#e2e8f0',
+  background: locked ? AXIS_COLOR : 'rgba(15,23,42,0.9)',
+  border: `1px solid ${locked ? AXIS_COLOR : '#475569'}`,
+  borderRadius: 4, font: '600 11px monospace', padding: '1px 5px',
+  whiteSpace: 'nowrap', userSelect: 'none', pointerEvents: 'none',
+  transform: 'translate(12px, -18px)',
+});
+
 /**
  * On-canvas annotations for every *dimensional* constraint (one carrying a value)
- * so it's visible which lines / distances are already sized: distances draw a
- * parallel dimension line with witness lines + value; radius / angle / lockX /
- * lockY / point-line show a value tag on the geometry. Non-dimensional
- * constraints (horizontal, coincident, …) are not drawn here — they remove DOF
- * but aren't "sizes". Purely visual: labels use `pointerEvents:none` and the
- * lines opt out of raycasting, so picking is unaffected.
+ * so it's visible which lines / distances are already sized:
+ *   - distance          → parallel dimension line + witness lines + value;
+ *   - pointLineDistance → the perpendicular dimension line (point → foot on the
+ *     line), which is what a 2-line/parallel gap, point↔line and line↔centre use;
+ *   - angle             → an arc swept between the two legs + the degree value;
+ *   - radius / lockX / lockY → a value tag on the geometry.
+ * Non-dimensional constraints (horizontal, coincident, …) are not drawn here —
+ * they remove DOF but aren't "sizes". Purely visual: labels use
+ * `pointerEvents:none` and the lines opt out of raycasting, so picking is
+ * unaffected.
  */
 function DimensionAnnotations({ sk, version }) {
   const { segs, labels } = useMemo(() => {
@@ -80,22 +122,61 @@ function DimensionAnnotations({ sk, version }) {
         ls.push({ key: `s${k++}`, pts: [a2, b2] }); // dimension line
         bs.push({ key: `b${k++}`, pos: [(a2[0] + b2[0]) / 2, (a2[1] + b2[1]) / 2, Z], text: fmtDim(c.value) });
       } else if (c.kind === 'pointLineDistance') {
+        // Perpendicular distance from a point to a line — this is what a 2-line
+        // (parallel) dimension, a point↔line, and a line↔circle-centre resolve to.
+        // Draw the dimension line as the actual perpendicular (point → its foot on
+        // the line), extending a witness along the line when the foot lands past
+        // the drawn segment (the common parallel-gap case).
         const p = P(c.refs[0]);
-        if (!p) return;
-        bs.push({ key: `b${k++}`, pos: [p.x + 1.6, p.y + 1.6, Z], text: fmtDim(c.value) });
+        const l = P(c.refs[1]);
+        const a = l && P(l.p1);
+        const b = l && P(l.p2);
+        if (!p || !a || !b) return;
+        const abx = b.x - a.x;
+        const aby = b.y - a.y;
+        const len2 = abx * abx + aby * aby || 1;
+        const t = ((p.x - a.x) * abx + (p.y - a.y) * aby) / len2;
+        const fx = a.x + abx * t;
+        const fy = a.y + aby * t;
+        ls.push({ key: `s${k++}`, pts: [[p.x, p.y, Z], [fx, fy, Z]] }); // dimension line
+        if (t < 0 || t > 1) {
+          const near = t < 0 ? a : b; // witness: extend the line to reach the foot
+          ls.push({ key: `s${k++}`, pts: [[near.x, near.y, Z], [fx, fy, Z]] });
+        }
+        bs.push({ key: `b${k++}`, pos: [(p.x + fx) / 2, (p.y + fy) / 2, Z], text: fmtDim(c.value) });
       } else if (c.kind === 'radius') {
         const circ = P(c.refs[0]);
         const ctr = circ && P(circ.center);
         if (!ctr) return;
         bs.push({ key: `b${k++}`, pos: [ctr.x + circ.r * 0.7, ctr.y + circ.r * 0.7, Z], text: `R${fmtDim(c.value)}` });
       } else if (c.kind === 'angle') {
+        // Draw an angle arc between the two legs around their shared vertex, so a
+        // 2-line angle dimension reads like a real angle, not a bare number.
         const l1 = P(c.refs[0]);
         const l2 = P(c.refs[1]);
         if (!l1 || !l2) return;
-        const shared = [l1.p1, l1.p2].find((id) => id === l2.p1 || id === l2.p2);
-        const anchor = P(shared != null ? shared : l1.p1);
-        if (!anchor) return;
-        bs.push({ key: `b${k++}`, pos: [anchor.x + 2, anchor.y + 2, Z], text: `${fmtDim((c.value * 180) / Math.PI)}°` });
+        const sharedId = [l1.p1, l1.p2].find((id) => id === l2.p1 || id === l2.p2);
+        const vId = sharedId != null ? sharedId : l1.p1;
+        const v = P(vId);
+        const f1 = P(l1.p1 === vId ? l1.p2 : l1.p1);
+        const f2 = P(l2.p1 === vId ? l2.p2 : l2.p1);
+        if (!v || !f1 || !f2) return;
+        const a1 = Math.atan2(f1.y - v.y, f1.x - v.x);
+        const a2 = Math.atan2(f2.y - v.y, f2.x - v.x);
+        const legMin = Math.min(Math.hypot(f1.x - v.x, f1.y - v.y), Math.hypot(f2.x - v.x, f2.y - v.y));
+        const r = Math.max(3, Math.min(legMin * 0.4, 14));
+        let d = a2 - a1; // sweep the shorter way between the legs
+        while (d > Math.PI) d -= TWO_PI;
+        while (d < -Math.PI) d += TWO_PI;
+        const N = 24;
+        const pts = [];
+        for (let i = 0; i <= N; i++) {
+          const a = a1 + (d * i) / N;
+          pts.push([v.x + r * Math.cos(a), v.y + r * Math.sin(a), Z]);
+        }
+        ls.push({ key: `s${k++}`, pts });
+        const mid = a1 + d / 2;
+        bs.push({ key: `b${k++}`, pos: [v.x + (r + 2) * Math.cos(mid), v.y + (r + 2) * Math.sin(mid), Z], text: `${fmtDim((c.value * 180) / Math.PI)}°` });
       } else if (c.kind === 'lockX' || c.kind === 'lockY') {
         const p = P(c.refs[0]);
         if (!p) return;
@@ -129,6 +210,8 @@ export default function SketchLayer() {
   const pending = useSketchStore((s) => s.pending);
   const cursor = useSketchStore((s) => s.cursor);
   const snap = useSketchStore((s) => s.snap);
+  const axisSnap = useSketchStore((s) => s.axisSnap);
+  const lineAngle = useSketchStore((s) => s.lineAngle);
   const pending2 = useSketchStore((s) => s.pending2);
   const hoverId = useSketchStore((s) => s.hoverId);
   const dimensionPending = useSketchStore((s) => s.dimensionPending);
@@ -175,7 +258,7 @@ export default function SketchLayer() {
   // Redraw on geometry change and on every pointer move (rubber-band + hover).
   useEffect(() => {
     invalidate();
-  }, [version, cursor, snap, hoverId]);
+  }, [version, cursor, snap, axisSnap, lineAngle, hoverId]);
 
   // Keyboard: Esc cancels a pending draw, Delete removes the selection,
   // Ctrl/Cmd+Z undoes and Ctrl/Cmd+Y (or Shift+Z) redoes. Ignore while typing.
@@ -213,9 +296,10 @@ export default function SketchLayer() {
   const angleBase = dimensionPending?.angular ? dimensionPending.refs[0] : null;
   const angleRotate = dimensionPending?.angular ? dimensionPending.refs[1] : null;
 
-  // The live cursor, snapped to a nearby existing point when there is one — so the
-  // rubber-band lands exactly where the click will (getOrCreatePoint snaps too).
-  const tip = snap ?? cursor;
+  // The live drawing endpoint: a positional snap (vertex / rim / tangent) wins,
+  // then the angle-lock axis point, else the raw cursor — matching exactly where
+  // the click will land (clickAt resolves the same order).
+  const tip = snap ?? axisSnap ?? cursor;
 
   // Rubber-band preview from the pending point(s) to the live (snapped) cursor.
   const anchor = pending != null ? sk.entities.get(pending) : null;
@@ -292,16 +376,56 @@ export default function SketchLayer() {
         <Line points={preview} color={PREVIEW} lineWidth={1.5} dashed dashSize={0.8} gapSize={0.5} raycast={noRaycast} />
       )}
 
-      {/* Snap indicator: a magenta ring on the existing point the cursor will
-          snap to — while drawing (connect to a shared corner) and while picking
-          (lock onto the point a click will select). */}
+      {/* Angle-lock guide: a cyan axis through the anchor along the locked
+          standard direction, so it's obvious the line snapped to 0/45/90/…°. */}
+      {tool === 'line' && anchor && axisSnap && (() => {
+        const a = axisSnap.deg * (Math.PI / 180);
+        const L = Math.max(Math.hypot(tip.x - anchor.x, tip.y - anchor.y) * 1.5, 12);
+        return (
+          <Line
+            points={[
+              [anchor.x - Math.cos(a) * L, anchor.y - Math.sin(a) * L, Z],
+              [anchor.x + Math.cos(a) * L, anchor.y + Math.sin(a) * L, Z],
+            ]}
+            color={AXIS_COLOR}
+            lineWidth={1}
+            dashed
+            dashSize={1.2}
+            gapSize={0.8}
+            transparent
+            opacity={0.7}
+            raycast={noRaycast}
+          />
+        );
+      })()}
+
+      {/* Live angle / length readout at the tip while drawing a line. */}
+      {tool === 'line' && anchor && tip && lineAngle != null && (
+        <Html position={[tip.x, tip.y, Z]} zIndexRange={[3, 0]}>
+          <div style={angleReadoutStyle(!!axisSnap)}>
+            {lineAngle.toFixed(1)}° · {Math.hypot(tip.x - anchor.x, tip.y - anchor.y).toFixed(1)} mm
+          </div>
+        </Html>
+      )}
+
+      {/* Snap indicator: a constant-screen-size ring on the point a click will
+          snap to. Magenta for a vertex / rim landing; green for a tangent target
+          (drawing a line), with a small "Tangent" tag so it's unmistakable. */}
       {(drawing || picking) && snap && (
-        <Line
-          points={arcRing(snap.x, snap.y, 1.6, 0, TWO_PI, 24)}
-          color={SNAP_COLOR}
-          lineWidth={1.5}
-          raycast={noRaycast}
-        />
+        <>
+          <ScreenRing x={snap.x} y={snap.y} color={snap.tangent ? TANGENT_COLOR : SNAP_COLOR} />
+          {snap.tangent && (
+            <Html position={[snap.x, snap.y, Z]} zIndexRange={[3, 0]}>
+              <div style={{
+                color: '#0f172a', background: TANGENT_COLOR, borderRadius: 4,
+                font: '600 10px monospace', padding: '0 4px', whiteSpace: 'nowrap',
+                userSelect: 'none', pointerEvents: 'none', transform: 'translate(10px, 6px)',
+              }}>
+                Tangent
+              </div>
+            </Html>
+          )}
+        </>
       )}
 
       {lines.map((l) => {

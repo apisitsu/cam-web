@@ -219,6 +219,64 @@ export function chamfer(sk, l1Id, l2Id, dist) {
 }
 
 /**
+ * Fillet (round) the corner where two lines meet: like `chamfer`, but joins the
+ * two setback points with a **tangent arc of radius `radius`** instead of a
+ * straight cut. The arc is tangent to both legs — its centre sits on the corner's
+ * angle bisector at `radius / sin(θ/2)` and the tangent points are `radius /
+ * tan(θ/2)` back from the corner along each leg (θ = the corner angle). Returns
+ * the new arc id, or null if the lines don't share a corner, are collinear, or
+ * the radius doesn't fit on either leg. Start/end are ordered so planegcs' CCW
+ * sweep traces the minor (rounded-corner) arc.
+ */
+export function fillet(sk, l1Id, l2Id, radius) {
+  const l1 = sk.entities.get(l1Id);
+  const l2 = sk.entities.get(l2Id);
+  if (!l1 || l1.type !== 'line' || !l2 || l2.type !== 'line') return null;
+  if (!(radius > 0)) return null;
+  const shared = [l1.p1, l1.p2].find((id) => id === l2.p1 || id === l2.p2);
+  if (shared == null) return null;
+  const P = sk.entities.get(shared);
+  const far1 = sk.entities.get(l1.p1 === shared ? l1.p2 : l1.p1);
+  const far2 = sk.entities.get(l2.p1 === shared ? l2.p2 : l2.p1);
+  const u1 = unit(P, far1);
+  const u2 = unit(P, far2);
+  let cos = u1.x * u2.x + u1.y * u2.y;
+  cos = Math.max(-1, Math.min(1, cos));
+  const alpha = Math.acos(cos); // corner angle at P
+  if (alpha < 1e-4 || alpha > Math.PI - 1e-4) return null; // collinear → no fillet
+  const half = alpha / 2;
+  const setback = radius / Math.tan(half); // tangent-point distance from P along each leg
+  // The rounding must fit within both legs.
+  if (setback >= Math.hypot(far1.x - P.x, far1.y - P.y)) return null;
+  if (setback >= Math.hypot(far2.x - P.x, far2.y - P.y)) return null;
+  const t1x = P.x + u1.x * setback;
+  const t1y = P.y + u1.y * setback;
+  const t2x = P.x + u2.x * setback;
+  const t2y = P.y + u2.y * setback;
+  // Arc centre along the bisector, distance radius/sin(half) from the corner.
+  let bx = u1.x + u2.x;
+  let by = u1.y + u2.y;
+  const bl = Math.hypot(bx, by) || 1;
+  bx /= bl; by /= bl;
+  const cDist = radius / Math.sin(half);
+  const cx = P.x + bx * cDist;
+  const cy = P.y + by * cDist;
+  const c1 = addPoint(sk, t1x, t1y);
+  const c2 = addPoint(sk, t2x, t2y);
+  const center = addPoint(sk, cx, cy);
+  // Re-point the legs off the old corner onto the tangent points.
+  if (l1.p1 === shared) l1.p1 = c1; else l1.p2 = c1;
+  if (l2.p1 === shared) l2.p1 = c2; else l2.p2 = c2;
+  // Order start/end so the CCW sweep is the minor arc (the rounded corner).
+  const a1 = normAngle(Math.atan2(t1y - cy, t1x - cx));
+  const a2 = normAngle(Math.atan2(t2y - cy, t2x - cx));
+  const [start, end] = normAngle(a2 - a1) <= Math.PI ? [c1, c2] : [c2, c1];
+  const arc = addArc(sk, center, start, end, radius);
+  deleteEntity(sk, shared);
+  return arc;
+}
+
+/**
  * Perpendicular distance from a point entity to a line entity's infinite line,
  * or null if either id is wrong. Used to seed dimension prompts (line↔point,
  * line↔circle-centre) with the current geometric value.
@@ -624,6 +682,61 @@ export function nearestRimPoint(sk, x, y, tol = 1e-6) {
     if (e.type === 'arc' && !arcSpanContains(sk, e, px, py)) continue;
     bestErr = err;
     best = { id: e.id, type: e.type, x: px, y: py };
+  }
+  return best;
+}
+
+/**
+ * The point on circle/arc `curveId`'s rim where a line drawn from the external
+ * point (ax, ay) is **tangent** to the curve — choosing, of the two tangents, the
+ * one nearer the cursor hint (hx, hy). Returns { x, y } or null when (ax, ay) is
+ * inside/on the circle (no external tangent exists) or, for an arc, the tangent
+ * point falls outside the drawn span. Geometry: the tangent points sit at C→A
+ * bearing ± acos(r/d) around the centre, where d = |A − C|.
+ */
+export function tangentPoint(sk, curveId, ax, ay, hx, hy) {
+  const e = sk.entities.get(curveId);
+  if (!e || (e.type !== 'circle' && e.type !== 'arc')) return null;
+  const c = sk.entities.get(e.center);
+  if (!c) return null;
+  const r = e.r;
+  const dx = ax - c.x;
+  const dy = ay - c.y;
+  const d = Math.hypot(dx, dy);
+  if (d <= r + 1e-9) return null; // point inside/on the circle → no tangent
+  const beta = Math.atan2(dy, dx);
+  const gamma = Math.acos(Math.max(-1, Math.min(1, r / d)));
+  const cand = [beta + gamma, beta - gamma]
+    .map((ang) => ({ x: c.x + r * Math.cos(ang), y: c.y + r * Math.sin(ang) }))
+    .sort((p, q) => dist2(p.x, p.y, hx, hy) - dist2(q.x, q.y, hx, hy));
+  for (const p of cand) {
+    if (e.type === 'arc' && !arcSpanContains(sk, e, p.x, p.y)) continue;
+    return { x: p.x, y: p.y };
+  }
+  return null;
+}
+
+/**
+ * Of every circle/arc whose rim passes within `tol` of the cursor (x, y), the
+ * tangent target for a line being drawn from the anchor (ax, ay): { id, type, x,
+ * y } with (x, y) the tangent point, or null. Drives the tangent snap while
+ * drawing a line — hover near a ring and the endpoint suggestion jumps to where
+ * the line would touch it tangentially.
+ */
+export function nearestTangent(sk, ax, ay, x, y, tol = 1e-6) {
+  let best = null;
+  let bestErr = tol;
+  for (const e of sk.entities.values()) {
+    if (e.type !== 'circle' && e.type !== 'arc') continue;
+    const c = sk.entities.get(e.center);
+    if (!c) continue;
+    const err = Math.abs(Math.hypot(x - c.x, y - c.y) - e.r);
+    if (err > bestErr) continue;
+    if (e.type === 'arc' && !arcSpanContains(sk, e, x, y)) continue;
+    const tp = tangentPoint(sk, e.id, ax, ay, x, y);
+    if (!tp) continue;
+    bestErr = err;
+    best = { id: e.id, type: e.type, x: tp.x, y: tp.y };
   }
   return best;
 }

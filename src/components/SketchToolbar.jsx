@@ -8,7 +8,7 @@
  * Drawing itself still happens in the viewport (SketchLayer); this is the toolbar
  * and status readout, wired to the same sketchStore.
  */
-import { Button, Tooltip, Popover, InputNumber, Space, Tag, Typography, Divider } from 'antd';
+import { Button, Tooltip, Popover, InputNumber, Space, Tag, Typography, Divider, Segmented } from 'antd';
 import {
   UndoOutlined, RedoOutlined, DeleteOutlined, ThunderboltOutlined,
   NodeIndexOutlined, EllipsisOutlined, BulbOutlined, ClearOutlined,
@@ -47,13 +47,13 @@ const ChamferIcon = glyph(<path d="M5 20V10L11 4H20" />);
 const TOOLS = [
   { value: 'select', label: 'Select', Icon: SelectIcon, hint: 'Click points, lines, circles or arcs to select' },
   { value: 'point', label: 'Point', Icon: PointIcon, hint: 'Click on the plane to add points' },
-  { value: 'line', label: 'Line', Icon: LineIcon, hint: 'Click to start, click to finish · Esc cancels' },
+  { value: 'line', label: 'Line', Icon: LineIcon, hint: 'Click to start, click to finish · locks to 0/45/90…° and snaps tangent to circles/arcs · Esc cancels' },
   { value: 'rectangle', label: 'Rectangle', Icon: RectIcon, hint: 'Click two opposite corners' },
   { value: 'circle', label: 'Circle', Icon: CircleIcon, hint: 'Click centre, then a point on the rim' },
   { value: 'arc', label: 'Arc', Icon: ArcIcon, hint: 'Click centre, start, then end (sweeps CCW) · Esc cancels' },
   { value: 'dimension', label: 'Dimension', Icon: DimIcon, hint: 'Pick 1 pt (to origin) / 2 pts / 1 line / 1 circle / pt+line / 2 lines (gap or angle) / line+circle / 2 circles — set value, or click empty space to apply' },
   { value: 'trim', label: 'Trim', Icon: TrimIcon, hint: 'Click a line, circle or arc to trim it at its intersections' },
-  { value: 'chamfer', label: 'Chamfer', Icon: ChamferIcon, hint: 'Click the two lines that share a corner, then type the chamfer size' },
+  { value: 'chamfer', label: 'Chamfer / Fillet', Icon: ChamferIcon, hint: 'Click the two lines that share a corner, choose C (chamfer) or R (fillet), then type the size' },
 ];
 
 // Point-selection constraints.
@@ -248,20 +248,28 @@ function DimensionInput() {
 }
 
 /**
- * Inline chamfer size entry — the Chamfer tool's companion, shown once two lines
- * that share a corner are picked. Type a size and Set applies it (typed value
- * only, no spinner). Picking elsewhere clears the selection and hides this.
+ * Inline chamfer/fillet entry — the Chamfer tool's companion, shown once two
+ * lines that share a corner are picked. A C/R toggle chooses a straight **C**hamfer
+ * or a rounded **R** fillet; type a size and Set applies it (typed value only, no
+ * spinner). Picking elsewhere clears the selection and hides this.
  */
 function ChamferInput() {
   const tool = useSketchStore((s) => s.tool);
   const selection = useSketchStore((s) => s.selection);
   const sk = useSketchStore((s) => s.sk);
   const chamfer = useSketchStore((s) => s.chamfer);
+  const fillet = useSketchStore((s) => s.fillet);
+  const chamferKind = useSketchStore((s) => s.chamferKind);
+  const setChamferKind = useSketchStore((s) => s.setChamferKind);
   const [val, setVal] = useState(3);
 
   const lineIds = selection.filter((id) => sk.entities.get(id)?.type === 'line');
   if (tool !== 'chamfer' || lineIds.length !== 2) return null;
-  const apply = () => { if (Number.isFinite(val) && val > 0) chamfer(val); };
+  const rounded = chamferKind === 'R';
+  const apply = () => {
+    if (!(Number.isFinite(val) && val > 0)) return;
+    rounded ? fillet(val) : chamfer(val);
+  };
 
   return (
     <div
@@ -272,7 +280,15 @@ function ChamferInput() {
         padding: '6px 10px', borderRadius: 8,
       }}
     >
-      <Text style={{ color: '#cbd5e1', fontSize: 12 }}>Chamfer</Text>
+      <Text style={{ color: '#cbd5e1', fontSize: 12 }}>{rounded ? 'Fillet' : 'Chamfer'}</Text>
+      <Tooltip title="C = straight chamfer · R = rounded fillet (tangent arc)">
+        <Segmented
+          size="small"
+          value={chamferKind}
+          onChange={setChamferKind}
+          options={[{ label: 'C', value: 'C' }, { label: 'R', value: 'R' }]}
+        />
+      </Tooltip>
       <InputNumber controls={false}
         autoFocus
         size="small"
@@ -280,7 +296,7 @@ function ChamferInput() {
         onChange={(v) => setVal(v ?? 0)}
         onPressEnter={apply}
         style={{ width: 96 }}
-        addonAfter="mm"
+        addonAfter={rounded ? 'R mm' : 'mm'}
       />
       <Button size="small" type="primary" onClick={apply}>Set</Button>
     </div>

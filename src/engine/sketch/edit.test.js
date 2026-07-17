@@ -4,6 +4,7 @@ import {
 } from './model.js';
 import {
   trimCircle, trimArc, sketchBounds, nearestRimPoint, circleIntersections,
+  fillet, tangentPoint, nearestTangent,
 } from './edit.js';
 
 const near = (a, b, eps = 1e-6) => Math.abs(a - b) <= eps;
@@ -112,6 +113,82 @@ describe('sketchBounds', () => {
     const o = addPoint(sk, 0, 0, true);
     sk.entities.get(o).origin = true;
     expect(sketchBounds(sk)).toBeNull();
+  });
+});
+
+describe('fillet', () => {
+  it('rounds a right-angle corner with a tangent arc of the given radius', () => {
+    const sk = createSketch();
+    // Corner at the origin: one leg along +x, one along +y.
+    const corner = addPoint(sk, 0, 0);
+    const ex = addPoint(sk, 20, 0);
+    const ey = addPoint(sk, 0, 20);
+    const l1 = addLine(sk, corner, ex);
+    const l2 = addLine(sk, corner, ey);
+    const arcId = fillet(sk, l1, l2, 5);
+    expect(arcId).not.toBeNull();
+    const arc = sk.entities.get(arcId);
+    expect(near(arc.r, 5)).toBe(true);
+    // 90° corner → tangent points 5 mm out along each leg, centre at (5,5).
+    const c = sk.entities.get(arc.center);
+    expect(near(c.x, 5) && near(c.y, 5)).toBe(true);
+    // The legs now stop at the tangent points, not the old corner.
+    expect(sk.entities.has(corner)).toBe(false);
+    const ends = [sk.entities.get(arc.start), sk.entities.get(arc.end)];
+    const onXleg = ends.find((p) => near(p.y, 0));
+    const onYleg = ends.find((p) => near(p.x, 0));
+    expect(onXleg && near(onXleg.x, 5)).toBe(true);
+    expect(onYleg && near(onYleg.y, 5)).toBe(true);
+  });
+
+  it('refuses a radius that does not fit on the legs, and collinear lines', () => {
+    const sk = createSketch();
+    const corner = addPoint(sk, 0, 0);
+    const l1 = addLine(sk, corner, addPoint(sk, 4, 0));
+    const l2 = addLine(sk, corner, addPoint(sk, 0, 4));
+    expect(fillet(sk, l1, l2, 50)).toBeNull(); // setback exceeds the 4 mm legs
+    // Collinear legs (straight through the corner) → no fillet.
+    const s2 = createSketch();
+    const mid = addPoint(s2, 0, 0);
+    const a = addLine(s2, mid, addPoint(s2, 10, 0));
+    const b = addLine(s2, mid, addPoint(s2, -10, 0));
+    expect(fillet(s2, a, b, 2)).toBeNull();
+  });
+});
+
+describe('tangentPoint / nearestTangent', () => {
+  it('finds the tangent point on a circle from an external anchor', () => {
+    const sk = createSketch();
+    const c = addPoint(sk, 0, 0);
+    addCircle(sk, c, 10);
+    // Anchor on +x at distance 20; tangent points are symmetric about the x-axis.
+    // Pick the upper one via a hint above the axis.
+    const tp = tangentPoint(sk, ofType(sk, 'circle')[0].id, 20, 0, 0, 8);
+    expect(tp).not.toBeNull();
+    // Tangent point lies on the rim and TP ⟂ the radius: |A−C|²=|TP|²+|A−TP|².
+    expect(near(Math.hypot(tp.x, tp.y), 10, 1e-6)).toBe(true);
+    const dot = tp.x * (20 - tp.x) + tp.y * (0 - tp.y); // (C→TP)·(TP→A)
+    expect(near(dot, 0, 1e-6)).toBe(true);
+    expect(tp.y > 0).toBe(true); // chose the upper tangent (hint was above)
+  });
+
+  it('returns null when the anchor is inside the circle', () => {
+    const sk = createSketch();
+    const c = addPoint(sk, 0, 0);
+    addCircle(sk, c, 10);
+    expect(tangentPoint(sk, ofType(sk, 'circle')[0].id, 2, 0, 0, 8)).toBeNull();
+  });
+
+  it('nearestTangent triggers only when the cursor is near the rim', () => {
+    const sk = createSketch();
+    const c = addPoint(sk, 0, 0);
+    addCircle(sk, c, 10);
+    // Cursor near the rim on the upper-right → a tangent from (30,0) is offered.
+    const hit = nearestTangent(sk, 30, 0, 7, 7.5, 2);
+    expect(hit).not.toBeNull();
+    expect(near(Math.hypot(hit.x, hit.y), 10, 1e-6)).toBe(true);
+    // Cursor far from any rim → nothing.
+    expect(nearestTangent(sk, 30, 0, 0, 0, 2)).toBeNull();
   });
 });
 

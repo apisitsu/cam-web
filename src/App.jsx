@@ -39,9 +39,10 @@ const SPEEDS = [
   { label: '4×', value: 4 },
 ];
 
-const MODES = [
+const PAGES = [
   { label: 'Milling', value: 'mill' },
   { label: 'Turning', value: 'turn' },
+  { label: 'Sketch', value: 'sketch' },
 ];
 
 /**
@@ -123,6 +124,7 @@ export default function App() {
   const playing  = useCamStore((s) => s.playing);
   const simStatus = useCamStore((s) => s.simStatus);
   const mode      = useCamStore((s) => s.mode);
+  const page      = useCamStore((s) => s.page);
   const diameterMode = useCamStore((s) => s.diameterMode);
   const rapidRate = useCamStore((s) => s.rapidRate);
   const view      = useCamStore((s) => s.view);
@@ -157,6 +159,7 @@ export default function App() {
   const toggleStock = useCamStore((s) => s.toggleStock);
   const setCutFollows = useCamStore((s) => s.setCutFollows);
   const setMode     = useCamStore((s) => s.setMode);
+  const setPage     = useCamStore((s) => s.setPage);
   const setViewPreset = useCamStore((s) => s.setViewPreset);
   const setRapidRate = useCamStore((s) => s.setRapidRate);
   const setDiameterMode = useCamStore((s) => s.setDiameterMode);
@@ -164,7 +167,8 @@ export default function App() {
 
   const [speed, setSpeed] = useState(1);
   const [dragActive, setDragActive] = useState(false);
-  const turning = mode === 'turn';
+  const sketching = page === 'sketch';
+  const turning = page === 'turn';
 
   // Open on a blank page — no sample program is loaded. The user brings their
   // own via drag-and-drop, Open file, or the (optional) Load sample button.
@@ -340,9 +344,9 @@ export default function App() {
             Engineer CAD/CAM
           </Title>
           <Segmented
-            value={mode}
-            onChange={setMode}
-            options={MODES}
+            value={page}
+            onChange={setPage}
+            options={PAGES}
             disabled={status === 'parsing'}
           />
           {fileName && <Tag color="blue">{fileName}</Tag>}
@@ -352,6 +356,7 @@ export default function App() {
           </Text>
         </Header>
         <Layout>
+          {!sketching && (
           <Sider width={430} style={{ background: '#111827', padding: 16, overflow: 'auto' }}>
             <Space direction="vertical" size="middle" style={{ width: '100%' }}>
               <Space wrap>
@@ -782,9 +787,11 @@ export default function App() {
               )}
             </Space>
           </Sider>
+          )}
           <Content style={{ position: 'relative' }}>
-            {/* Sketcher controls float over the viewport as an icon toolbar. */}
-            <SketchToolbar />
+            {/* Sketcher controls float over the viewport — only on the Sketch page,
+                so the design workspace is separate from Milling / Turning. */}
+            {sketching && <SketchToolbar />}
 
             {dragActive && (
               <div style={{
@@ -805,9 +812,10 @@ export default function App() {
               padding: '6px 12px', borderRadius: 8,
             }}>
               <Segmented size="small" value={view} onChange={setViewPreset} options={VIEWS} />
-              <Tooltip title="Fit toolpath to view">
+              <Tooltip title={sketching ? 'Fit sketch to view' : 'Fit toolpath to view'}>
                 <Button size="small" icon={<ExpandOutlined />} onClick={() => setViewPreset(view)} />
               </Tooltip>
+              {!sketching && <>
               <div style={{ width: 1, alignSelf: 'stretch', background: '#334155' }} />
               <Tooltip title="Restart">
                 <Button
@@ -838,6 +846,7 @@ export default function App() {
               }}>
                 {formatDuration(elapsed)} / {formatDuration(stats?.cycleTime ?? 0)}
               </Text>
+              </>}
             </div>
 
             <Viewport
@@ -854,7 +863,8 @@ export default function App() {
               turnInsert={turnInsert}
               bufVer={bufVer}
               playhead={playhead}
-              mode={mode}
+              mode={sketching ? 'mill' : mode}
+              sketching={sketching}
               view={view}
               viewNonce={viewNonce}
             />

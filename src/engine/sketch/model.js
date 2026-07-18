@@ -59,6 +59,17 @@ export const CONSTRAINT_KINDS = {
   distance: { refTypes: ['point', 'point'], value: true, dof: 1 },
   pointLineDistance: { refTypes: ['point', 'line'], value: true, dof: 1 },
   radius: { refTypes: ['circle'], value: true, dof: 1 },
+  arcRadius: { refTypes: ['arc'], value: true, dof: 1 }, // radius of a partial arc
+  diameter: { refTypes: ['circle'], value: true, dof: 1 }, // Ø of a circle (SW default dim)
+  // Equal radius between two circles/arcs (any mix). A ref position accepting more
+  // than one entity type is written as an array of allowed types.
+  equalRadius: { refTypes: [['circle', 'arc'], ['circle', 'arc']], value: false, dof: 1 },
+  // A point pinned to the midpoint of a line (on the line + equidistant from its
+  // ends → removes 2 DOF).
+  midpoint: { refTypes: ['point', 'line'], value: false, dof: 2 },
+  // Two points mirrored about a line (the symmetry axis) — removes 2 DOF.
+  symmetric: { refTypes: ['point', 'point', 'line'], value: false, dof: 2 },
+
   equalLength: { refTypes: ['line', 'line'], value: false, dof: 1 },
   // Angle between two lines (value in radians — the model's angle unit; the UI
   // dimensions it in degrees and converts).
@@ -66,6 +77,7 @@ export const CONSTRAINT_KINDS = {
   // Tangency of a line to a circle / arc (line stays touching the rim).
   tangent: { refTypes: ['line', 'circle'], value: false, dof: 1 },
   tangentArc: { refTypes: ['line', 'arc'], value: false, dof: 1 },
+  tangentArcArc: { refTypes: ['arc', 'arc'], value: false, dof: 1 }, // arc↔arc tangency (fillets)
 };
 
 /** Create an empty sketch document. */
@@ -76,8 +88,12 @@ export function createSketch() {
 function requireEntity(sk, id, wantType) {
   const e = sk.entities.get(id);
   if (!e) throw new Error(`missing entity ${id}`);
-  if (wantType && e.type !== wantType) {
-    throw new Error(`expected ${wantType} for entity ${id}, got ${e.type}`);
+  // `wantType` may be a single type or an array of allowed types.
+  const ok = wantType == null
+    || (Array.isArray(wantType) ? wantType.includes(e.type) : e.type === wantType);
+  if (!ok) {
+    const want = Array.isArray(wantType) ? wantType.join('|') : wantType;
+    throw new Error(`expected ${want} for entity ${id}, got ${e.type}`);
   }
   return e;
 }
@@ -174,7 +190,8 @@ export function totalDof(sk) {
 export function dof(sk) {
   const params = totalDof(sk);
   let removed = 0;
-  for (const c of sk.constraints) removed += CONSTRAINT_KINDS[c.kind].dof;
+  // A driven (reference) dimension only reports a measurement — it removes no DOF.
+  for (const c of sk.constraints) removed += c.driven ? 0 : CONSTRAINT_KINDS[c.kind].dof;
   // Each arc carries its built-in rim coupling (arc_rules), not a user constraint.
   for (const e of sk.entities.values()) if (e.type === 'arc') removed += ARC_INTERNAL_DOF;
   const free = params - removed;

@@ -8,7 +8,7 @@
 import { useEffect, useMemo, useState, useCallback, useRef } from 'react';
 import {
   Layout, Button, Statistic, Alert, Space, Typography, theme,
-  InputNumber, Segmented, Switch, Divider, Slider, Upload, Tag, Tooltip, Select,
+  InputNumber, Segmented, Switch, Divider, Slider, Upload, Tag, Tooltip,
 } from 'antd';
 import {
   ThunderboltOutlined, ReloadOutlined, ExperimentOutlined,
@@ -109,6 +109,96 @@ function formatDuration(seconds) {
   const s = total % 60;
   const pad = (n) => String(n).padStart(2, '0');
   return h > 0 ? `${h}:${pad(m)}:${pad(s)}` : `${m}:${pad(s)}`;
+}
+
+// Metallic palette for the realistic tool glyphs (fixed colours, like the real
+// tool — the active state is shown by the button's highlighted background).
+const TG = {
+  steel: '#c3ccd8', steelEdge: '#7b8798', steelHi: '#eef2f7',
+  gold: '#f4c53d', goldEdge: '#9a6b0f', goldHi: '#fbe7a0',
+  screw: '#6b5212',
+};
+
+/**
+ * A little picture of the actual turning tool for the icon picker (modelled on the
+ * catalogue photos in image_tool/): a steel shank holding a **gold rhombic insert**
+ * with a round clamp screw. The insert's nose angle is the real ISO shape
+ * (V 35° narrow → C 80° → S 90° square), and the holder's hand (`flip`) mirrors it,
+ * so MVJNR/MVVNN/DCLNR/SCLCR read as distinct real tools. Boring bars reach in along
+ * the bore; the parting tool is a thin blade.
+ */
+function TurnToolGlyph({ tool }) {
+  // A gold ISO insert (rhombus of the given nose angle) with edge + clamp screw.
+  const Insert = ({ ox, oy, p = 5.5, angle = tool.angle }) => {
+    const q = p * Math.tan((angle * Math.PI) / 180 / 2);
+    const d = `M${ox} ${oy - p} L${ox + q} ${oy} L${ox} ${oy + p} L${ox - q} ${oy} Z`;
+    return (
+      <>
+        <path d={d} fill={TG.gold} stroke={TG.goldEdge} strokeWidth="0.8" strokeLinejoin="round" />
+        <path d={`M${ox} ${oy - p * 0.6} L${ox + q * 0.55} ${oy}`} stroke={TG.goldHi} strokeWidth="0.7" fill="none" opacity="0.8" />
+        <circle cx={ox} cy={oy} r="1.7" fill={TG.screw} />
+        <circle cx={ox - 0.4} cy={oy - 0.4} r="0.7" fill={TG.goldHi} />
+      </>
+    );
+  };
+  let body;
+  if (tool.kind === 'parting') {
+    body = (
+      <>
+        <rect x="13.6" y="10" width="4.8" height="17" rx="1.2" fill={TG.steel} stroke={TG.steelEdge} strokeWidth="0.7" />
+        <rect x="14.4" y="10.6" width="1" height="15" fill={TG.steelHi} opacity="0.7" />
+        <rect x="12.8" y="5" width="6.4" height="6" rx="1.2" fill={TG.gold} stroke={TG.goldEdge} strokeWidth="0.8" />
+        <circle cx="16" cy="8" r="1.5" fill={TG.screw} />
+      </>
+    );
+  } else if (tool.kind === 'boring') {
+    body = (
+      <>
+        <rect x="3" y="14.5" width="21" height="6.4" rx="3.2" fill={TG.steel} stroke={TG.steelEdge} strokeWidth="0.7" />
+        <rect x="4" y="15.4" width="17" height="1.1" rx="0.5" fill={TG.steelHi} opacity="0.7" />
+        <Insert ox={22} oy={11} p={4.6} />
+      </>
+    );
+  } else {
+    // OD holder: steel shank bar to the lower corner, gold insert at the tip. Drawn
+    // right-handed; mirror for the other hand so the two 35° tools differ.
+    body = (
+      <g transform={tool.flip ? undefined : 'translate(32,0) scale(-1,1)'}>
+        <path d="M12.5 12 L28 27.5" stroke={TG.steelEdge} strokeWidth="8.4" strokeLinecap="round" />
+        <path d="M12.5 12 L28 27.5" stroke={TG.steel} strokeWidth="7" strokeLinecap="round" />
+        <path d="M14 12.5 L26.5 25" stroke={TG.steelHi} strokeWidth="1.4" strokeLinecap="round" opacity="0.55" />
+        <Insert ox={12} oy={11} p={5.6} />
+      </g>
+    );
+  }
+  return (
+    <span role="img" className="anticon" style={{ display: 'inline-flex' }}>
+      <svg viewBox="0 0 32 32" width="1.7em" height="1.7em" style={{ display: 'block' }}>{body}</svg>
+    </span>
+  );
+}
+
+/**
+ * Icon picker for a tool's turning insert/holder — a row of glyph buttons (one per
+ * catalogue holder), replacing the old dropdown. The selected holder is
+ * highlighted; the full catalogue name is on each button's tooltip.
+ */
+function TurnInsertPicker({ value, onChange }) {
+  return (
+    <div style={{ display: 'flex', gap: 2, flexWrap: 'wrap' }}>
+      {STANDARD_TURN_TOOLS.map((x) => (
+        <Tooltip key={x.id} title={x.label} placement="top">
+          <Button
+            size="small"
+            type={value === x.id ? 'primary' : 'text'}
+            icon={<TurnToolGlyph tool={x} />}
+            onClick={() => onChange(x.id)}
+            style={{ width: 32, height: 32, padding: 0, color: value === x.id ? undefined : '#cbd5e1' }}
+          />
+        </Tooltip>
+      ))}
+    </div>
+  );
 }
 
 export default function App() {
@@ -488,12 +578,9 @@ export default function App() {
                             const holder = STANDARD_TURN_TOOLS.find((x) => x.id === holderId);
                             return (
                               <>
-                                <Select
-                                  size="small"
+                                <TurnInsertPicker
                                   value={holderId}
                                   onChange={(id) => setToolOverride(t.n, { insert: id })}
-                                  style={{ width: 150 }}
-                                  options={STANDARD_TURN_TOOLS.map((x) => ({ label: x.label, value: x.id }))}
                                 />
                                 {holder?.adjustable && (
                                   <>

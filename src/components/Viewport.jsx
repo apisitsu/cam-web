@@ -15,6 +15,7 @@ import StockMesh from './StockMesh.jsx';
 import SketchLayer from './SketchLayer.jsx';
 import { getBuf, setView } from '../engine/bufferCache.js';
 import { sliceUpTo } from '../engine/gcode/path.js';
+import { useSketchStore } from '../stores/sketchStore.js';
 
 /**
  * Eye directions for each preset, in machine coordinates (X right, Y away,
@@ -463,6 +464,9 @@ export default function Viewport({
   mode = 'mill', sketching = false, view = 'iso', viewNonce = 0,
 }) {
   const controlsRef = useRef();
+  // Disable orbit while dragging a sketch point so the drag moves the point,
+  // not the camera (SolidWorks drags geometry, not the view).
+  const sketchDragging = useSketchStore((s) => s.dragging);
 
   // Resolve which rapids/feeds to draw (full backplot, or the sliced sub-path
   // during playback) and stash them in the module view-cache. Children read
@@ -532,7 +536,7 @@ export default function Viewport({
         controlsRef={controlsRef}
         mode={mode}
       />
-      <OrbitControls ref={controlsRef} makeDefault minZoom={0.05} maxZoom={2000} />
+      <OrbitControls ref={controlsRef} makeDefault enabled={!(sketching && sketchDragging)} minZoom={0.05} maxZoom={2000} />
     </Canvas>
   );
 }

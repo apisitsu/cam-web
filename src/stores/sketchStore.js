@@ -20,8 +20,10 @@ import {
 import {
   getOrCreatePoint, hitTestPoint, hitTestLine, hitTestCircle, hitTestArc,
   deleteEntity, removeConstraint, chamfer as chamferEdit, fillet as filletEdit,
-  trimLine, trimCircle, trimArc,
+  filletLineArc as filletLineArcEdit, filletArcArc as filletArcArcEdit,
+  trimLine, trimCircle, trimArc, mirror as mirrorEdit, offsetEntity,
   distancePointToLine, farEndpointFromLine, nearestRimPoint, nearestTangent,
+  measureConstraint, lineArcMeet, angleSpec, interiorAngleToModel,
 } from '../engine/sketch/edit.js';
 
 const DEG = Math.PI / 180;
@@ -87,6 +89,11 @@ export const useSketchStore = create((set, get) => ({
   hoverId: null, // entity id a click would pick right now — drives the pre-select highlight
   selection: [], // selected entity ids — points, lines, circles, and/or arcs (mixed)
   dimensionPending: null, // { kind, refs, label, current } set on a dimension-mode empty-click → shows the inline value input
+  editingConstraint: null, // { index, kind, label, angular, value } set when a placed dimension is double-clicked → shows the edit input
+  pickTol: SNAP, // world-unit pick/snap tolerance — kept ~constant on screen (set per camera zoom)
+  dragging: null, // { id, wasFixed, moved } while a point is being dragged (SW drag-to-modify)
+  _dragTarget: null, // latest cursor pos during a drag (coalesced into the solve loop)
+  _dragBusy: false, // a drag-solve is in flight (dedupes the async loop)
   past: [], // undo stack (serialized snapshots, oldest first)
   future: [], // redo stack
   solveResult: null, // { success, status, conflicting, redundant }
@@ -129,12 +136,21 @@ export const useSketchStore = create((set, get) => ({
   },
 
   setTool(tool) {
-    set({ tool, pending: null, pending2: null, cursor: null, snap: null, axisSnap: null, lineAngle: null, hoverId: null, error: null, dimensionPending: null });
+    set({ tool, pending: null, pending2: null, cursor: null, snap: null, axisSnap: null, lineAngle: null, hoverId: null, error: null, dimensionPending: null, editingConstraint: null });
   },
 
   /** Pick whether the Chamfer tool cuts a straight chamfer ('C') or rounds ('R'). */
   setChamferKind(chamferKind) {
     set({ chamferKind });
+  },
+
+  /**
+   * Set the world-unit pick/snap tolerance so it stays a constant size on screen
+   * regardless of zoom (SolidWorks picks by pixels, not model units). The view
+   * feeds `targetPixels / cameraZoom` each time the zoom changes materially.
+   */
+  setPickTol(t) {
+    if (Number.isFinite(t) && t > 0 && Math.abs(t - get().pickTol) > 1e-9) set({ pickTol: t });
   },
 
   /**
@@ -148,11 +164,12 @@ export const useSketchStore = create((set, get) => ({
    */
   hover(x, y) {
     const { sk, tool, pending } = get();
+    const tol = get().pickTol || SNAP;
     // While drawing a line, the pending point is the anchor the rubber-band (and
     // the tangent / angle guides) are measured from.
     const anchor = tool === 'line' && pending != null ? sk.entities.get(pending) : null;
 
-    const pid = hitTestPoint(sk, x, y, SNAP);
+    const pid = hitTestPoint(sk, x, y, tol);
     const p = pid != null ? sk.entities.get(pid) : null;
     // Snap target priority: an existing vertex first; then (line only) the point
     // where the line from the anchor would touch a nearby ring **tangentially**;
@@ -160,11 +177,11 @@ export const useSketchStore = create((set, get) => ({
     // a tangent target, `onCurve` a plain rim landing.
     let snap = p ? { x: p.x, y: p.y, id: pid } : null;
     if (!snap && anchor) {
-      const tan = nearestTangent(sk, anchor.x, anchor.y, x, y, SNAP);
+      const tan = nearestTangent(sk, anchor.x, anchor.y, x, y, tol);
       if (tan) snap = { x: tan.x, y: tan.y, tangent: true, tangentOf: tan.id, curveType: tan.type };
     }
     if (!snap) {
-      const rim = nearestRimPoint(sk, x, y, SNAP);
+      const rim = nearestRimPoint(sk, x, y, tol);
       if (rim) snap = { x: rim.x, y: rim.y, onCurve: rim.id, curveType: rim.type };
     }
 
@@ -188,9 +205,9 @@ export const useSketchStore = create((set, get) => ({
     }
 
     let hoverId = pid;
-    if (hoverId == null) hoverId = hitTestLine(sk, x, y, SNAP);
-    if (hoverId == null) hoverId = hitTestCircle(sk, x, y, SNAP);
-    if (hoverId == null) hoverId = hitTestArc(sk, x, y, SNAP);
+    if (hoverId == null) hoverId = hitTestLine(sk, x, y, tol);
+    if (hoverId == null) hoverId = hitTestCircle(sk, x, y, tol);
+    if (hoverId == null) hoverId = hitTestArc(sk, x, y, tol);
     set({ cursor: { x, y }, snap, axisSnap, lineAngle, hoverId });
   },
 
@@ -203,9 +220,10 @@ export const useSketchStore = create((set, get) => ({
    */
   _pointAt(x, y) {
     const { sk } = get();
-    const hit = hitTestPoint(sk, x, y, SNAP);
+    const tol = get().pickTol || SNAP;
+    const hit = hitTestPoint(sk, x, y, tol);
     if (hit != null) return hit;
-    const rim = nearestRimPoint(sk, x, y, SNAP);
+    const rim = nearestRimPoint(sk, x, y, tol);
     if (rim) {
       const id = addPoint(sk, rim.x, rim.y);
       try {
@@ -243,6 +261,7 @@ export const useSketchStore = create((set, get) => ({
   /** A pointer-down on the sketch plane at sketch coords (x, y). */
   clickAt(x, y) {
     const { sk, tool } = get();
+    const tol = get().pickTol || SNAP;
     if (tool === 'point') {
       get()._snapshot();
       get()._pointAt(x, y);
@@ -258,6 +277,7 @@ export const useSketchStore = create((set, get) => ({
         // otherwise the plain click (with its own vertex/rim snapping).
         let p;
         let tangentKind = null;
+        let hvKind = null; // auto horizontal/vertical relation from an orthogonal axis lock
         if (snap?.tangent) {
           p = addPoint(sk, snap.x, snap.y);
           const onKind = snap.curveType === 'arc' ? 'pointOnArc' : 'pointOnCircle';
@@ -271,6 +291,11 @@ export const useSketchStore = create((set, get) => ({
           try { addConstraint(sk, onKind, [p, snap.onCurve]); } catch { /* leave endpoint free */ }
         } else if (axisSnap) {
           p = addPoint(sk, axisSnap.x, axisSnap.y);
+          // SolidWorks-style automatic relation: a line locked to a horizontal or
+          // vertical axis gets a real Horizontal/Vertical constraint, so drawing
+          // + dimensioning alone can fully define the sketch.
+          if (axisSnap.deg === 0 || axisSnap.deg === 180) hvKind = 'horizontal';
+          else if (axisSnap.deg === 90 || axisSnap.deg === 270) hvKind = 'vertical';
         } else {
           p = get()._pointAt(x, y);
         }
@@ -280,17 +305,20 @@ export const useSketchStore = create((set, get) => ({
           if (tangentKind) {
             try { addConstraint(sk, tangentKind.kind, [line, tangentKind.curve]); } catch { /* skip if redundant */ }
           }
+          if (hvKind) {
+            try { addConstraint(sk, hvKind, [pending, p]); } catch { /* skip if redundant */ }
+          }
         }
         set({ pending: null, snap: null, axisSnap: null, lineAngle: null });
         get()._bump();
-        if (tangentKind) get().solve();
+        if (tangentKind || hvKind) get().solve();
       }
     } else if (tool === 'circle') {
       // Circle tool: first click sets the centre (held in `pending`, same as the
       // line tool); second click sets the radius from the distance to the centre.
       const { pending } = get();
       if (pending == null) {
-        set({ pending: getOrCreatePoint(sk, x, y, SNAP) });
+        set({ pending: getOrCreatePoint(sk, x, y, tol) });
       } else {
         const center = sk.entities.get(pending);
         const r = Math.hypot(x - center.x, y - center.y);
@@ -307,9 +335,9 @@ export const useSketchStore = create((set, get) => ({
       // planegcs' arc_rules keep it that way through solves.
       const { pending, pending2 } = get();
       if (pending == null) {
-        set({ pending: getOrCreatePoint(sk, x, y, SNAP) });
+        set({ pending: getOrCreatePoint(sk, x, y, tol) });
       } else if (pending2 == null) {
-        const s = getOrCreatePoint(sk, x, y, SNAP);
+        const s = getOrCreatePoint(sk, x, y, tol);
         if (s !== pending) set({ pending2: s });
       } else {
         const center = sk.entities.get(pending);
@@ -319,7 +347,7 @@ export const useSketchStore = create((set, get) => ({
         const dy = y - center.y;
         const d = Math.hypot(dx, dy);
         if (r > 1e-6 && d > 1e-6) {
-          const end = getOrCreatePoint(sk, center.x + (dx / d) * r, center.y + (dy / d) * r, SNAP);
+          const end = getOrCreatePoint(sk, center.x + (dx / d) * r, center.y + (dy / d) * r, tol);
           if (end !== pending && end !== pending2) {
             get()._snapshot();
             addArc(sk, pending, pending2, end, r);
@@ -338,14 +366,14 @@ export const useSketchStore = create((set, get) => ({
       // horizontal/vertical constraints so the solver keeps it a true rectangle.
       const { pending } = get();
       if (pending == null) {
-        set({ pending: getOrCreatePoint(sk, x, y, SNAP) });
+        set({ pending: getOrCreatePoint(sk, x, y, tol) });
       } else {
         const a = sk.entities.get(pending);
         if (Math.abs(x - a.x) > 1e-6 && Math.abs(y - a.y) > 1e-6) {
           get()._snapshot();
-          const b = getOrCreatePoint(sk, x, a.y, SNAP); // A→B along x
-          const c = getOrCreatePoint(sk, x, y, SNAP); // opposite corner
-          const d = getOrCreatePoint(sk, a.x, y, SNAP); // A→D along y
+          const b = getOrCreatePoint(sk, x, a.y, tol); // A→B along x
+          const c = getOrCreatePoint(sk, x, y, tol); // opposite corner
+          const d = getOrCreatePoint(sk, a.x, y, tol); // A→D along y
           addLine(sk, pending, b);
           addLine(sk, b, c);
           addLine(sk, c, d);
@@ -368,9 +396,9 @@ export const useSketchStore = create((set, get) => ({
       // a curve with nothing crossing it is left whole (trim never deletes an
       // entity outright — use Delete for that). Line takes priority under the
       // cursor, then circle rim, then arc.
-      const lineHit = hitTestLine(sk, x, y, SNAP);
-      const circleHit = lineHit == null ? hitTestCircle(sk, x, y, SNAP) : null;
-      const arcHit = lineHit == null && circleHit == null ? hitTestArc(sk, x, y, SNAP) : null;
+      const lineHit = hitTestLine(sk, x, y, tol);
+      const circleHit = lineHit == null ? hitTestCircle(sk, x, y, tol) : null;
+      const arcHit = lineHit == null && circleHit == null ? hitTestArc(sk, x, y, tol) : null;
       if (lineHit == null && circleHit == null && arcHit == null) return;
       get()._snapshot();
       const res = lineHit != null ? trimLine(sk, lineHit, x, y)
@@ -381,24 +409,27 @@ export const useSketchStore = create((set, get) => ({
       get()._bump();
       get().solve();
     } else if (tool === 'chamfer') {
-      // Chamfer tool: pick the two lines that share a corner (line-only); the
-      // inline ChamferInput applies the size once two are selected. Empty space
-      // clears the pick.
-      const lineHit = hitTestLine(sk, x, y, SNAP);
+      // Chamfer / fillet tool: pick the two elements that share a corner. Lines
+      // take priority under the cursor, then arcs (so a fillet can round a
+      // line↔arc or arc↔arc junction, not just line↔line). The inline
+      // ChamferInput applies the size once two are picked. Empty space clears.
+      const lineHit = hitTestLine(sk, x, y, tol);
+      const arcHit = lineHit == null ? hitTestArc(sk, x, y, tol) : null;
       if (lineHit != null) get().toggleSelect(lineHit);
+      else if (arcHit != null) get().toggleSelect(arcHit);
       else set({ selection: [] });
     } else {
       // select / dimension: points take priority over lines, then circles, under
       // the cursor; all route through toggleSelect. Empty space clears the
       // selection — except in dimension mode, where an empty click with a
       // dimensionable selection asks the view to prompt for a value.
-      const hit = hitTestPoint(sk, x, y, SNAP);
+      const hit = hitTestPoint(sk, x, y, tol);
       if (hit != null) { get().toggleSelect(hit); return; }
-      const lineHit = hitTestLine(sk, x, y, SNAP);
+      const lineHit = hitTestLine(sk, x, y, tol);
       if (lineHit != null) { get().toggleSelect(lineHit); return; }
-      const circleHit = hitTestCircle(sk, x, y, SNAP);
+      const circleHit = hitTestCircle(sk, x, y, tol);
       if (circleHit != null) { get().toggleSelect(circleHit); return; }
-      const arcHit = hitTestArc(sk, x, y, SNAP);
+      const arcHit = hitTestArc(sk, x, y, tol);
       if (arcHit != null) { get().toggleSelect(arcHit); return; }
       if (tool === 'dimension') {
         const spec = get().resolveDimension();
@@ -424,7 +455,7 @@ export const useSketchStore = create((set, get) => ({
     }
     set({ selection: [], error: null });
     get()._bump();
-    get().solve();
+    get().solve({ revertOnConflict: true });
   },
 
   /**
@@ -445,7 +476,7 @@ export const useSketchStore = create((set, get) => ({
     }
     set({ selection: [], error: null });
     get()._bump();
-    get().solve();
+    get().solve({ revertOnConflict: true });
   },
 
   /**
@@ -487,7 +518,12 @@ export const useSketchStore = create((set, get) => ({
       return { kind: 'distance', refs: [ents[0].p1, ents[0].p2], label: 'Length', current: pdist(ents[0].p1, ents[0].p2) };
     }
     if (ents.length === 1 && ents[0].type === 'circle') {
-      return { kind: 'radius', refs: [selection[0]], label: 'Radius', current: ents[0].r };
+      // SolidWorks defaults a circle dimension to diameter (Ø); radius is still
+      // available via the popover Radius button.
+      return { kind: 'diameter', refs: [selection[0]], label: 'Diameter', prefix: 'Ø', current: ents[0].r * 2 };
+    }
+    if (ents.length === 1 && ents[0].type === 'arc') {
+      return { kind: 'arcRadius', refs: [selection[0]], label: 'Radius', current: ents[0].r };
     }
     // Point + line (either pick order) → perpendicular distance. This is what
     // dimensions a point (e.g. the origin) to a line.
@@ -515,7 +551,13 @@ export const useSketchStore = create((set, get) => ({
       if (deg > 180) deg -= 360;
       const parallel = Math.abs(deg) < 0.5 || Math.abs(Math.abs(deg) - 180) < 0.5;
       if (!parallel) {
-        return { kind: 'angle', refs: [l1, l2], label: 'Angle', unit: '°', angular: true, current: deg };
+        // Show the intuitive interior angle at the corner (a 60° corner reads 60°,
+        // not the 120° directed angle); carry sign/offset to convert on apply.
+        const asp = angleSpec(sk, l1, l2);
+        return {
+          kind: 'angle', refs: [l1, l2], label: 'Angle', unit: '°', angular: true,
+          current: asp.interiorDeg, angleSign: asp.sign, angleOffsetDeg: asp.offsetDeg,
+        };
       }
       const pid = farEndpointFromLine(sk, l1, l2);
       return { kind: 'pointLineDistance', refs: [pid, l2], label: 'Line ↔ line', current: distancePointToLine(sk, pid, l2) };
@@ -544,15 +586,19 @@ export const useSketchStore = create((set, get) => ({
   dimension(value) {
     const spec = get().dimensionPending || get().resolveDimension();
     if (!spec) {
-      set({ error: 'Dimension needs 1 point (to origin), 2 points, 1 line, 1 circle, a point + line, 2 lines, a line + circle, or 2 circles' });
+      set({ error: 'Dimension needs 1 point (to origin), 2 points, 1 line, 1 circle, 1 arc, a point + line, 2 lines, a line + circle, or 2 circles' });
       return;
     }
     const { sk } = get();
-    // Angular dimensions are entered/seeded in degrees but stored in radians.
-    const modelValue = spec.angular ? value * DEG : value;
+    // Angular dimensions are entered as the interior corner angle (degrees) and
+    // stored as the planegcs directed angle (radians); other dims store as-is.
+    const modelValue = spec.angular
+      ? interiorAngleToModel({ sign: spec.angleSign ?? 1, offsetDeg: spec.angleOffsetDeg ?? 0 }, value)
+      : value;
     get()._snapshot();
+    let idx;
     try {
-      addConstraint(sk, spec.kind, spec.refs, modelValue);
+      idx = addConstraint(sk, spec.kind, spec.refs, modelValue);
     } catch (e) {
       get()._undoSnapshot();
       set({ error: String(e?.message || e) });
@@ -560,12 +606,67 @@ export const useSketchStore = create((set, get) => ({
     }
     set({ selection: [], error: null, dimensionPending: null });
     get()._bump();
-    get().solve();
+    // If it over-defines, keep it as a driven (reference) dimension (SW default).
+    get().solve({ drivenFallback: idx });
   },
 
   /** Dismiss the inline dimension input without applying. */
   cancelDimension() {
     set({ dimensionPending: null });
+  },
+
+  /**
+   * Open the inline editor for an already-placed dimension (its index in
+   * `sk.constraints`), seeding it with the current value — degrees for an angle,
+   * mm otherwise. Non-dimensional constraints (no value) can't be edited. Driven
+   * by double-clicking a dimension label in the viewport.
+   */
+  beginEditConstraint(index) {
+    const c = get().sk.constraints[index];
+    if (!c || c.value == null) return;
+    const angular = c.kind === 'angle';
+    const LABELS = { distance: 'Distance', pointLineDistance: 'Distance', radius: 'Radius', arcRadius: 'Radius', diameter: 'Diameter', angle: 'Angle', lockX: 'Lock X', lockY: 'Lock Y' };
+    // For an angle, seed the interior corner angle (what's shown) and carry the
+    // conversion so applyEditConstraint stores the right planegcs value.
+    const asp = angular ? angleSpec(get().sk, c.refs[0], c.refs[1]) : null;
+    set({
+      editingConstraint: {
+        index, kind: c.kind, angular,
+        label: LABELS[c.kind] || c.kind,
+        value: angular ? (asp?.interiorDeg ?? c.value / DEG) : c.value,
+        angleSign: asp?.sign ?? 1,
+        angleOffsetDeg: asp?.offsetDeg ?? 0,
+      },
+    });
+  },
+
+  /**
+   * Commit a new value for the dimension being edited (`editingConstraint`), then
+   * re-solve. Angles are entered in degrees and stored in radians. The index is
+   * re-validated against the live sketch (it may have shifted if a constraint was
+   * removed meanwhile) before writing.
+   */
+  applyEditConstraint(value) {
+    const ec = get().editingConstraint;
+    if (!ec) return;
+    const { sk } = get();
+    const c = sk.constraints[ec.index];
+    if (!c || c.kind !== ec.kind || c.value == null || !Number.isFinite(value)) {
+      set({ editingConstraint: null });
+      return;
+    }
+    get()._snapshot();
+    c.value = ec.angular
+      ? interiorAngleToModel({ sign: ec.angleSign ?? 1, offsetDeg: ec.angleOffsetDeg ?? 0 }, value)
+      : value;
+    set({ editingConstraint: null, error: null });
+    get()._bump();
+    get().solve({ revertOnConflict: true });
+  },
+
+  /** Dismiss the dimension edit input without applying. */
+  cancelEditConstraint() {
+    set({ editingConstraint: null });
   },
 
   /**
@@ -576,18 +677,9 @@ export const useSketchStore = create((set, get) => ({
   swapDimensionRefs() {
     const dp = get().dimensionPending;
     if (!dp || !dp.angular) return;
-    const { sk } = get();
     const refs = [dp.refs[1], dp.refs[0]];
-    const dir = (id) => {
-      const l = sk.entities.get(id);
-      const a = sk.entities.get(l.p1);
-      const b = sk.entities.get(l.p2);
-      return Math.atan2(b.y - a.y, b.x - a.x);
-    };
-    let deg = ((dir(refs[1]) - dir(refs[0])) * 180) / Math.PI;
-    deg = ((deg % 360) + 360) % 360;
-    if (deg > 180) deg -= 360;
-    set({ dimensionPending: { ...dp, refs, current: deg } });
+    const asp = angleSpec(get().sk, refs[0], refs[1]);
+    set({ dimensionPending: { ...dp, refs, current: asp.interiorDeg, angleSign: asp.sign, angleOffsetDeg: asp.offsetDeg } });
   },
 
   /** Chamfer the corner between the two selected lines by `dist`. */
@@ -610,19 +702,42 @@ export const useSketchStore = create((set, get) => ({
     get().solve();
   },
 
-  /** Round the corner between the two selected lines with a tangent arc of `radius`. */
+  /**
+   * Round a shared corner with a tangent arc of `radius`. Works on any pairing
+   * that meets at a point: 2 lines (`fillet`), 1 line + 1 arc (`filletLineArc`),
+   * or 2 arcs (`filletArcArc`) — so a fillet can be placed at a junction that
+   * involves a curve, not just two straight edges.
+   */
   fillet(radius) {
     const { sk, selection } = get();
-    const lines = selection.filter((id) => sk.entities.get(id)?.type === 'line');
-    if (lines.length !== 2) {
-      set({ error: 'Fillet needs exactly 2 lines' });
+    if (selection.length !== 2) {
+      set({ error: 'Fillet needs exactly 2 elements (2 lines, 1 line + 1 arc, or 2 arcs)' });
       return;
     }
+    const lines = selection.filter((id) => sk.entities.get(id)?.type === 'line');
+    const arcs = selection.filter((id) => sk.entities.get(id)?.type === 'arc');
+    let run = null;
+    // `meets` = do the two picks actually touch at a corner? (drives the message)
+    let meets = true;
+    if (lines.length === 2) run = (s) => filletEdit(s, lines[0], lines[1], radius);
+    else if (lines.length === 1 && arcs.length === 1) {
+      // "Touching" = within the on-screen pick tolerance (so two endpoints drawn to
+      // the same spot but never merged still count), clamped to a sane mm range.
+      const touchTol = Math.min(Math.max(get().pickTol || 1.5, 0.75), 3);
+      meets = lineArcMeet(sk, lines[0], arcs[0], touchTol);
+      run = (s) => filletLineArcEdit(s, lines[0], arcs[0], radius, touchTol);
+    } else if (arcs.length === 2) run = (s) => filletArcArcEdit(s, arcs[0], arcs[1], radius);
+    else { set({ error: 'Fillet needs 2 lines, 1 line + 1 arc, or 2 arcs' }); return; }
     get()._snapshot();
-    const res = filletEdit(sk, lines[0], lines[1], radius);
+    const res = run(sk);
     if (res == null) {
       get()._undoSnapshot();
-      set({ error: 'Lines must share a corner and the radius must fit' });
+      // Tell the user which problem it is so it's fixable.
+      set({
+        error: meets
+          ? `R${radius} is too large to fit that corner — try a smaller radius.`
+          : "The two picks don't meet at a corner — trim them so they touch first (the arc's end must lie on the line).",
+      });
       return;
     }
     set({ selection: [], error: null });
@@ -635,23 +750,138 @@ export const useSketchStore = create((set, get) => ({
     set({ past: get().past.slice(0, -1) });
   },
 
-  /** Solve the whole sketch in the worker and adopt the result. */
-  async solve() {
+  /**
+   * Solve the whole sketch in the worker and adopt the result. With
+   * `revertOnConflict`, a solve that actually **fails** (planegcs can't satisfy the
+   * constraints — a genuine over-definition) is rolled back to the snapshot the
+   * caller pushed and reported, like SolidWorks blocking an over-defining dimension.
+   * A *redundant-but-consistent* constraint still solves (`success` stays true) and
+   * is kept — SW allows those — even though planegcs lists it as conflicting; that's
+   * why the test is `!success`, not `conflicting.length` (e.g. a tangent-locked
+   * fillet stays put when you edit its radius).
+   */
+  async solve({ revertOnConflict = false, drivenFallback = null } = {}) {
     try {
       const res = await worker().solve(serialize(get().sk));
-      set({
-        sk: deserialize(res.sketch),
-        solveResult: {
-          success: res.success,
-          status: res.status,
-          conflicting: res.conflicting,
-          redundant: res.redundant,
-        },
-      });
+      const result = {
+        success: res.success,
+        status: res.status,
+        conflicting: res.conflicting,
+        redundant: res.redundant,
+      };
+      if (!res.success) {
+        // SolidWorks "Make Dimension Driven?" (default yes): a new smart dimension
+        // that would over-define is kept as a driven (reference) dimension instead
+        // of being blocked, then re-solved clean.
+        if (drivenFallback != null && get().sk.constraints[drivenFallback]) {
+          get().sk.constraints[drivenFallback].driven = true;
+          set({ error: 'Would over-define — kept as a driven (reference) dimension' });
+          return get().solve();
+        }
+        if (revertOnConflict && get().past.length) {
+          const past = get().past;
+          set({
+            sk: deserialize(past[past.length - 1]), // undo the offending constraint
+            past: past.slice(0, -1),
+            selection: [],
+            error: 'That would over-define the sketch — constraint reverted',
+            solveResult: result,
+          });
+          get()._bump();
+          return;
+        }
+      }
+      const solved = deserialize(res.sketch);
+      // A driven (reference) dimension just reports — refresh its value to the
+      // freshly solved geometry so it always shows the true measurement.
+      for (const con of solved.constraints) {
+        if (!con.driven) continue;
+        const v = measureConstraint(solved, con.kind, con.refs);
+        if (Number.isFinite(v)) con.value = v;
+      }
+      set({ sk: solved, solveResult: result });
       get()._bump();
     } catch (e) {
       set({ error: String(e?.message || e) });
     }
+  },
+
+  /**
+   * Arm a drag on point `id` (SolidWorks drag-to-modify). The point is pinned
+   * (temporarily fixed) so the live solve holds it under the cursor while the
+   * rest of the sketch follows its constraints. No undo snapshot yet — that's
+   * taken on the first actual move, so a click that never drags leaves the undo
+   * stack clean. The origin (fixed datum) is never draggable. Returns true if a
+   * drag started.
+   */
+  beginDrag(id) {
+    const pt = get().sk.entities.get(id);
+    if (!pt || pt.type !== 'point' || pt.origin) return false;
+    set({ dragging: { id, wasFixed: !!pt.fixed, moved: false }, _dragTarget: null });
+    pt.fixed = true;
+    return true;
+  },
+
+  /** Update the drag target to (x, y) and kick the coalesced solve loop. */
+  dragTo(x, y) {
+    const d = get().dragging;
+    if (!d) return;
+    if (!d.moved) { get()._snapshot(); set({ dragging: { ...d, moved: true } }); }
+    set({ _dragTarget: { x, y } });
+    get()._dragSolveLoop();
+  },
+
+  /**
+   * Solve repeatedly while the drag target keeps changing, coalescing rapid
+   * pointer moves into as few worker round-trips as possible: each pass pins the
+   * dragged point at the newest target and re-solves the rest. `_dragBusy` keeps
+   * only one loop running at a time.
+   */
+  async _dragSolveLoop() {
+    if (get()._dragBusy) return;
+    set({ _dragBusy: true });
+    try {
+      while (get().dragging && get()._dragTarget) {
+        const d = get().dragging;
+        const t = get()._dragTarget;
+        set({ _dragTarget: null });
+        const sk = get().sk;
+        const pt = sk.entities.get(d.id);
+        if (!pt) break;
+        pt.x = t.x; pt.y = t.y; pt.fixed = true;
+        let res;
+        try { res = await worker().solve(serialize(sk)); }
+        catch (e) { set({ error: String(e?.message || e) }); break; }
+        // Bail if the drag ended (or switched points) while we were solving.
+        if (get().dragging?.id !== d.id) break;
+        set({
+          sk: deserialize(res.sketch),
+          solveResult: { success: res.success, status: res.status, conflicting: res.conflicting, redundant: res.redundant },
+        });
+        get()._bump();
+      }
+    } finally {
+      set({ _dragBusy: false });
+    }
+  },
+
+  /**
+   * End a drag. Restores the point's original fixed flag and clears drag state.
+   * Returns whether the point actually moved, so the view can tell a drag from a
+   * plain click (a no-move drag is treated as a selection click by the caller).
+   */
+  endDrag() {
+    const d = get().dragging;
+    if (!d) return false;
+    const pt = get().sk.entities.get(d.id);
+    if (pt) pt.fixed = d.wasFixed;
+    set({ dragging: null, _dragTarget: null });
+    get()._bump();
+    // Settle once the pin is released: a genuinely free point stays where it was
+    // dragged, but a fully-constrained one the drag deformed snaps back to satisfy
+    // its constraints — matching how SolidWorks resists dragging defined geometry.
+    if (d.moved) get().solve();
+    return d.moved;
   },
 
   deleteSelected() {
@@ -660,7 +890,7 @@ export const useSketchStore = create((set, get) => ({
     const ids = selection.filter((id) => !sk.entities.get(id)?.origin);
     if (!ids.length) { set({ selection: [] }); return; }
     get()._snapshot();
-    ids.forEach((id) => deleteEntity(sk, id));
+    ids.forEach((id) => deleteEntity(sk, id, true)); // prune dangling endpoints (SW-style)
     set({ selection: [] });
     get()._bump();
     get().solve();
@@ -671,6 +901,84 @@ export const useSketchStore = create((set, get) => ({
     const { sk } = get();
     get()._snapshot();
     removeConstraint(sk, index);
+    get()._bump();
+    get().solve();
+  },
+
+  /**
+   * Toggle the selected geometry between normal and **construction** (reference)
+   * — SolidWorks construction geometry: still solvable/dimensionable, drawn dashed,
+   * and left out of the extrude/revolve profile later. Points aren't toggled (the
+   * origin/vertices are inherently reference). No solve needed (flag only).
+   */
+  toggleConstruction() {
+    const { sk, selection } = get();
+    const geom = selection.filter((id) => {
+      const t = sk.entities.get(id)?.type;
+      return t === 'line' || t === 'circle' || t === 'arc';
+    });
+    if (!geom.length) { set({ error: 'Select lines/circles/arcs to toggle construction' }); return; }
+    get()._snapshot();
+    // If any are normal, make all construction; else clear it (SW-like toggle).
+    const makeConstruction = geom.some((id) => !sk.entities.get(id).construction);
+    geom.forEach((id) => { sk.entities.get(id).construction = makeConstruction; });
+    set({ error: null });
+    get()._bump();
+  },
+
+  /**
+   * Mirror the selected entities about an axis line (SW "Mirror Entities"). The
+   * axis is a construction line in the selection if present (the usual SW setup),
+   * else the single selected line; everything else in the selection is mirrored.
+   */
+  mirror() {
+    const { sk, selection } = get();
+    const lines = selection.filter((id) => sk.entities.get(id)?.type === 'line');
+    const axis = lines.find((id) => sk.entities.get(id).construction) ?? (lines.length === 1 ? lines[0] : null);
+    if (axis == null) {
+      set({ error: 'Mirror needs one axis line (make it construction) plus entities to mirror' });
+      return;
+    }
+    const toMirror = selection.filter((id) => id !== axis);
+    if (!toMirror.length) { set({ error: 'Select entities to mirror (besides the axis line)' }); return; }
+    get()._snapshot();
+    const created = mirrorEdit(sk, toMirror, axis);
+    if (!created) { get()._undoSnapshot(); set({ error: 'Nothing could be mirrored' }); return; }
+    set({ selection: [], error: null });
+    get()._bump();
+    get().solve();
+  },
+
+  /** Offset the selected line(s)/circle(s)/arc(s) by signed distance `dist`. */
+  offset(dist) {
+    const { sk, selection } = get();
+    const geom = selection.filter((id) => {
+      const t = sk.entities.get(id)?.type;
+      return t === 'line' || t === 'circle' || t === 'arc';
+    });
+    if (!geom.length) { set({ error: 'Select lines/circles/arcs to offset' }); return; }
+    if (!(Number.isFinite(dist) && dist !== 0)) { set({ error: 'Offset needs a non-zero distance' }); return; }
+    get()._snapshot();
+    const created = geom.map((id) => offsetEntity(sk, id, dist)).filter((x) => x != null);
+    if (!created.length) { get()._undoSnapshot(); set({ error: 'Nothing could be offset (radius would collapse?)' }); return; }
+    set({ selection: [], error: null });
+    get()._bump();
+    get().solve();
+  },
+
+  /**
+   * Toggle a dimension between driving and **driven** (reference) — SolidWorks lets
+   * a dimension merely report a measurement (removes no DOF) instead of forcing it,
+   * the standard way out of an over-definition. Only dimensional constraints can be
+   * driven.
+   */
+  toggleDriven(index) {
+    const { sk } = get();
+    const c = sk.constraints[index];
+    if (!c || c.value == null) { set({ error: 'Only a dimension can be driven' }); return; }
+    get()._snapshot();
+    c.driven = !c.driven;
+    set({ error: null });
     get()._bump();
     get().solve();
   },

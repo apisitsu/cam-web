@@ -45,15 +45,15 @@ const TrimIcon = glyph(<><circle cx="6" cy="7" r="2.4" /><circle cx="6" cy="17" 
 const ChamferIcon = glyph(<path d="M5 20V10L11 4H20" />);
 
 const TOOLS = [
-  { value: 'select', label: 'Select', Icon: SelectIcon, hint: 'Click points, lines, circles or arcs to select' },
+  { value: 'select', label: 'Select', Icon: SelectIcon, hint: 'Click to select points, lines, circles or arcs · drag a point to move it (the sketch re-solves) · double-click a dimension to edit it' },
   { value: 'point', label: 'Point', Icon: PointIcon, hint: 'Click on the plane to add points' },
   { value: 'line', label: 'Line', Icon: LineIcon, hint: 'Click to start, click to finish · locks to 0/45/90…° and snaps tangent to circles/arcs · Esc cancels' },
   { value: 'rectangle', label: 'Rectangle', Icon: RectIcon, hint: 'Click two opposite corners' },
   { value: 'circle', label: 'Circle', Icon: CircleIcon, hint: 'Click centre, then a point on the rim' },
   { value: 'arc', label: 'Arc', Icon: ArcIcon, hint: 'Click centre, start, then end (sweeps CCW) · Esc cancels' },
-  { value: 'dimension', label: 'Dimension', Icon: DimIcon, hint: 'Pick 1 pt (to origin) / 2 pts / 1 line / 1 circle / pt+line / 2 lines (gap or angle) / line+circle / 2 circles — set value, or click empty space to apply' },
+  { value: 'dimension', label: 'Dimension', Icon: DimIcon, hint: 'Pick 1 pt (to origin) / 2 pts / 1 line / 1 circle / 1 arc / pt+line / 2 lines (gap or angle) / line+circle / 2 circles — set value, or click empty space to apply' },
   { value: 'trim', label: 'Trim', Icon: TrimIcon, hint: 'Click a line, circle or arc to trim it at its intersections' },
-  { value: 'chamfer', label: 'Chamfer / Fillet', Icon: ChamferIcon, hint: 'Click the two lines that share a corner, choose C (chamfer) or R (fillet), then type the size' },
+  { value: 'chamfer', label: 'Chamfer / Fillet', Icon: ChamferIcon, hint: 'Click the two elements that share a corner (2 lines, or a line + arc / 2 arcs), choose C (chamfer) or R (fillet — the only option when a curve is involved), then type the size' },
 ];
 
 // Point-selection constraints.
@@ -78,6 +78,7 @@ function ConstraintsPanel() {
   const {
     sk, selection, applyConstraint, applyConstraintRefs, dimension,
     removeConstraintAt, resolveDimension,
+    toggleConstruction, mirror, offset, toggleDriven,
   } = useSketchStore();
   const [value, setValue] = useState(10);
 
@@ -90,6 +91,16 @@ function ConstraintsPanel() {
   const lineAndCircle = selection.length === 2 && lineIds.length === 1 && circleIds.length === 1;
   const lineAndArc = selection.length === 2 && lineIds.length === 1 && arcIds.length === 1;
   const isCircleSelection = selection.length === 1 && sk.entities.get(selection[0])?.type === 'circle';
+  const isArcSelection = selection.length === 1 && sk.entities.get(selection[0])?.type === 'arc';
+  // Two circles/arcs (any mix) → Equal Radius / Concentric.
+  const curveIds = [...circleIds, ...arcIds];
+  const twoCurves = selection.length === 2 && curveIds.length === 2;
+  const centreOf = (id) => sk.entities.get(id)?.center;
+  // 2 points + 1 line → Symmetric (the line is the axis).
+  const symmetricSel = selection.length === 3 && pointIds.length === 2 && lineIds.length === 1;
+  // Geometry present → construction toggle / offset; ≥2 with a line → mirror.
+  const geomSel = [...lineIds, ...circleIds, ...arcIds];
+  const canMirror = selection.length >= 2 && lineIds.length >= 1;
   // What (if anything) a dimension would apply to for the current selection.
   const dimSpec = resolveDimension();
 
@@ -116,8 +127,15 @@ function ConstraintsPanel() {
             {c.label}
           </Button>
         ))}
-        <Button size="small" disabled={!isCircleSelection} onClick={() => applyConstraint('radius', value)}>
+        <Button
+          size="small"
+          disabled={!isCircleSelection && !isArcSelection}
+          onClick={() => applyConstraint(isArcSelection ? 'arcRadius' : 'radius', value)}
+        >
           Radius
+        </Button>
+        <Button size="small" disabled={!isCircleSelection} onClick={() => applyConstraint('diameter', value)}>
+          Diameter
         </Button>
       </Space>
 
@@ -143,6 +161,27 @@ function ConstraintsPanel() {
         </Button>
         <Button
           size="small"
+          disabled={!pointAndLineSelected}
+          onClick={() => applyConstraintRefs('midpoint', [pointIds[0], lineIds[0]])}
+        >
+          Midpoint
+        </Button>
+        <Button
+          size="small"
+          disabled={!twoCurves}
+          onClick={() => applyConstraintRefs('equalRadius', curveIds)}
+        >
+          Equal Radius
+        </Button>
+        <Button
+          size="small"
+          disabled={!twoCurves}
+          onClick={() => applyConstraintRefs('coincident', [centreOf(curveIds[0]), centreOf(curveIds[1])])}
+        >
+          Concentric
+        </Button>
+        <Button
+          size="small"
           disabled={!twoLinesSelected}
           onClick={() => applyConstraintRefs('angle', lineIds, value * DEG)}
         >
@@ -157,6 +196,28 @@ function ConstraintsPanel() {
         >
           Tangent
         </Button>
+        <Button
+          size="small"
+          disabled={!symmetricSel}
+          onClick={() => applyConstraintRefs('symmetric', [pointIds[0], pointIds[1], lineIds[0]])}
+        >
+          Symmetric
+        </Button>
+      </Space>
+
+      <Divider style={{ margin: '8px 0' }} />
+
+      {/* Modify tools: construction toggle, mirror, offset. */}
+      <Space wrap size={4}>
+        <Button size="small" disabled={!geomSel.length} onClick={() => toggleConstruction()}>
+          Construction
+        </Button>
+        <Tooltip title="Mirror the selection about an axis line (make the axis a construction line)">
+          <Button size="small" disabled={!canMirror} onClick={() => mirror()}>Mirror</Button>
+        </Tooltip>
+        <Tooltip title="Offset the selected lines/circles/arcs by the value (negative flips the side)">
+          <Button size="small" disabled={!geomSel.length} onClick={() => offset(value)}>Offset</Button>
+        </Tooltip>
       </Space>
 
       <Divider style={{ margin: '8px 0' }} />
@@ -165,19 +226,34 @@ function ConstraintsPanel() {
       <div style={{ maxHeight: 160, overflow: 'auto', marginTop: 4 }}>
         {sk.constraints.map((c, i) => (
           <Space key={i} size={4} style={{ width: '100%', justifyContent: 'space-between' }}>
-            <Text style={{ fontSize: 11, color: '#9ca3af' }}>
+            <Text style={{ fontSize: 11, color: c.driven ? '#c4b5fd' : '#9ca3af' }}>
               {c.kind} [{c.refs.join(', ')}]
-              {c.value != null ? ` = ${c.kind === 'angle' ? `${(c.value / DEG).toFixed(1)}°` : c.value}` : ''}
+              {c.value != null ? ` = ${c.kind === 'angle' ? `${(c.value / DEG).toFixed(1)}°` : Math.round(c.value * 100) / 100}` : ''}
+              {c.driven ? ' (ref)' : ''}
             </Text>
-            <Button
-              size="small"
-              danger
-              type="text"
-              style={{ fontSize: 11, lineHeight: 1, padding: '0 4px' }}
-              onClick={() => removeConstraintAt(i)}
-            >
-              ×
-            </Button>
+            <Space size={0}>
+              {c.value != null && (
+                <Tooltip title={c.driven ? 'Make driving' : 'Make driven (reference only)'}>
+                  <Button
+                    size="small"
+                    type="text"
+                    style={{ fontSize: 11, lineHeight: 1, padding: '0 4px', color: c.driven ? '#a78bfa' : '#64748b' }}
+                    onClick={() => toggleDriven(i)}
+                  >
+                    D
+                  </Button>
+                </Tooltip>
+              )}
+              <Button
+                size="small"
+                danger
+                type="text"
+                style={{ fontSize: 11, lineHeight: 1, padding: '0 4px' }}
+                onClick={() => removeConstraintAt(i)}
+              >
+                ×
+              </Button>
+            </Space>
           </Space>
         ))}
       </div>
@@ -248,6 +324,55 @@ function DimensionInput() {
 }
 
 /**
+ * Inline editor for an already-placed dimension — appears when a dimension label
+ * in the viewport is double-clicked (`editingConstraint`). Prefilled with the
+ * current value (degrees for an angle, mm otherwise); Enter/Set commits and
+ * re-solves, Esc/✕ cancels. Distinct green border so it reads as "editing", not
+ * "adding".
+ */
+function EditDimensionInput() {
+  const editingConstraint = useSketchStore((s) => s.editingConstraint);
+  const applyEditConstraint = useSketchStore((s) => s.applyEditConstraint);
+  const cancelEditConstraint = useSketchStore((s) => s.cancelEditConstraint);
+  const [val, setVal] = useState(0);
+
+  useEffect(() => {
+    if (editingConstraint) {
+      const cur = editingConstraint.value;
+      setVal(Number.isFinite(cur) ? Math.round(cur * 1000) / 1000 : 0);
+    }
+  }, [editingConstraint]);
+
+  if (!editingConstraint) return null;
+  const apply = () => { if (Number.isFinite(val)) applyEditConstraint(val); };
+
+  return (
+    <div
+      onKeyDown={(e) => { if (e.key === 'Escape') cancelEditConstraint(); }}
+      style={{
+        position: 'absolute', top: 104, left: 12, zIndex: 6,
+        display: 'flex', gap: 6, alignItems: 'center',
+        background: 'rgba(15,23,42,0.95)', border: '1px solid #22c55e',
+        padding: '6px 10px', borderRadius: 8,
+      }}
+    >
+      <Text style={{ color: '#cbd5e1', fontSize: 12 }}>Edit {editingConstraint.label}</Text>
+      <InputNumber controls={false}
+        autoFocus
+        size="small"
+        value={val}
+        onChange={(v) => setVal(v ?? 0)}
+        onPressEnter={apply}
+        style={{ width: 96 }}
+        addonAfter={editingConstraint.angular ? '°' : 'mm'}
+      />
+      <Button size="small" type="primary" onClick={apply}>Set</Button>
+      <Button size="small" type="text" style={{ color: '#94a3b8' }} onClick={cancelEditConstraint}>✕</Button>
+    </div>
+  );
+}
+
+/**
  * Inline chamfer/fillet entry — the Chamfer tool's companion, shown once two
  * lines that share a corner are picked. A C/R toggle chooses a straight **C**hamfer
  * or a rounded **R** fillet; type a size and Set applies it (typed value only, no
@@ -264,8 +389,15 @@ function ChamferInput() {
   const [val, setVal] = useState(3);
 
   const lineIds = selection.filter((id) => sk.entities.get(id)?.type === 'line');
-  if (tool !== 'chamfer' || lineIds.length !== 2) return null;
-  const rounded = chamferKind === 'R';
+  const arcIds = selection.filter((id) => sk.entities.get(id)?.type === 'arc');
+  // Valid pairings: 2 lines (chamfer or fillet), or a curve is involved
+  // (1 line + 1 arc, or 2 arcs) → fillet only, since a straight chamfer needs
+  // two straight edges.
+  const twoLines = selection.length === 2 && lineIds.length === 2;
+  const withArc = selection.length === 2 && arcIds.length >= 1 && lineIds.length + arcIds.length === 2;
+  if (tool !== 'chamfer' || (!twoLines && !withArc)) return null;
+  // A curve pairing forces fillet (R); two lines respect the C/R toggle.
+  const rounded = withArc || chamferKind === 'R';
   const apply = () => {
     if (!(Number.isFinite(val) && val > 0)) return;
     rounded ? fillet(val) : chamfer(val);
@@ -281,14 +413,20 @@ function ChamferInput() {
       }}
     >
       <Text style={{ color: '#cbd5e1', fontSize: 12 }}>{rounded ? 'Fillet' : 'Chamfer'}</Text>
-      <Tooltip title="C = straight chamfer · R = rounded fillet (tangent arc)">
-        <Segmented
-          size="small"
-          value={chamferKind}
-          onChange={setChamferKind}
-          options={[{ label: 'C', value: 'C' }, { label: 'R', value: 'R' }]}
-        />
-      </Tooltip>
+      {twoLines ? (
+        <Tooltip title="C = straight chamfer · R = rounded fillet (tangent arc)">
+          <Segmented
+            size="small"
+            value={chamferKind}
+            onChange={setChamferKind}
+            options={[{ label: 'C', value: 'C' }, { label: 'R', value: 'R' }]}
+          />
+        </Tooltip>
+      ) : (
+        <Tooltip title="A junction with an arc can only be rounded (fillet), not chamfered">
+          <Tag color="orange" style={{ margin: 0 }}>R</Tag>
+        </Tooltip>
+      )}
       <InputNumber controls={false}
         autoFocus
         size="small"
@@ -414,6 +552,7 @@ export default function SketchToolbar() {
       </Space>
     </div>
     <DimensionInput />
+    <EditDimensionInput />
     <ChamferInput />
     </>
   );

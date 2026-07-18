@@ -6,7 +6,7 @@
  * Screen→sketch coordinate mapping and event handling live in the view layer;
  * everything here is testable under plain Node.
  */
-import { addPoint, addLine, addArc } from './model.js';
+import { addPoint, addLine, addCircle, addArc, addConstraint } from './model.js';
 
 const dist2 = (ax, ay, bx, by) => (ax - bx) ** 2 + (ay - by) ** 2;
 
@@ -162,19 +162,34 @@ function dependents(sk, id) {
   return out;
 }
 
+/** Point ids referenced by a line/circle/arc (endpoints / centre), else []. */
+function refPoints(e) {
+  if (!e) return [];
+  if (e.type === 'line') return [e.p1, e.p2];
+  if (e.type === 'circle') return [e.center];
+  if (e.type === 'arc') return [e.center, e.start, e.end];
+  return [];
+}
+
 /**
  * Delete an entity and everything that depends on it: a point takes its lines
  * and circles with it, and any constraint that referenced a removed entity is
  * dropped. Returns the set of removed entity ids.
+ *
+ * With `prune`, deleting a line/circle/arc also removes any of its endpoint/centre
+ * points left dangling (no other geometry uses them, and they're not the origin) —
+ * SolidWorks drops those stray points instead of leaving them behind.
  */
-export function deleteEntity(sk, id) {
+export function deleteEntity(sk, id, prune = false) {
   if (!sk.entities.has(id)) return new Set();
+  const orphanCandidates = prune ? refPoints(sk.entities.get(id)) : [];
   const removed = new Set([id]);
   // A point can orphan geometry; collect that geometry too (one level is enough —
   // lines/circles are not referenced by other geometry).
   for (const depId of dependents(sk, id)) removed.add(depId);
   for (const rid of removed) sk.entities.delete(rid);
   sk.constraints = sk.constraints.filter((c) => !c.refs.some((r) => removed.has(r)));
+  for (const pid of orphanCandidates) removeIfOrphan(sk, pid);
   return removed;
 }
 
@@ -186,12 +201,85 @@ export function removeConstraint(sk, index) {
 }
 
 /**
- * Chamfer the corner where two lines meet: find the point they share, pull each
- * line's shared endpoint back by `dist` along its own direction to a new point,
- * drop the old corner (and any constraint on it), and join the two new points
- * with a chamfer line. Returns the chamfer line id, or null if the lines don't
- * share a corner or `dist` is not usable. All done on the point-based model, so
- * no arc primitive is needed.
+ * Current numeric value of a dimensional constraint measured from live geometry,
+ * or null for a non-dimensional kind / bad refs. Used to refresh a dimension's
+ * value after its corner is chamfered/filleted so the sketch doesn't jump on the
+ * next solve (the number then measures the shortened edge). `angle` is returned
+ * in radians — the model's angle unit.
+ */
+export function measureConstraint(sk, kind, refs) {
+  const P = (id) => sk.entities.get(id);
+  if (kind === 'distance') {
+    const a = P(refs[0]);
+    const b = P(refs[1]);
+    return a && b ? Math.hypot(a.x - b.x, a.y - b.y) : null;
+  }
+  if (kind === 'pointLineDistance') return distancePointToLine(sk, refs[0], refs[1]);
+  if (kind === 'radius' || kind === 'arcRadius') {
+    const c = P(refs[0]);
+    return c && (c.type === 'circle' || c.type === 'arc') ? c.r : null;
+  }
+  if (kind === 'diameter') {
+    const c = P(refs[0]);
+    return c && c.type === 'circle' ? c.r * 2 : null;
+  }
+  if (kind === 'lockX') {
+    const p = P(refs[0]);
+    return p ? p.x : null;
+  }
+  if (kind === 'lockY') {
+    const p = P(refs[0]);
+    return p ? p.y : null;
+  }
+  if (kind === 'angle') {
+    const l1 = P(refs[0]);
+    const l2 = P(refs[1]);
+    if (!l1 || !l2) return null;
+    const dir = (l) => {
+      const a = P(l.p1);
+      const b = P(l.p2);
+      return Math.atan2(b.y - a.y, b.x - a.x);
+    };
+    return dir(l2) - dir(l1);
+  }
+  return null;
+}
+
+/**
+ * Re-point every constraint that referenced a chamfered/filleted corner `shared`
+ * onto the matching setback point (c1 on leg l1, c2 on leg l2) *before* the
+ * corner is deleted — otherwise `deleteEntity` drops those constraints and the
+ * dimensions/relations the user placed on the corner vanish. A constraint that
+ * also names l1's far end (or l1 itself) follows c1; one that names l2's follows
+ * c2; anything ambiguous defaults to c1. Dimensional values are refreshed to the
+ * post-setback geometry so the sketch stays put on the next solve. Non-dimensional
+ * relations (horizontal/vertical/…) stay satisfied for free because c1/c2 lie on
+ * the original legs.
+ */
+function repointCorner(sk, shared, c1, c2, l1Id, l2Id, far1Id, far2Id) {
+  for (const con of sk.constraints) {
+    if (!con.refs.includes(shared)) continue;
+    const onL1 = con.refs.includes(far1Id) || con.refs.includes(l1Id);
+    const onL2 = con.refs.includes(far2Id) || con.refs.includes(l2Id);
+    const target = onL2 && !onL1 ? c2 : c1;
+    con.refs = con.refs.map((r) => (r === shared ? target : r));
+    if (con.value != null) {
+      const v = measureConstraint(sk, con.kind, con.refs);
+      if (Number.isFinite(v)) con.value = v;
+    }
+  }
+}
+
+/**
+ * Chamfer the corner where two lines meet: pull each line's shared endpoint back
+ * by `dist` to a new point and join them with a chamfer line. Like SolidWorks, the
+ * old corner is **kept as a construction "virtual sharp"**: the two edges are
+ * re-pointed onto the setback points, and the corner is pinned at their
+ * intersection (`pointOnLine` to each edge) with its setbacks locked
+ * (`distance` = dist). So any dimension placed on that corner stays at its original
+ * value (the corner doesn't recede inward), and the chamfer is fully defined.
+ * Returns the chamfer line id, or null if the lines don't share a corner or `dist`
+ * doesn't fit.
  */
 export function chamfer(sk, l1Id, l2Id, dist) {
   const l1 = sk.entities.get(l1Id);
@@ -210,11 +298,18 @@ export function chamfer(sk, l1Id, l2Id, dist) {
   const u2 = unit(P, far2);
   const c1 = addPoint(sk, P.x + u1.x * dist, P.y + u1.y * dist);
   const c2 = addPoint(sk, P.x + u2.x * dist, P.y + u2.y * dist);
-  // Re-point the two lines off the old corner and onto the new chamfer points.
+  // Re-point the two edges off the old corner and onto the new chamfer points.
   if (l1.p1 === shared) l1.p1 = c1; else l1.p2 = c1;
   if (l2.p1 === shared) l2.p1 = c2; else l2.p2 = c2;
   const line = addLine(sk, c1, c2);
-  deleteEntity(sk, shared); // orphaned corner + any constraint referencing it
+  // Keep the corner as a virtual sharp and pin the chamfer parametrically.
+  P.construction = true;
+  try {
+    addConstraint(sk, 'pointOnLine', [shared, l1Id]);
+    addConstraint(sk, 'pointOnLine', [shared, l2Id]);
+    addConstraint(sk, 'distance', [shared, c1], dist);
+    addConstraint(sk, 'distance', [shared, c2], dist);
+  } catch { /* best-effort parametric lock; geometry is placed regardless */ }
   return line;
 }
 
@@ -272,8 +367,260 @@ export function fillet(sk, l1Id, l2Id, radius) {
   const a2 = normAngle(Math.atan2(t2y - cy, t2x - cx));
   const [start, end] = normAngle(a2 - a1) <= Math.PI ? [c1, c2] : [c2, c1];
   const arc = addArc(sk, center, start, end, radius);
+  repointCorner(sk, shared, c1, c2, l1Id, l2Id, far1.id, far2.id);
   deleteEntity(sk, shared);
+  // Keep the fillet tangent to both legs (SolidWorks fillets carry tangent
+  // relations) so editing the radius stays tangent instead of tilting a leg.
+  try {
+    addConstraint(sk, 'tangentArc', [l1Id, arc]);
+    addConstraint(sk, 'tangentArc', [l2Id, arc]);
+  } catch { /* geometry is already tangent; skip if the relation can't be added */ }
   return arc;
+}
+
+/**
+ * Pick the corner-rounding fillet from a set of tangent-solution candidates and
+ * rebuild the geometry. Each candidate carries the fillet centre `F` and the two
+ * tangent points (`t1` on the first element, `t2` on the second) plus a `setback`
+ * (how far the tangent points sit from the old corner). The smallest-setback
+ * candidate — the fillet that hugs the corner — is chosen. Shared with
+ * `filletLineArc` / `filletArcArc`; returns the new arc id or null.
+ */
+function buildFillet(sk, cands, radius, repoint, finalize) {
+  if (!cands.length) return null;
+  cands.sort((a, b) => a.setback - b.setback);
+  const { F, t1, t2 } = cands[0];
+  const c1 = addPoint(sk, t1.x, t1.y);
+  const c2 = addPoint(sk, t2.x, t2.y);
+  const center = addPoint(sk, F.x, F.y);
+  repoint(c1, c2); // re-point / split the two elements onto the tangent points c1/c2
+  // Order start/end so the CCW sweep traces the minor (rounded-corner) arc.
+  const a1 = normAngle(Math.atan2(t1.y - F.y, t1.x - F.x));
+  const a2 = normAngle(Math.atan2(t2.y - F.y, t2.x - F.x));
+  const [start, end] = normAngle(a2 - a1) <= Math.PI ? [c1, c2] : [c2, c1];
+  const filletArc = addArc(sk, center, start, end, radius);
+  if (finalize) finalize(c1, c2); // corner cleanup (shared-corner case only)
+  return filletArc;
+}
+
+// How close an arc endpoint must sit to a line to count as meeting it for a fillet.
+// The caller passes the pick tolerance (screen-constant) so "close enough to click
+// as one" == "close enough to fillet"; this default covers direct engine calls and
+// is forgiving of the sub-mm gaps left when two endpoints weren't merged on draw.
+const FILLET_TOUCH_TOL = 1.0;
+
+/**
+ * Whether a line and an arc meet at a corner a fillet could round: a shared
+ * endpoint, an arc endpoint coincident with a line endpoint (drawn to the same
+ * spot but not merged), or an arc endpoint lying on the line's span. Pure detection
+ * (no mutation) so the UI can give an accurate reason when a fillet can't be made.
+ */
+export function lineArcMeet(sk, lineId, arcId, touchTol) {
+  const line = sk.entities.get(lineId);
+  const arc = sk.entities.get(arcId);
+  if (!line || line.type !== 'line' || !arc || arc.type !== 'arc') return false;
+  if ([line.p1, line.p2].some((id) => id === arc.start || id === arc.end)) return true;
+  const la = sk.entities.get(line.p1);
+  const lb = sk.entities.get(line.p2);
+  if (!la || !lb) return false;
+  const TOL = touchTol ?? FILLET_TOUCH_TOL;
+  for (const aep of [arc.start, arc.end]) {
+    const ap = sk.entities.get(aep);
+    if (!ap) continue;
+    if (Math.hypot(ap.x - la.x, ap.y - la.y) <= TOL || Math.hypot(ap.x - lb.x, ap.y - lb.y) <= TOL) return true;
+    if (pointOnSegmentInterior(ap, la, lb, TOL)) return true;
+  }
+  return false;
+}
+
+/** Whether point `p` lies within `tol` of the *interior* of segment a-b. */
+function pointOnSegmentInterior(p, a, b, tol) {
+  const abx = b.x - a.x;
+  const aby = b.y - a.y;
+  const len2 = abx * abx + aby * aby || 1;
+  const t = ((p.x - a.x) * abx + (p.y - a.y) * aby) / len2;
+  if (t <= 1e-6 || t >= 1 - 1e-6) return false; // interior only, not the endpoints
+  const fx = a.x + abx * t;
+  const fy = a.y + aby * t;
+  return Math.hypot(p.x - fx, p.y - fy) <= tol;
+}
+
+/**
+ * Fillet the corner where a **line and an arc** meet at a shared endpoint: round
+ * it with a tangent arc of radius `radius` that touches both. The fillet centre
+ * sits at perpendicular distance `radius` from the line **and** at distance
+ * R∓radius from the arc's centre (internal or external tangency), so it is found
+ * by intersecting each parallel offset of the line with each offset circle of the
+ * arc; the candidate hugging the corner (whose tangent points fall on the drawn
+ * segment and within the arc's span) is used. Returns the new fillet-arc id, or
+ * null if the two don't share a corner or no radius fits. Companion to `fillet`
+ * (line↔line) for the line↔arc case.
+ */
+export function filletLineArc(sk, lineId, arcId, radius, touchTol) {
+  const line = sk.entities.get(lineId);
+  const arc = sk.entities.get(arcId);
+  if (!line || line.type !== 'line' || !arc || arc.type !== 'arc') return null;
+  if (!(radius > 0)) return null;
+  const la = sk.entities.get(line.p1);
+  const lb = sk.entities.get(line.p2);
+  const C = sk.entities.get(arc.center);
+  const R = arc.r;
+  if (!la || !lb || !C) return null;
+  const TOL = touchTol ?? FILLET_TOUCH_TOL;
+
+  // Where the two meet, in three flavours (SolidWorks fillets any of them):
+  //   'shared'     — the arc endpoint IS a line endpoint (same point id);
+  //   'coincident' — arc endpoint sits on a line endpoint but is a *different*
+  //                  point (drawn to the same spot, never merged);
+  //   'interior'   — arc endpoint lies on the line's span (e.g. after trimming a
+  //                  circle against the edge) → the line is split at that point.
+  let arcCornerId = null;   // arc endpoint at the corner
+  let lineCornerId = null;  // line endpoint at the corner (shared/coincident), else null
+  let mode = null;
+  for (const aep of [arc.start, arc.end]) {
+    if (aep === line.p1 || aep === line.p2) { arcCornerId = aep; lineCornerId = aep; mode = 'shared'; break; }
+  }
+  if (mode == null) {
+    for (const aep of [arc.start, arc.end]) {
+      const ap = sk.entities.get(aep);
+      if (!ap) continue;
+      for (const lep of [line.p1, line.p2]) {
+        const lp = sk.entities.get(lep);
+        if (Math.hypot(ap.x - lp.x, ap.y - lp.y) <= TOL) { arcCornerId = aep; lineCornerId = lep; mode = 'coincident'; break; }
+      }
+      if (mode) break;
+      if (pointOnSegmentInterior(ap, la, lb, TOL)) { arcCornerId = aep; lineCornerId = null; mode = 'interior'; break; }
+    }
+  }
+  if (mode == null) return null;
+  const Pc = sk.entities.get(arcCornerId);
+  const farArcId = arc.start === arcCornerId ? arc.end : arc.start;
+
+  // The line endpoint(s) the fillet leg may run toward: a line-endpoint corner
+  // (shared/coincident) fixes the far end; an interior meet can go toward either
+  // end, so try both and take the tightest fillet. Candidate centres = each
+  // parallel line offset ∩ each arc offset circle (internal/external), kept when
+  // the tangent points fall on the leg and within the arc span.
+  const legEnds = lineCornerId != null
+    ? [line.p1 === lineCornerId ? line.p2 : line.p1]
+    : [line.p1, line.p2];
+  const cands = [];
+  for (const legEndId of legEnds) {
+    const far = sk.entities.get(legEndId);
+    const uL = unit(Pc, far);
+    const n = { x: -uL.y, y: uL.x };
+    const segLen = Math.hypot(far.x - Pc.x, far.y - Pc.y);
+    for (const off of [radius, -radius]) {
+      const o0 = { x: Pc.x + n.x * off, y: Pc.y + n.y * off };
+      const o1 = { x: far.x + n.x * off, y: far.y + n.y * off };
+      for (const arcOff of radius < R ? [R - radius, R + radius] : [R + radius]) {
+        for (const t of lineCircleParams(o0, o1, C.x, C.y, arcOff)) {
+          const F = { x: o0.x + (o1.x - o0.x) * t, y: o0.y + (o1.y - o0.y) * t };
+          const tl = (F.x - Pc.x) * uL.x + (F.y - Pc.y) * uL.y; // foot along the leg from the corner
+          if (!(tl > 1e-6 && tl < segLen - 1e-6)) continue;
+          const t1 = { x: Pc.x + uL.x * tl, y: Pc.y + uL.y * tl };
+          const dCF = Math.hypot(F.x - C.x, F.y - C.y) || 1;
+          const t2 = { x: C.x + ((F.x - C.x) / dCF) * R, y: C.y + ((F.y - C.y) / dCF) * R };
+          if (!arcSpanContains(sk, arc, t2.x, t2.y)) continue;
+          cands.push({ F, t1, t2, setback: tl + Math.hypot(t2.x - Pc.x, t2.y - Pc.y), legEndId });
+        }
+      }
+    }
+  }
+  if (!cands.length) return null;
+  cands.sort((a, b) => a.setback - b.setback);
+  const legEndId = cands[0].legEndId;
+
+  const repoint = (c1, c2) => {
+    if (mode === 'interior') {
+      // Split the line at the corner: it keeps [otherEnd, corner]; a new leg runs
+      // from the tangent point c1 to the far end.
+      if (line.p1 === legEndId) line.p1 = arcCornerId; else line.p2 = arcCornerId;
+      addLine(sk, c1, legEndId);
+    } else {
+      // Shared or coincident corner: shorten the line's corner endpoint onto c1.
+      if (line.p1 === lineCornerId) line.p1 = c1; else line.p2 = c1;
+    }
+    if (arc.start === arcCornerId) arc.start = c2; else arc.end = c2;
+  };
+  const finalize = (c1, c2) => {
+    if (mode === 'shared') {
+      repointCorner(sk, arcCornerId, c1, c2, lineId, arcId, legEndId, farArcId);
+      deleteEntity(sk, arcCornerId);
+    } else if (mode === 'coincident') {
+      // Two distinct coincident points: move their constraints onto the tangent
+      // points and drop each if nothing else uses it.
+      repointCorner(sk, lineCornerId, c1, c1, lineId, lineId, legEndId, legEndId);
+      repointCorner(sk, arcCornerId, c2, c2, arcId, arcId, farArcId, farArcId);
+      removeIfOrphan(sk, lineCornerId);
+      removeIfOrphan(sk, arcCornerId);
+    }
+    // interior: the corner point stays as the split line's endpoint — nothing to do.
+  };
+  const filletArc = buildFillet(sk, cands, radius, repoint, finalize);
+  if (filletArc != null) {
+    try {
+      addConstraint(sk, 'tangentArc', [lineId, filletArc]);
+      addConstraint(sk, 'tangentArcArc', [arcId, filletArc]);
+    } catch { /* already tangent; skip if unaddable */ }
+  }
+  return filletArc;
+}
+
+/**
+ * Fillet the corner where **two arcs** meet at a shared endpoint with a tangent
+ * arc of radius `radius`. The fillet centre lies at distance R1∓radius from the
+ * first arc's centre and R2∓radius from the second's, so it is a circle-circle
+ * intersection over the internal/external tangency combinations; the candidate
+ * whose tangent points fall within both arcs' spans and hugs the corner is used.
+ * Returns the new fillet-arc id or null. The arc↔arc companion to `filletLineArc`.
+ */
+export function filletArcArc(sk, arc1Id, arc2Id, radius) {
+  const arc1 = sk.entities.get(arc1Id);
+  const arc2 = sk.entities.get(arc2Id);
+  if (!arc1 || arc1.type !== 'arc' || !arc2 || arc2.type !== 'arc') return null;
+  if (!(radius > 0)) return null;
+  const shared = [arc1.start, arc1.end].find((id) => id === arc2.start || id === arc2.end);
+  if (shared == null) return null;
+  const P = sk.entities.get(shared);
+  const C1 = sk.entities.get(arc1.center);
+  const C2 = sk.entities.get(arc2.center);
+  const R1 = arc1.r;
+  const R2 = arc2.r;
+  if (!P || !C1 || !C2) return null;
+  const farArc1Id = arc1.start === shared ? arc1.end : arc1.start;
+  const farArc2Id = arc2.start === shared ? arc2.end : arc2.start;
+
+  const cands = [];
+  for (const s1 of radius < R1 ? [R1 - radius, R1 + radius] : [R1 + radius]) {
+    for (const s2 of radius < R2 ? [R2 - radius, R2 + radius] : [R2 + radius]) {
+      for (const F of circleCircleInts(C1.x, C1.y, s1, C2.x, C2.y, s2)) {
+        const d1 = Math.hypot(F.x - C1.x, F.y - C1.y) || 1;
+        const d2 = Math.hypot(F.x - C2.x, F.y - C2.y) || 1;
+        const t1 = { x: C1.x + ((F.x - C1.x) / d1) * R1, y: C1.y + ((F.y - C1.y) / d1) * R1 };
+        const t2 = { x: C2.x + ((F.x - C2.x) / d2) * R2, y: C2.y + ((F.y - C2.y) / d2) * R2 };
+        if (!arcSpanContains(sk, arc1, t1.x, t1.y)) continue;
+        if (!arcSpanContains(sk, arc2, t2.x, t2.y)) continue;
+        cands.push({ F, t1, t2, setback: Math.hypot(t1.x - P.x, t1.y - P.y) + Math.hypot(t2.x - P.x, t2.y - P.y) });
+      }
+    }
+  }
+  const repoint = (c1, c2) => {
+    if (arc1.start === shared) arc1.start = c1; else arc1.end = c1;
+    if (arc2.start === shared) arc2.start = c2; else arc2.end = c2;
+  };
+  const finalize = (c1, c2) => {
+    repointCorner(sk, shared, c1, c2, arc1Id, arc2Id, farArc1Id, farArc2Id);
+    deleteEntity(sk, shared);
+  };
+  const filletArc = buildFillet(sk, cands, radius, repoint, finalize);
+  if (filletArc != null) {
+    try {
+      addConstraint(sk, 'tangentArcArc', [arc1Id, filletArc]);
+      addConstraint(sk, 'tangentArcArc', [arc2Id, filletArc]);
+    } catch { /* already tangent; skip if unaddable */ }
+  }
+  return filletArc;
 }
 
 /**
@@ -289,6 +636,48 @@ export function distancePointToLine(sk, pointId, lineId) {
   const b = sk.entities.get(l.p2);
   if (!a || !b) return null;
   return pointLineDist(p.x, p.y, a, b);
+}
+
+/**
+ * Angle-dimension model for two lines. planegcs measures the **directed angle
+ * between the lines' point-order directions** (p1→p2), which for a corner is often
+ * the *supplement* of the angle you'd read with a protractor there (e.g. a 60°
+ * corner shows as 120° if one line points into the vertex). This returns the
+ * intuitive **interior angle at the shared vertex** (0–180°, `interiorDeg`) for
+ * display, plus the `sign`/`offsetDeg` to convert a user-entered interior angle θ
+ * back to the value planegcs must store: `norm180(sign*θ + offsetDeg)`. With no
+ * shared vertex it falls back to the directed angle's magnitude.
+ */
+export function angleSpec(sk, l1Id, l2Id) {
+  const l1 = sk.entities.get(l1Id);
+  const l2 = sk.entities.get(l2Id);
+  if (!l1 || l1.type !== 'line' || !l2 || l2.type !== 'line') return null;
+  const norm180 = (d) => { const m = ((d % 360) + 360) % 360; return m > 180 ? m - 360 : m; };
+  const dirOf = (l) => {
+    const a = sk.entities.get(l.p1);
+    const b = sk.entities.get(l.p2);
+    return (Math.atan2(b.y - a.y, b.x - a.x) * 180) / Math.PI;
+  };
+  const parametric = norm180(dirOf(l2) - dirOf(l1));
+  const shared = [l1.p1, l1.p2].find((id) => id === l2.p1 || id === l2.p2);
+  if (shared == null) {
+    return { shared: null, interiorDeg: Math.abs(parametric), sign: parametric < 0 ? -1 : 1, offsetDeg: 0, parametric };
+  }
+  const V = sk.entities.get(shared);
+  const f1 = sk.entities.get(l1.p1 === shared ? l1.p2 : l1.p1);
+  const f2 = sk.entities.get(l2.p1 === shared ? l2.p2 : l2.p1);
+  const ray1 = (Math.atan2(f1.y - V.y, f1.x - V.x) * 180) / Math.PI;
+  const ray2 = (Math.atan2(f2.y - V.y, f2.x - V.x) * 180) / Math.PI;
+  const interiorSigned = norm180(ray2 - ray1);
+  const offsetDeg = Math.round((parametric - interiorSigned) / 180) * 180; // multiple of 180
+  return { shared, interiorDeg: Math.abs(interiorSigned), sign: interiorSigned < 0 ? -1 : 1, offsetDeg, parametric };
+}
+
+/** The planegcs angle value (radians) for a desired interior angle θ° on this pair. */
+export function interiorAngleToModel(spec, thetaDeg) {
+  const d = spec.sign * thetaDeg + spec.offsetDeg;
+  const m = ((d % 360) + 360) % 360;
+  return ((m > 180 ? m - 360 : m) * Math.PI) / 180;
 }
 
 /**
@@ -739,4 +1128,116 @@ export function nearestTangent(sk, ax, ay, x, y, tol = 1e-6) {
     best = { id: e.id, type: e.type, x: tp.x, y: tp.y };
   }
   return best;
+}
+
+/** Reflect point (px, py) across the infinite line through a and b. */
+function reflectPoint(px, py, a, b) {
+  const dx = b.x - a.x;
+  const dy = b.y - a.y;
+  const len2 = dx * dx + dy * dy || 1;
+  const t = ((px - a.x) * dx + (py - a.y) * dy) / len2; // projection onto the line
+  const fx = a.x + dx * t;
+  const fy = a.y + dy * t; // foot of the perpendicular
+  return { x: 2 * fx - px, y: 2 * fy - py };
+}
+
+/**
+ * Mirror the entities `ids` across the axis line `axisLineId`, creating reflected
+ * copies (SolidWorks "Mirror Entities"). Shared points among the mirrored set map
+ * to the same reflected point, so a mirrored chain stays connected. Reflection is
+ * orientation-reversing, so an arc's start/end are swapped to keep the copy's CCW
+ * sweep. The axis line itself is never mirrored. Construction flags carry over.
+ *
+ * Like SolidWorks, the copy is kept **parametric**: each original↔mirror point pair
+ * gets a `symmetric` relation about the axis, and mirrored circles/arcs get an
+ * `equalRadius` to their source — so editing the original updates the mirror. (Any
+ * link that can't be added is skipped, never aborting the mirror.) Returns the new
+ * entity ids, or null if the axis is bad or nothing to mirror.
+ */
+export function mirror(sk, ids, axisLineId) {
+  const axis = sk.entities.get(axisLineId);
+  if (!axis || axis.type !== 'line') return null;
+  const a = sk.entities.get(axis.p1);
+  const b = sk.entities.get(axis.p2);
+  if (!a || !b) return null;
+  const targets = ids.filter((id) => id !== axisLineId && sk.entities.has(id));
+  if (!targets.length) return null;
+  const map = new Map(); // old point id → reflected point id (reused for shared corners)
+  const mp = (pid) => {
+    if (map.has(pid)) return map.get(pid);
+    const p = sk.entities.get(pid);
+    const r = reflectPoint(p.x, p.y, a, b);
+    const nid = addPoint(sk, r.x, r.y);
+    map.set(pid, nid);
+    return nid;
+  };
+  const created = [];
+  const radiusLinks = []; // [origCurveId, mirrorCurveId] to tie with equalRadius
+  for (const id of targets) {
+    const e = sk.entities.get(id);
+    let nid = null;
+    if (e.type === 'point') nid = mp(id);
+    else if (e.type === 'line') nid = addLine(sk, mp(e.p1), mp(e.p2));
+    else if (e.type === 'circle') { nid = addCircle(sk, mp(e.center), e.r); radiusLinks.push([id, nid]); }
+    else if (e.type === 'arc') { nid = addArc(sk, mp(e.center), mp(e.end), mp(e.start), e.r); radiusLinks.push([id, nid]); } // swap → CCW
+    if (nid != null) {
+      if (e.construction) sk.entities.get(nid).construction = true;
+      created.push(nid);
+    }
+  }
+  // Parametric links (SW keeps a mirror driven by its source).
+  for (const [oldPid, newPid] of map) {
+    const op = sk.entities.get(oldPid);
+    if (op?.origin || op?.fixed) continue; // don't tie a fixed datum to its image
+    try { addConstraint(sk, 'symmetric', [oldPid, newPid, axisLineId]); } catch { /* skip unlinkable pair */ }
+  }
+  for (const [oldId, newId] of radiusLinks) {
+    try { addConstraint(sk, 'equalRadius', [oldId, newId]); } catch { /* skip */ }
+  }
+  return created.length ? created : null;
+}
+
+/**
+ * Offset one line/circle/arc by signed distance `dist`, creating a parallel /
+ * concentric copy (SolidWorks "Offset Entities"). A line is shifted along its left
+ * normal (negative `dist` → right); a circle/arc keeps its centre and takes radius
+ * r + dist (must stay positive). The construction flag carries over. Returns the
+ * new entity id, or null if it can't be offset.
+ */
+export function offsetEntity(sk, id, dist) {
+  const e = sk.entities.get(id);
+  if (!e || !Number.isFinite(dist) || dist === 0) return null;
+  let nid = null;
+  if (e.type === 'line') {
+    const a = sk.entities.get(e.p1);
+    const b = sk.entities.get(e.p2);
+    if (!a || !b) return null;
+    const dx = b.x - a.x;
+    const dy = b.y - a.y;
+    const len = Math.hypot(dx, dy) || 1;
+    const nx = -dy / len;
+    const ny = dx / len; // left normal
+    const p1 = addPoint(sk, a.x + nx * dist, a.y + ny * dist);
+    const p2 = addPoint(sk, b.x + nx * dist, b.y + ny * dist);
+    nid = addLine(sk, p1, p2);
+  } else if (e.type === 'circle') {
+    const c = sk.entities.get(e.center);
+    const nr = e.r + dist;
+    if (!c || !(nr > 1e-6)) return null;
+    nid = addCircle(sk, addPoint(sk, c.x, c.y), nr);
+  } else if (e.type === 'arc') {
+    const c = sk.entities.get(e.center);
+    const s = sk.entities.get(e.start);
+    const en = sk.entities.get(e.end);
+    const nr = e.r + dist;
+    if (!c || !s || !en || !(nr > 1e-6)) return null;
+    const a0 = Math.atan2(s.y - c.y, s.x - c.x);
+    const a1 = Math.atan2(en.y - c.y, en.x - c.x);
+    const nc = addPoint(sk, c.x, c.y);
+    const ns = addPoint(sk, c.x + nr * Math.cos(a0), c.y + nr * Math.sin(a0));
+    const ne = addPoint(sk, c.x + nr * Math.cos(a1), c.y + nr * Math.sin(a1));
+    nid = addArc(sk, nc, ns, ne, nr);
+  }
+  if (nid != null && e.construction) sk.entities.get(nid).construction = true;
+  return nid;
 }

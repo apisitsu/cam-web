@@ -102,6 +102,109 @@ test('arc_rules pins both endpoints to the rim (radius = centre→start distance
   assert.ok(near(dist(pt(c), pt(e)), 10, 1e-4), `end pulled to rim (got ${dist(pt(c), pt(e))})`);
 });
 
+test('arcRadius drives a partial arc to the requested radius', () => {
+  const sk = createSketch();
+  const c = addPoint(sk, 0, 0);
+  const s = addPoint(sk, 8, 0); // start on the rim at 0°
+  const e = addPoint(sk, 0, 8); // end at 90°
+  addArc(sk, c, s, e, 8);
+  addConstraint(sk, 'lockX', [c], 0);
+  addConstraint(sk, 'lockY', [c], 0);
+  addConstraint(sk, 'arcRadius', [[...sk.entities.values()].find((x) => x.type === 'arc').id], 12);
+
+  const res = solver.solve(sk);
+  assert.ok(res.success, `solve status ${res.status}`);
+  const arc = [...sk.entities.values()].find((x) => x.type === 'arc');
+  assert.ok(near(arc.r, 12, 1e-4), `arc radius driven to 12 (got ${arc.r})`);
+  // Endpoints followed the rim out to radius 12.
+  const dist = (p, q) => Math.hypot(p.x - q.x, p.y - q.y);
+  const pt = (id) => sk.entities.get(id);
+  assert.ok(near(dist(pt(c), pt(s)), 12, 1e-3), 'start on the grown rim');
+  assert.ok(near(dist(pt(c), pt(e)), 12, 1e-3), 'end on the grown rim');
+});
+
+test('diameter constraint drives a circle to the requested Ø', () => {
+  const sk = createSketch();
+  const { circle } = addCircleXY(sk, 0, 0, 3);
+  addConstraint(sk, 'diameter', [circle], 20); // Ø20 → r10
+  const res = solver.solve(sk);
+  assert.ok(res.success, `solve status ${res.status}`);
+  assert.ok(near(sk.entities.get(circle).r, 10, 1e-4), 'radius driven to 10 by Ø20');
+});
+
+test('equalRadius ties two circles to the same radius', () => {
+  const sk = createSketch();
+  const { circle: c1 } = addCircleXY(sk, 0, 0, 4);
+  const { circle: c2 } = addCircleXY(sk, 30, 0, 9);
+  addConstraint(sk, 'radius', [c1], 7);
+  addConstraint(sk, 'equalRadius', [c1, c2]);
+  const res = solver.solve(sk);
+  assert.ok(res.success, `solve status ${res.status}`);
+  assert.ok(near(sk.entities.get(c2).r, 7, 1e-4), `second circle equalised to 7 (got ${sk.entities.get(c2).r})`);
+});
+
+test('midpoint pins a point to the centre of a line', () => {
+  const sk = createSketch();
+  const a = addPoint(sk, 0, 0, true);
+  const b = addPoint(sk, 10, 4, true);
+  const line = addLine(sk, a, b);
+  const m = addPoint(sk, 2, 9); // off the line
+  addConstraint(sk, 'midpoint', [m, line]);
+  const res = solver.solve(sk);
+  assert.ok(res.success, `solve status ${res.status}`);
+  const pm = sk.entities.get(m);
+  assert.ok(near(pm.x, 5, 1e-4) && near(pm.y, 2, 1e-4), `point at midpoint (5,2), got (${pm.x},${pm.y})`);
+});
+
+test('symmetric mirrors one point across a line axis onto the other', () => {
+  const sk = createSketch();
+  // Vertical axis at x=5 (two fixed points on it).
+  const ax1 = addPoint(sk, 5, 0, true);
+  const ax2 = addPoint(sk, 5, 10, true);
+  const axis = addLine(sk, ax1, ax2);
+  const p1 = addPoint(sk, 2, 3, true); // fixed on the left
+  const p2 = addPoint(sk, 20, 20); // free — should snap to the mirror of p1
+  addConstraint(sk, 'symmetric', [p1, p2, axis]);
+  const res = solver.solve(sk);
+  assert.ok(res.success, `solve status ${res.status}`);
+  const q = sk.entities.get(p2);
+  assert.ok(near(q.x, 8, 1e-3) && near(q.y, 3, 1e-3), `p2 mirrored to (8,3), got (${q.x},${q.y})`);
+});
+
+test('a driven (reference) distance measures but does not move geometry', () => {
+  const sk = createSketch();
+  const a = addPoint(sk, 0, 0, true);
+  const b = addPoint(sk, 10, 0, true); // both fixed → true length is 10
+  addLine(sk, a, b);
+  // Driven distance asserting 999 must NOT stretch the (fixed) line.
+  sk.constraints.push({ kind: 'distance', refs: [a, b], value: 999, driven: true });
+  const res = solver.solve(sk);
+  assert.ok(res.success, `solve status ${res.status}`);
+  assert.ok(near(sk.entities.get(b).x, 10, 1e-6), 'driven dim did not drive the geometry');
+});
+
+test('tangentArcArc makes two arcs tangent (centre distance = R1+R2)', () => {
+  const sk = createSketch();
+  // Fixed arc A: centre (0,0), r 10. Arc B: centre free, r 4, pushed to touch.
+  const cA = addPoint(sk, 0, 0, true);
+  const sA = addPoint(sk, 10, 0, true);
+  const eA = addPoint(sk, 0, 10, true);
+  const arcA = addArc(sk, cA, sA, eA, 10);
+  addConstraint(sk, 'lockX', [sA], 10); // pin A's radius to 10
+  const cB = addPoint(sk, 20, 0);
+  const sB = addPoint(sk, 24, 0);
+  const eB = addPoint(sk, 20, 4);
+  const arcB = addArc(sk, cB, sB, eB, 4);
+  addConstraint(sk, 'arcRadius', [arcB], 4);
+  addConstraint(sk, 'lockY', [cB], 0); // keep B's centre on the x-axis
+  addConstraint(sk, 'tangentArcArc', [arcA, arcB]);
+  const res = solver.solve(sk);
+  assert.ok(res.success, `solve status ${res.status}`);
+  const d = Math.hypot(sk.entities.get(cB).x - 0, sk.entities.get(cB).y - 0);
+  // External tangency → centre distance = 10 + 4 = 14 (DogLeg from the outside start).
+  assert.ok(near(d, 14, 1e-2), `arc centres 14 apart (external tangency), got ${d}`);
+});
+
 test('pointLineDistance drives a point to a set perpendicular gap from a line', () => {
   const sk = createSketch();
   // fixed horizontal line along the x-axis

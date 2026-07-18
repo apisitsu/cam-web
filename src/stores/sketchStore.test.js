@@ -1,8 +1,10 @@
 import { describe, it, expect } from 'vitest';
 import { useSketchStore } from './sketchStore.js';
 import {
-  createSketch, addPoint, addLine, addCircle,
+  createSketch, addPoint, addLine, addCircle, addConstraint, dof,
 } from '../engine/sketch/model.js';
+
+const DEG = Math.PI / 180;
 
 const near = (a, b, eps = 1e-6) => Math.abs(a - b) <= eps;
 
@@ -78,6 +80,101 @@ describe('resolveDimension — dimensioning to the origin', () => {
   });
 });
 
+describe('editing a placed dimension (double-click)', () => {
+  it('seeds the editor with the current value — mm for a distance', () => {
+    const sk = createSketch();
+    const a = addPoint(sk, 0, 0);
+    const b = addPoint(sk, 10, 0);
+    addConstraint(sk, 'distance', [a, b], 10);
+    useSketchStore.setState({ sk, editingConstraint: null });
+    useSketchStore.getState().beginEditConstraint(0);
+    const ec = useSketchStore.getState().editingConstraint;
+    expect(ec.index).toBe(0);
+    expect(ec.kind).toBe('distance');
+    expect(ec.angular).toBe(false);
+    expect(near(ec.value, 10)).toBe(true);
+  });
+
+  it('seeds an angle in degrees and stores the edited value back in radians', () => {
+    const { sk, base, up } = corner();
+    const idx = addConstraint(sk, 'angle', [base, up], 90 * DEG);
+    useSketchStore.setState({ sk, editingConstraint: null, past: [], future: [] });
+    useSketchStore.getState().beginEditConstraint(idx);
+    const ec = useSketchStore.getState().editingConstraint;
+    expect(ec.angular).toBe(true);
+    expect(near(ec.value, 90)).toBe(true); // shown in degrees
+    // Commit 45° → stored as radians on the constraint, editor closed.
+    useSketchStore.getState().applyEditConstraint(45);
+    expect(near(useSketchStore.getState().sk.constraints[idx].value, 45 * DEG)).toBe(true);
+    expect(useSketchStore.getState().editingConstraint).toBeNull();
+  });
+
+  it('refuses to edit a non-dimensional constraint', () => {
+    const { sk, base, up } = corner();
+    addConstraint(sk, 'parallel', [base, up]);
+    useSketchStore.setState({ sk, editingConstraint: null });
+    useSketchStore.getState().beginEditConstraint(0);
+    expect(useSketchStore.getState().editingConstraint).toBeNull();
+  });
+});
+
+describe('construction geometry & driven dimensions', () => {
+  it('toggleConstruction flips the flag on selected geometry only', () => {
+    const sk = createSketch();
+    const a = addPoint(sk, 0, 0);
+    const b = addPoint(sk, 10, 0);
+    const line = addLine(sk, a, b);
+    useSketchStore.setState({ sk, selection: [line, a], past: [] });
+    useSketchStore.getState().toggleConstruction();
+    expect(sk.entities.get(line).construction).toBe(true); // geometry flagged
+    expect(sk.entities.get(a).construction).toBeUndefined(); // points untouched
+    useSketchStore.getState().toggleConstruction(); // toggle back off
+    expect(sk.entities.get(line).construction).toBe(false);
+  });
+
+  it('a driven dimension removes no degrees of freedom', () => {
+    const sk = createSketch();
+    const a = addPoint(sk, 0, 0);
+    const b = addPoint(sk, 10, 0); // 2 free points → 4 DOF
+    addConstraint(sk, 'distance', [a, b], 10); // driving → removes 1
+    expect(dof(sk).removed).toBe(1);
+    sk.constraints[0].driven = true; // reference only
+    expect(dof(sk).removed).toBe(0);
+  });
+});
+
+describe('drag-to-modify (arm / end)', () => {
+  it('arms a drag on a normal point: pins it, no snapshot yet', () => {
+    const sk = createSketch();
+    const p = addPoint(sk, 5, 5);
+    useSketchStore.setState({ sk, dragging: null, past: [] });
+    const started = useSketchStore.getState().beginDrag(p);
+    expect(started).toBe(true);
+    expect(sk.entities.get(p).fixed).toBe(true); // pinned for the live solve
+    expect(useSketchStore.getState().dragging.id).toBe(p);
+    expect(useSketchStore.getState().dragging.moved).toBe(false);
+    expect(useSketchStore.getState().past.length).toBe(0); // snapshot deferred to first move
+  });
+
+  it('refuses to drag the origin (fixed datum)', () => {
+    const { sk, origin } = withOrigin();
+    useSketchStore.setState({ sk, dragging: null });
+    expect(useSketchStore.getState().beginDrag(origin)).toBe(false);
+    expect(useSketchStore.getState().dragging).toBeNull();
+  });
+
+  it('endDrag restores the fixed flag and reports no movement for a bare grab', () => {
+    const sk = createSketch();
+    const p = addPoint(sk, 5, 5); // wasFixed = false
+    useSketchStore.setState({ sk, dragging: null, past: [] });
+    useSketchStore.getState().beginDrag(p);
+    const moved = useSketchStore.getState().endDrag();
+    expect(moved).toBe(false); // a click, not a drag
+    expect(sk.entities.get(p).fixed).toBe(false); // pin released
+    expect(useSketchStore.getState().dragging).toBeNull();
+  });
+});
+
 describe('line guides — angle lock & tangent snap (hover)', () => {
   it('locks the rubber-band to the nearest 45° axis when close, and reports the angle', () => {
     const sk = createSketch();
@@ -114,14 +211,15 @@ describe('line guides — angle lock & tangent snap (hover)', () => {
 });
 
 describe('swapDimensionRefs', () => {
-  it('flips base/rotating line and re-reads the angle for the new order', () => {
-    const { sk, base, up } = corner();
+  it('flips the ref order but keeps the interior corner angle', () => {
+    const { sk, base, up } = corner(); // 90° corner sharing the origin
     const spec = { kind: 'angle', refs: [base, up], label: 'Angle', unit: '°', angular: true, current: 90 };
     useSketchStore.setState({ sk, selection: [base, up], dimensionPending: spec });
     useSketchStore.getState().swapDimensionRefs();
     const dp = useSketchStore.getState().dimensionPending;
     expect(dp.refs).toEqual([up, base]);
-    expect(near(dp.current, -90)).toBe(true);
+    // The interior angle is a magnitude — still 90° whichever line is first.
+    expect(near(dp.current, 90)).toBe(true);
   });
 
   it('is a no-op for a non-angular dimension', () => {

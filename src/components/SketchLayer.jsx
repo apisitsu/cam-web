@@ -45,6 +45,7 @@ function ScreenRing({ x, y, color, pixels = 10 }) {
     </group>
   );
 }
+const CONSTRUCTION = '#94a3b8'; // slate — construction (reference) geometry, drawn dashed
 const HOVER = '#fbbf24'; // amber pre-select highlight (the entity a click will pick)
 const SELECTED = '#f43f5e'; // red selected highlight
 const GEOM = '#38bdf8'; // default geometry colour
@@ -71,7 +72,10 @@ const fmtDim = (v) => String(Math.round(v * 100) / 100);
 const dimLabelStyle = {
   color: '#fde68a', background: 'rgba(15,23,42,0.85)', border: '1px solid #a16207',
   borderRadius: 4, font: '600 11px monospace', padding: '0 4px',
-  whiteSpace: 'nowrap', userSelect: 'none', pointerEvents: 'none',
+  whiteSpace: 'nowrap', userSelect: 'none',
+  // Pointer events on so a dimension label is double-clickable to edit its value;
+  // the label is small and stood off from the geometry, so picking is unaffected.
+  pointerEvents: 'auto', cursor: 'pointer',
 };
 
 /** Live angle/length readout shown at the line rubber-band's tip while drawing. */
@@ -98,12 +102,13 @@ const angleReadoutStyle = (locked) => ({
  * unaffected.
  */
 function DimensionAnnotations({ sk, version }) {
+  const beginEditConstraint = useSketchStore((s) => s.beginEditConstraint);
   const { segs, labels } = useMemo(() => {
     const P = (id) => sk.entities.get(id);
     const ls = [];
     const bs = [];
     let k = 0;
-    sk.constraints.forEach((c) => {
+    sk.constraints.forEach((c, ci) => {
       if (c.value == null) return;
       if (c.kind === 'distance') {
         const a = P(c.refs[0]);
@@ -120,7 +125,7 @@ function DimensionAnnotations({ sk, version }) {
         ls.push({ key: `s${k++}`, pts: [[a.x, a.y, Z], a2] }); // witness lines
         ls.push({ key: `s${k++}`, pts: [[b.x, b.y, Z], b2] });
         ls.push({ key: `s${k++}`, pts: [a2, b2] }); // dimension line
-        bs.push({ key: `b${k++}`, pos: [(a2[0] + b2[0]) / 2, (a2[1] + b2[1]) / 2, Z], text: fmtDim(c.value) });
+        bs.push({ key: `b${k++}`, ci, pos: [(a2[0] + b2[0]) / 2, (a2[1] + b2[1]) / 2, Z], text: fmtDim(c.value) });
       } else if (c.kind === 'pointLineDistance') {
         // Perpendicular distance from a point to a line — this is what a 2-line
         // (parallel) dimension, a point↔line, and a line↔circle-centre resolve to.
@@ -143,12 +148,34 @@ function DimensionAnnotations({ sk, version }) {
           const near = t < 0 ? a : b; // witness: extend the line to reach the foot
           ls.push({ key: `s${k++}`, pts: [[near.x, near.y, Z], [fx, fy, Z]] });
         }
-        bs.push({ key: `b${k++}`, pos: [(p.x + fx) / 2, (p.y + fy) / 2, Z], text: fmtDim(c.value) });
+        bs.push({ key: `b${k++}`, ci, pos: [(p.x + fx) / 2, (p.y + fy) / 2, Z], text: fmtDim(c.value) });
       } else if (c.kind === 'radius') {
         const circ = P(c.refs[0]);
         const ctr = circ && P(circ.center);
         if (!ctr) return;
-        bs.push({ key: `b${k++}`, pos: [ctr.x + circ.r * 0.7, ctr.y + circ.r * 0.7, Z], text: `R${fmtDim(c.value)}` });
+        bs.push({ key: `b${k++}`, ci, pos: [ctr.x + circ.r * 0.7, ctr.y + circ.r * 0.7, Z], text: `R${fmtDim(c.value)}` });
+      } else if (c.kind === 'diameter') {
+        // A diameter dimension: a line clean across the circle + a Ø label.
+        const circ = P(c.refs[0]);
+        const ctr = circ && P(circ.center);
+        if (!ctr) return;
+        const ux = 0.7071, uy = 0.7071; // 45° diameter line, tidy and unambiguous
+        ls.push({ key: `s${k++}`, pts: [[ctr.x - ux * circ.r, ctr.y - uy * circ.r, Z], [ctr.x + ux * circ.r, ctr.y + uy * circ.r, Z]] });
+        bs.push({ key: `b${k++}`, ci, pos: [ctr.x + ux * circ.r * 0.5, ctr.y + uy * circ.r * 0.5, Z], text: `Ø${fmtDim(c.value)}` });
+      } else if (c.kind === 'arcRadius') {
+        // Radius of a partial arc: a spoke from the centre to the arc's midpoint
+        // plus an R label out at the rim, so it reads as a radius, not a diameter.
+        const arc = P(c.refs[0]);
+        const ctr = arc && P(arc.center);
+        const s = arc && P(arc.start);
+        const en = arc && P(arc.end);
+        if (!ctr || !s || !en) return;
+        const a0 = Math.atan2(s.y - ctr.y, s.x - ctr.x);
+        const mid = a0 + (norm(Math.atan2(en.y - ctr.y, en.x - ctr.x) - a0) || TWO_PI) / 2;
+        const rx = ctr.x + arc.r * Math.cos(mid);
+        const ry = ctr.y + arc.r * Math.sin(mid);
+        ls.push({ key: `s${k++}`, pts: [[ctr.x, ctr.y, Z], [rx, ry, Z]] }); // radius spoke
+        bs.push({ key: `b${k++}`, ci, pos: [(ctr.x + rx) / 2, (ctr.y + ry) / 2, Z], text: `R${fmtDim(c.value)}` });
       } else if (c.kind === 'angle') {
         // Draw an angle arc between the two legs around their shared vertex, so a
         // 2-line angle dimension reads like a real angle, not a bare number.
@@ -176,12 +203,14 @@ function DimensionAnnotations({ sk, version }) {
         }
         ls.push({ key: `s${k++}`, pts });
         const mid = a1 + d / 2;
-        bs.push({ key: `b${k++}`, pos: [v.x + (r + 2) * Math.cos(mid), v.y + (r + 2) * Math.sin(mid), Z], text: `${fmtDim((c.value * 180) / Math.PI)}°` });
+        // Label the *interior* corner angle actually swept (|d|), so a 60° corner
+        // reads 60°, not the 120° directed angle planegcs stores.
+        bs.push({ key: `b${k++}`, ci, pos: [v.x + (r + 2) * Math.cos(mid), v.y + (r + 2) * Math.sin(mid), Z], text: `${fmtDim((Math.abs(d) * 180) / Math.PI)}°` });
       } else if (c.kind === 'lockX' || c.kind === 'lockY') {
         const p = P(c.refs[0]);
         if (!p) return;
         const dyOff = c.kind === 'lockY' ? 2 : -2;
-        bs.push({ key: `b${k++}`, pos: [p.x + 1.6, p.y + dyOff, Z], text: `${c.kind === 'lockX' ? 'X' : 'Y'}${fmtDim(c.value)}` });
+        bs.push({ key: `b${k++}`, ci, pos: [p.x + 1.6, p.y + dyOff, Z], text: `${c.kind === 'lockX' ? 'X' : 'Y'}${fmtDim(c.value)}` });
       }
     });
     return { segs: ls, labels: bs };
@@ -193,11 +222,24 @@ function DimensionAnnotations({ sk, version }) {
       {segs.map((s) => (
         <Line key={s.key} points={s.pts} color={DIM_COLOR} lineWidth={1} dashed dashSize={0.6} gapSize={0.4} transparent opacity={0.85} raycast={noRaycast} />
       ))}
-      {labels.map((b) => (
-        <Html key={b.key} position={b.pos} center zIndexRange={[2, 0]}>
-          <div style={dimLabelStyle}>{b.text}</div>
-        </Html>
-      ))}
+      {labels.map((b) => {
+        // A driven (reference) dimension is shown in parentheses and a muted
+        // purple, like SolidWorks reference dimensions.
+        const driven = sk.constraints[b.ci]?.driven;
+        return (
+          <Html key={b.key} position={b.pos} center zIndexRange={[2, 0]}>
+            <div
+              style={driven
+                ? { ...dimLabelStyle, color: '#c4b5fd', borderColor: '#7c3aed', fontStyle: 'italic' }
+                : dimLabelStyle}
+              title={driven ? 'Driven (reference) — double-click to edit' : 'Double-click to edit'}
+              onDoubleClick={(e) => { e.stopPropagation(); beginEditConstraint(b.ci); }}
+            >
+              {driven ? `(${b.text})` : b.text}
+            </div>
+          </Html>
+        );
+      })}
     </group>
   );
 }
@@ -214,11 +256,17 @@ export default function SketchLayer() {
   const lineAngle = useSketchStore((s) => s.lineAngle);
   const pending2 = useSketchStore((s) => s.pending2);
   const hoverId = useSketchStore((s) => s.hoverId);
+  const dofState = useSketchStore((s) => s.dofState);
+  const solveResult = useSketchStore((s) => s.solveResult);
   const dimensionPending = useSketchStore((s) => s.dimensionPending);
   const clickAt = useSketchStore((s) => s.clickAt);
   const hover = useSketchStore((s) => s.hover);
   const clearHover = useSketchStore((s) => s.clearHover);
   const toggleSelect = useSketchStore((s) => s.toggleSelect);
+  const beginDrag = useSketchStore((s) => s.beginDrag);
+  const dragTo = useSketchStore((s) => s.dragTo);
+  const endDrag = useSketchStore((s) => s.endDrag);
+  const setPickTol = useSketchStore((s) => s.setPickTol);
   const cancelPending = useSketchStore((s) => s.cancelPending);
   const deleteSelected = useSketchStore((s) => s.deleteSelected);
   const undo = useSketchStore((s) => s.undo);
@@ -234,17 +282,17 @@ export default function SketchLayer() {
       if (e.type === 'line') {
         const a = sk.entities.get(e.p1);
         const b = sk.entities.get(e.p2);
-        if (a && b) lns.push({ id: e.id, a, b });
+        if (a && b) lns.push({ id: e.id, a, b, construction: !!e.construction });
       } else if (e.type === 'circle') {
         const c = sk.entities.get(e.center);
-        if (c) circs.push({ id: e.id, cx: c.x, cy: c.y, r: e.r });
+        if (c) circs.push({ id: e.id, cx: c.x, cy: c.y, r: e.r, construction: !!e.construction });
       } else if (e.type === 'arc') {
         const c = sk.entities.get(e.center);
         const s = sk.entities.get(e.start);
         const en = sk.entities.get(e.end);
         if (c && s && en) {
           ars.push({
-            id: e.id, cx: c.x, cy: c.y, r: e.r,
+            id: e.id, cx: c.x, cy: c.y, r: e.r, construction: !!e.construction,
             a0: Math.atan2(s.y - c.y, s.x - c.x),
             a1: Math.atan2(en.y - c.y, en.x - c.x),
           });
@@ -259,6 +307,33 @@ export default function SketchLayer() {
   useEffect(() => {
     invalidate();
   }, [version, cursor, snap, axisSnap, lineAngle, hoverId]);
+
+  // Keep the pick/snap tolerance a constant ~9 px on screen (SolidWorks picks by
+  // pixels, not model units): world tol = pixels / zoom, updated when zoom shifts.
+  const lastZoom = useRef(0);
+  useFrame(({ camera }) => {
+    const z = camera.zoom || 1;
+    if (Math.abs(z - lastZoom.current) / (lastZoom.current || 1) > 0.02) {
+      lastZoom.current = z;
+      setPickTol(9 / z);
+    }
+  });
+
+  // Drag-to-modify (SolidWorks): a point pointer-down arms a drag; the pick plane
+  // feeds cursor moves to the solver; releasing anywhere ends it. A no-move grab
+  // is just a selection click. Refs (not state) so the handlers don't churn.
+  const dragId = useRef(null);
+  const swallowClick = useRef(false); // eat the synthetic click after a no-move grab
+  useEffect(() => {
+    const onUp = () => {
+      if (dragId.current == null) return;
+      const moved = endDrag();
+      if (!moved) { toggleSelect(dragId.current); swallowClick.current = true; }
+      dragId.current = null;
+    };
+    window.addEventListener('pointerup', onUp);
+    return () => window.removeEventListener('pointerup', onUp);
+  }, [endDrag, toggleSelect]);
 
   // Keyboard: Esc cancels a pending draw, Delete removes the selection,
   // Ctrl/Cmd+Z undoes and Ctrl/Cmd+Y (or Shift+Z) redoes. Ignore while typing.
@@ -291,6 +366,11 @@ export default function SketchLayer() {
   // selection — not while trimming/chamfering (both act on lines).
   const selecting = tool === 'select' || tool === 'dimension';
   const selected = new Set(selection);
+  // SolidWorks-style solve-state colouring of the geometry: under-defined stays
+  // blue (still has freedom), fully defined goes light grey (SW's "black" — done),
+  // and an over-defined/conflicting sketch goes rose. Selection/hover still win.
+  const overDefined = dofState?.state === 'over' || (solveResult && !solveResult.success && solveResult.conflicting?.length > 0);
+  const baseGeom = overDefined ? '#fb7185' : dofState?.state === 'full' ? '#d1d5db' : GEOM;
   // While an angle dimension is being entered, colour its base (fixed reference)
   // and rotating line distinctly so it's clear which one moves to the set angle.
   const angleBase = dimensionPending?.angular ? dimensionPending.refs[0] : null;
@@ -349,6 +429,9 @@ export default function SketchLayer() {
             clickAt(e.point.x, e.point.y);
           }}
           onPointerMove={(e) => {
+            // A drag in progress steers the pinned point; check the store live so
+            // we never miss a move to a stale render.
+            if (useSketchStore.getState().dragging) { dragTo(e.point.x, e.point.y); return; }
             // Track the cursor for the rubber-band (draw) and the snap indicator
             // (both). In pick modes don't stopPropagation, so OrbitControls still
             // rotates the view while snapping shows which point a click will grab.
@@ -363,6 +446,7 @@ export default function SketchLayer() {
           onClick={(e) => {
             if (!picking) return;
             e.stopPropagation();
+            if (swallowClick.current) { swallowClick.current = false; return; }
             clickAt(e.point.x, e.point.y);
           }}
         >
@@ -433,9 +517,10 @@ export default function SketchLayer() {
         const isRotate = l.id === angleRotate;
         const isSel = selected.has(l.id);
         const isHover = picking && !isSel && hoverId === l.id;
-        // Angle base/rotate colouring wins over the normal selected/hover styling.
+        // Angle base/rotate colouring wins over the normal selected/hover styling;
+        // construction geometry is muted slate and dashed.
         const color = isBase ? ANGLE_BASE : isRotate ? ANGLE_ROTATE
-          : isSel ? SELECTED : isHover ? HOVER : GEOM;
+          : isSel ? SELECTED : isHover ? HOVER : l.construction ? CONSTRUCTION : baseGeom;
         return (
           <Line
             key={l.id}
@@ -444,7 +529,10 @@ export default function SketchLayer() {
               [l.b.x, l.b.y, Z],
             ]}
             color={color}
-            lineWidth={isBase || isRotate || isSel ? 4 : isHover ? 3 : 2}
+            lineWidth={isBase || isRotate || isSel ? 4 : isHover ? 3 : l.construction ? 1.5 : 2}
+            dashed={l.construction}
+            dashSize={l.construction ? 0.9 : undefined}
+            gapSize={l.construction ? 0.6 : undefined}
             // Pickable only in select mode, same convention as points below.
             raycast={picking ? undefined : noRaycast}
             onClick={(e) => {
@@ -472,8 +560,11 @@ export default function SketchLayer() {
           <Line
             key={c.id}
             points={ring}
-            color={isSel ? SELECTED : isHover ? HOVER : GEOM}
-            lineWidth={isSel ? 4 : isHover ? 3 : 2}
+            color={isSel ? SELECTED : isHover ? HOVER : c.construction ? CONSTRUCTION : baseGeom}
+            lineWidth={isSel ? 4 : isHover ? 3 : c.construction ? 1.5 : 2}
+            dashed={c.construction}
+            dashSize={c.construction ? 0.9 : undefined}
+            gapSize={c.construction ? 0.6 : undefined}
             // Directly pickable when selecting (the pick plane's hitTestCircle is
             // a tolerant fallback); off while trimming/drawing.
             raycast={selecting ? undefined : noRaycast}
@@ -495,8 +586,11 @@ export default function SketchLayer() {
           <Line
             key={a.id}
             points={arcRing(a.cx, a.cy, a.r, a.a0, a.a1, 64)}
-            color={isSel ? SELECTED : isHover ? HOVER : GEOM}
-            lineWidth={isSel ? 4 : isHover ? 3 : 2}
+            color={isSel ? SELECTED : isHover ? HOVER : a.construction ? CONSTRUCTION : baseGeom}
+            lineWidth={isSel ? 4 : isHover ? 3 : a.construction ? 1.5 : 2}
+            dashed={a.construction}
+            dashSize={a.construction ? 0.9 : undefined}
+            gapSize={a.construction ? 0.6 : undefined}
             raycast={selecting ? undefined : noRaycast}
             onClick={(e) => {
               if (!selecting) return;
@@ -511,6 +605,36 @@ export default function SketchLayer() {
         const isSel = selected.has(p.id);
         const isPending = p.id === pending;
         const isHover = selecting && !isSel && hoverId === p.id;
+        const onDown = (e) => {
+          // Select mode: grab the point for a drag (SW drag-to-modify). The origin
+          // and construction "virtual sharp" points aren't draggable — they fall
+          // through to a normal select click.
+          if (tool !== 'select' || p.construction) return;
+          swallowClick.current = false;
+          if (beginDrag(p.id)) { e.stopPropagation(); dragId.current = p.id; }
+        };
+        const onClk = (e) => {
+          if (!picking) return;
+          e.stopPropagation();
+          if (swallowClick.current) { swallowClick.current = false; return; }
+          clickAt(p.x, p.y);
+        };
+        // A construction point (chamfer/fillet virtual sharp) reads as a small dim
+        // "×", SW-style — present for dimensioning but visually quiet.
+        if (p.construction) {
+          const s = 1.1;
+          const col = isSel ? SELECTED : isHover ? HOVER : CONSTRUCTION;
+          return (
+            <group key={p.id}>
+              <Line points={[[p.x - s, p.y - s, Z], [p.x + s, p.y + s, Z]]} color={col} lineWidth={1.4} raycast={noRaycast} />
+              <Line points={[[p.x - s, p.y + s, Z], [p.x + s, p.y - s, Z]]} color={col} lineWidth={1.4} raycast={noRaycast} />
+              <mesh position={[p.x, p.y, Z]} raycast={picking ? undefined : noRaycast} onPointerDown={onDown} onClick={onClk}>
+                <sphereGeometry args={[1, 12, 12]} />
+                <meshBasicMaterial transparent opacity={0} depthWrite={false} />
+              </mesh>
+            </group>
+          );
+        }
         // Origin: fixed green reference point (a touch larger); still selectable
         // so you can dimension/constrain from it. Precedence: pending → selected →
         // hover (amber "lock") → origin → plain vertex.
@@ -521,11 +645,8 @@ export default function SketchLayer() {
             key={p.id}
             position={[p.x, p.y, Z]}
             raycast={picking ? undefined : noRaycast}
-            onClick={(e) => {
-              if (!picking) return;
-              e.stopPropagation();
-              clickAt(p.x, p.y);
-            }}
+            onPointerDown={onDown}
+            onClick={onClk}
           >
             <sphereGeometry args={[radius, 16, 16]} />
             <meshBasicMaterial color={color} />

@@ -48,7 +48,7 @@ export const useCamStore = create((set, get) => ({
   // Top-level workspace tab. Milling / Turning map 1:1 to the machine `mode`;
   // Sketch is a standalone design page that leaves the loaded program (and its
   // machine mode) untouched — it just swaps the viewport UI to the sketcher.
-  page: 'mill',        // mill | turn | sketch
+  page: 'sketch',      // mill | turn | sketch — start on the Sketch design page
   diameterMode: true,  // turn only: the X word is a diameter
   rapidRate: 5000,     // mm/min — times G0 moves for the cycle-time estimate
 

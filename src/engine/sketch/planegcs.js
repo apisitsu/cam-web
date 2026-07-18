@@ -49,6 +49,10 @@ export function toPlanegcs(sk) {
   const cid = () => `k${n++}`;
   for (const c of sk.constraints) {
     const [a, b] = c.refs.map(sid);
+    // A driven (reference) dimension is pushed with driving:false, so planegcs
+    // measures it but doesn't enforce it (removes no DOF). Non-dimensional and
+    // ordinary dimensions default to driving.
+    const driving = c.driven ? false : true;
     switch (c.kind) {
       case 'coincident':
         prims.push({ id: cid(), type: 'p2p_coincident', p1_id: a, p2_id: b });
@@ -81,26 +85,63 @@ export function toPlanegcs(sk) {
         prims.push({ id: cid(), type: 'point_on_arc', p_id: a, a_id: b });
         break;
       case 'distance':
-        prims.push({ id: cid(), type: 'p2p_distance', p1_id: a, p2_id: b, distance: c.value });
+        prims.push({ id: cid(), type: 'p2p_distance', p1_id: a, p2_id: b, distance: c.value, driving });
         break;
       case 'pointLineDistance':
-        prims.push({ id: cid(), type: 'p2l_distance', p_id: a, l_id: b, distance: c.value });
+        prims.push({ id: cid(), type: 'p2l_distance', p_id: a, l_id: b, distance: c.value, driving });
         break;
       case 'radius':
-        prims.push({ id: cid(), type: 'circle_radius', c_id: a, radius: c.value });
+        prims.push({ id: cid(), type: 'circle_radius', c_id: a, radius: c.value, driving });
         break;
+      case 'arcRadius':
+        prims.push({ id: cid(), type: 'arc_radius', a_id: a, radius: c.value, driving });
+        break;
+      case 'diameter':
+        prims.push({ id: cid(), type: 'circle_diameter', c_id: a, diameter: c.value, driving });
+        break;
+      case 'equalRadius': {
+        // circle/circle, arc/arc, or circle/arc — pick the matching primitive.
+        const t1 = sk.entities.get(c.refs[0])?.type;
+        const t2 = sk.entities.get(c.refs[1])?.type;
+        if (t1 === 'circle' && t2 === 'circle') {
+          prims.push({ id: cid(), type: 'equal_radius_cc', c1_id: a, c2_id: b });
+        } else if (t1 === 'arc' && t2 === 'arc') {
+          prims.push({ id: cid(), type: 'equal_radius_aa', a1_id: a, a2_id: b });
+        } else {
+          // one circle + one arc, in either order → equal_radius_ca(c_id, a_id)
+          const cId = t1 === 'circle' ? a : b;
+          const aId = t1 === 'circle' ? b : a;
+          prims.push({ id: cid(), type: 'equal_radius_ca', c1_id: cId, a2_id: aId });
+        }
+        break;
+      }
+      case 'midpoint': {
+        // Point at the midpoint of a line = on the line AND equidistant from its
+        // endpoints (perpendicular bisector). Two primitives for one relation.
+        const l = sk.entities.get(c.refs[1]);
+        prims.push({ id: cid(), type: 'point_on_line_pl', p_id: a, l_id: b });
+        prims.push({ id: cid(), type: 'point_on_perp_bisector_ppp', p_id: a, lp1_id: sid(l.p1), lp2_id: sid(l.p2) });
+        break;
+      }
       case 'equalLength':
         prims.push({ id: cid(), type: 'equal_length', l1_id: a, l2_id: b });
         break;
       case 'angle':
         // c.value is the angle between the two lines, in radians.
-        prims.push({ id: cid(), type: 'l2l_angle_ll', l1_id: a, l2_id: b, angle: c.value });
+        prims.push({ id: cid(), type: 'l2l_angle_ll', l1_id: a, l2_id: b, angle: c.value, driving });
+        break;
+      case 'symmetric':
+        // Two points symmetric about a line (the axis). refs = [p1, p2, line].
+        prims.push({ id: cid(), type: 'p2p_symmetric_ppl', p1_id: a, p2_id: b, l_id: sid(c.refs[2]) });
         break;
       case 'tangent':
         prims.push({ id: cid(), type: 'tangent_lc', l_id: a, c_id: b });
         break;
       case 'tangentArc':
         prims.push({ id: cid(), type: 'tangent_la', l_id: a, a_id: b });
+        break;
+      case 'tangentArcArc':
+        prims.push({ id: cid(), type: 'tangent_aa', a1_id: a, a2_id: b });
         break;
       default:
         throw new Error(`no planegcs mapping for constraint ${c.kind}`);

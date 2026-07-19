@@ -316,7 +316,12 @@ export const useCamStore = create((set, get) => ({
       const api = getSimWorker();
       const init = await api.initTurning(source, {
         ...get().machineOpts(),
-        cellSize: Math.min(cellSize, 0.25), margin: stockMargin, stockOversize,
+        // The radial field is cheap (one float per slice) and its resolution is
+        // what curved features — an R, a spherical end — are limited by: near a
+        // vertical tangent the radius swings across a single slice. The mesh no
+        // longer costs a ring per slice (turningMesh simplifies the profile), so
+        // the field can afford to be much finer than the milling cell size.
+        cellSize: Math.min(cellSize, 0.05), margin: stockMargin, stockOversize,
       });
       setBuffers({ sim: init });
       set({

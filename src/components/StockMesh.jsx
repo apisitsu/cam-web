@@ -21,7 +21,10 @@ export default function StockMesh({ simVer, visible }) {
     // Per-vertex colours (turning) tell machined vs raw stock apart.
     if (sim.colors) g.setAttribute('color', new THREE.BufferAttribute(sim.colors, 3));
     g.setIndex(new THREE.BufferAttribute(sim.indices, 1));
-    g.computeVertexNormals();
+    // The turning sim ships exact normals for its solid of revolution; the
+    // voxel/dexel meshes don't, so those are averaged from the faces here.
+    if (sim.normals) g.setAttribute('normal', new THREE.BufferAttribute(sim.normals, 3));
+    else g.computeVertexNormals();
     return g;
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [simVer]);
@@ -34,17 +37,20 @@ export default function StockMesh({ simVer, visible }) {
 
   if (!geometry || !visible) return null;
   const hasColors = geometry.hasAttribute('color');
+  // Turned parts arrive with exact normals and must shade smoothly — a solid of
+  // revolution is genuinely round, and flat shading made it read as stepped.
+  // Milled stock keeps flat shading, where the facets *are* the machined marks.
+  const smooth = !!getBuf().sim?.normals;
 
   return (
     <mesh geometry={geometry} castShadow receiveShadow>
-      {/* Aluminium billet; flatShading reveals the faceted machined surface. When
-          the mesh carries per-vertex colours (turning: cut vs raw), use them. */}
+      {/* Aluminium billet; per-vertex colours (turning: cut vs raw) when present. */}
       <meshStandardMaterial
         color={hasColors ? '#ffffff' : '#9aa4b2'}
         vertexColors={hasColors}
         metalness={0.35}
         roughness={0.6}
-        flatShading
+        flatShading={!smooth}
         side={THREE.DoubleSide}
       />
     </mesh>

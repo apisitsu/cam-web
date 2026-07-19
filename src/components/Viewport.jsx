@@ -16,6 +16,7 @@ import SketchLayer from './SketchLayer.jsx';
 import { getBuf, setView } from '../engine/bufferCache.js';
 import { sliceUpTo } from '../engine/gcode/path.js';
 import { useSketchStore } from '../stores/sketchStore.js';
+import { framing, unionBounds } from '../engine/view/camera.js';
 
 /**
  * Eye directions for each preset, in machine coordinates (X right, Y away,
@@ -23,27 +24,7 @@ import { useSketchStore } from '../stores/sketchStore.js';
  * OrbitControls' spherical coords degenerate, so they are tilted a hair off
  * the pole — enough to keep +Y pointing up the screen and orbiting sane.
  */
-export const VIEW_DIRS = {
-  iso:    [1, -1, 1],
-  top:    [0, -1e-3, 1],
-  bottom: [0, 1e-3, -1],
-  front:  [0, -1, 0],
-  back:   [0, 1, 0],
-  right:  [1, 0, 0],
-  left:   [-1, 0, 0],
-};
-
-/**
- * Turning overrides the side views. The lathe is drawn with the spindle along Z,
- * so **Front looks down the X axis and shows the Y-Z plane** (Z across, Y up);
- * the X-Z plane moved onto Right/Left. Top/bottom/iso keep the shared directions.
- */
-export const TURN_VIEW_DIRS = {
-  front: [-1, 0, 0],
-  back:  [1, 0, 0],
-  right: [0, 1, 0],
-  left:  [0, -1, 0],
-};
+export { VIEW_DIRS, TURN_VIEW_DIRS } from '../engine/view/camera.js';
 
 /**
  * Frame an **orthographic** camera on the toolpath from `view`.
@@ -72,85 +53,27 @@ function CameraRig({ bounds, sketchFit, view, viewNonce, controlsRef, mode }) {
     bounds ? bounds.max.map((n) => Math.round(n * 100)).join(',') : 'x',
   ].join('|');
   useEffect(() => {
-    // A lathe gets its own side views (see TURN_VIEW_DIRS): Front is the Y-Z
-    // plane, looking down the X axis, with the spindle (Z) still across screen.
-    const dirArr = (mode === 'turn' ? TURN_VIEW_DIRS[view] : null)
-      ?? VIEW_DIRS[view] ?? VIEW_DIRS.iso;
-    const dir = new THREE.Vector3(...dirArr).normalize();
     // Fit target = toolpath bounds unioned with the live sketch bounds, so an
-    // explicit Fit frames whichever exists (or both). `sketchFit` is intentionally
-    // read here but excluded from `fitKey`, so ongoing sketch edits don't refit.
-    let fmin = bounds ? bounds.min : null;
-    let fmax = bounds ? bounds.max : null;
-    if (sketchFit) {
-      fmin = fmin ? fmin.map((v, i) => Math.min(v, sketchFit.min[i])) : sketchFit.min;
-      fmax = fmax ? fmax.map((v, i) => Math.max(v, sketchFit.max[i])) : sketchFit.max;
-    }
-    // Nothing loaded or drawn yet → frame a sensible working area around the
-    // origin rather than the degenerate ±1 box. That box fits so tightly on the
-    // origin point that the camera zooms in absurdly far. ±80 mm ≈ the Canvas'
-    // initial zoom, so the app opens on a calm working area around the origin.
-    const D = 80;
-    const min = new THREE.Vector3(...(fmin ?? [-D, -D, 0]));
-    const max = new THREE.Vector3(...(fmax ?? [D, D, 0]));
-    const center = min.clone().add(max).multiplyScalar(0.5);
-
-    // World up: milling is Z-up. Turning is drawn with the spindle along Z and
-    // the radius along X, so making **X** up lays the part out horizontally with
-    // the tool coming in from the top — the conventional lathe view.
-    const worldUp = mode === 'turn'
-      ? new THREE.Vector3(1, 0, 0)
-      : new THREE.Vector3(0, 0, 1);
-
-    // Screen axes for this view. viewDir is camera→target (−dir); pick an up
-    // reference that isn't parallel to it.
-    const viewDir = dir.clone().negate();
-    let upRef = worldUp.clone();
-    if (Math.abs(viewDir.dot(upRef)) > 0.99) {
-      // Looking straight down the world-up axis. On a lathe that's the new
-      // Front/Back (down X), where Y up keeps the spindle (Z) running across the
-      // screen instead of standing the part on end; Y also suits the mill's Top.
-      upRef = new THREE.Vector3(0, 1, 0);
-    }
-    const right = new THREE.Vector3().crossVectors(viewDir, upRef).normalize();
-    const up = new THREE.Vector3().crossVectors(right, viewDir).normalize();
-
-    // Half-extents of the box along screen-right, screen-up, and the bounding
-    // radius (for placing the camera outside the scene).
-    let hw = 1e-3;
-    let hh = 1e-3;
-    let radius = 1e-3;
-    const c = new THREE.Vector3();
-    for (let xi = 0; xi < 2; xi++) {
-      for (let yi = 0; yi < 2; yi++) {
-        for (let zi = 0; zi < 2; zi++) {
-          c.set(xi ? max.x : min.x, yi ? max.y : min.y, zi ? max.z : min.z).sub(center);
-          hw = Math.max(hw, Math.abs(c.dot(right)));
-          hh = Math.max(hh, Math.abs(c.dot(up)));
-          radius = Math.max(radius, c.length());
-        }
-      }
-    }
-
-    // R3F sizes an ortho camera's frustum to the canvas pixels at zoom 1, so the
-    // visible world span is (pixels / zoom). Pick the zoom that fits both axes,
-    // with 8% breathing room.
-    const margin = 1.08;
-    const zoomX = canvasSize.width / (2 * hw * margin);
-    const zoomY = canvasSize.height / (2 * hh * margin);
-    camera.zoom = Math.max(Math.min(zoomX, zoomY), 1e-3);
-
-    // Distance is irrelevant to ortho scale — only push far enough that the whole
-    // scene sits inside a generous [near, far] slab, so zoom/orbit never clips.
-    const dist = radius * 3 + 100;
-    camera.up.copy(worldUp); // X-up for turning, Z-up for milling
-    camera.position.copy(center).addScaledVector(dir, dist);
-    camera.near = 0.1;
-    camera.far = dist + radius * 3 + 1000;
+    // explicit Fit frames whichever exists (or both). `sketchFit` is
+    // intentionally read here but excluded from `fitKey`, so ongoing sketch
+    // edits don't refit.
+    const box = unionBounds(bounds ?? null, sketchFit ?? null);
+    // All the arithmetic — view direction, screen axes, zoom, standoff — lives in
+    // `engine/view/camera.js` so it can be tested without a canvas.
+    const f = framing(mode, view, box, canvasSize);
+    camera.zoom = f.zoom;
+    // Orient the camera with the same screen-up the fit was measured against.
+    // Using world-up here instead rolls the view whenever the two disagree, and
+    // goes degenerate when world-up is parallel to the view direction.
+    camera.up.set(...f.up);
+    camera.position.set(...f.position);
+    camera.near = f.near;
+    camera.far = f.far;
     camera.updateProjectionMatrix();
-    camera.lookAt(center);
+    const target = new THREE.Vector3(...f.center);
+    camera.lookAt(target);
     if (controlsRef.current) {
-      controlsRef.current.target.copy(center);
+      controlsRef.current.target.copy(target);
       controlsRef.current.update();
     }
     invalidate();
@@ -227,8 +150,11 @@ function ODHolder({ radius = 0.8, shape }) {
   const r = s * 0.62;
   const zScale = sides === 4 ? Math.max(Math.tan((angle / 2) * DEG), 0.2) : 1;
   const baseRot = sides === 3 ? Math.PI : 0;
-  const depth = thickY * 1.5;                         // holder depth (Y)
-  const front = depth / 2;                            // holder front face (toward camera +Y)
+  // Holder depth runs **down** from the cutting plane: a lathe cuts in the plane
+  // through the spindle axis (Y=0), so the insert's rake face is at Y=0 and the
+  // whole tool hangs below it. Looking down from Top you see the rake face lying
+  // exactly on the toolpath.
+  const depth = thickY * 1.5;                         // holder depth (down −Y)
 
   // The insert sits at the lead angle: its long diagonal is rotated `t` from
   // vertical (`t` = lead + angle/2 − 90, mirrored by `flip`; MVVNN 72.5°+35° → 0
@@ -274,8 +200,10 @@ function ODHolder({ radius = 0.8, shape }) {
     sh.lineTo(Xbot, Zb);                     // E shank back-bottom (bevel = trailing edge)
     sh.closePath();                           // E → A (head bottom-back edge)
     const g = new THREE.ExtrudeGeometry(sh, { depth, bevelEnabled: false });
-    g.translate(0, 0, -depth / 2);            // centre the depth (Y)
-    g.rotateX(Math.PI / 2);                   // shape (X,Z) → world XZ, depth → Y
+    // rotateX maps the extrusion (shape +z) onto world −Y, so leaving it
+    // untranslated hangs the solid from Y=0 down to −depth: the top face is the
+    // cutting plane. (It used to be centred, which floated the tip off Y=0.)
+    g.rotateX(Math.PI / 2);                   // shape (X,Z) → world XZ, depth → −Y
     g.computeVertexNormals();
     return g;
   }, [s, r, fZ, ratioFront, ratioBack, span, flip, depth]);
@@ -287,13 +215,14 @@ function ODHolder({ radius = 0.8, shape }) {
       <mesh geometry={holderGeo}>
         <meshStandardMaterial color="#a7afbd" metalness={0.6} roughness={0.42} side={THREE.DoubleSide} />
       </mesh>
-      {/* Gold insert at the lead angle, acute corner at the tip. */}
-      <mesh position={[iX, front, iZ]} rotation={[0, t + baseRot, 0]} scale={[1, 1, zScale]}>
+      {/* Gold insert at the lead angle, acute corner at the tip. Its rake face
+          sits on Y=0, so the cutting corner is exactly at spindle centre. */}
+      <mesh position={[iX, -thickY / 2, iZ]} rotation={[0, t + baseRot, 0]} scale={[1, 1, zScale]}>
         <cylinderGeometry args={[r, r, thickY, sides]} />
         <meshStandardMaterial color="#e0a92a" metalness={0.72} roughness={0.3} />
       </mesh>
-      {/* Centre clamp screw on the insert face. */}
-      <mesh position={[iX, front + thickY * 0.75, iZ]}>
+      {/* Centre clamp screw, head proud of the rake face. */}
+      <mesh position={[iX, 0, iZ]}>
         <cylinderGeometry args={[s * 0.16, s * 0.16, thickY * 0.4, 14]} />
         <meshStandardMaterial color="#3f4653" metalness={0.6} roughness={0.45} />
       </mesh>
@@ -317,13 +246,14 @@ function BoringBar({ radius = 0.8, shape }) {
   const barLen = s * 6;
   return (
     <>
-      {/* Round bar along +Z, its top just under the tip so the insert pokes up. */}
-      <mesh position={[-rBar, 0, rBar + barLen / 2]} rotation={[Math.PI / 2, 0, 0]}>
+      {/* Round bar along +Z, hanging below the cutting plane (its top is Y=0). */}
+      <mesh position={[-rBar, -rBar, rBar + barLen / 2]} rotation={[Math.PI / 2, 0, 0]}>
         <cylinderGeometry args={[rBar, rBar, barLen, 20]} />
         <meshStandardMaterial color="#a7afbd" metalness={0.6} roughness={0.42} />
       </mesh>
-      {/* Gold insert at the tip, acute corner down toward the axis, cutting the ID. */}
-      <mesh position={[-r * 0.4, 0, r * 0.6]} rotation={[0, Math.PI / 4, 0]} scale={[1, 1, zScale]}>
+      {/* Gold insert at the tip, acute corner down toward the axis, cutting the
+          ID. Rake face on Y=0 so the cutting corner is at spindle centre. */}
+      <mesh position={[-r * 0.4, -thickY / 2, r * 0.6]} rotation={[0, Math.PI / 4, 0]} scale={[1, 1, zScale]}>
         <cylinderGeometry args={[r, r, thickY, sides]} />
         <meshStandardMaterial color="#e0a92a" metalness={0.72} roughness={0.3} />
       </mesh>
@@ -342,13 +272,14 @@ function PartingBlade({ radius = 0.8, shape }) {
   const depth = Math.max(radius * 2.4, 1.8) * 1.4;
   return (
     <>
-      {/* Thin blade rising from the tip. */}
-      <mesh position={[bladeH / 2, 0, 0]}>
+      {/* Thin blade rising from the tip, hanging below the cutting plane. */}
+      <mesh position={[bladeH / 2, -depth / 2, 0]}>
         <boxGeometry args={[bladeH, depth, w]} />
         <meshStandardMaterial color="#a7afbd" metalness={0.6} roughness={0.42} />
       </mesh>
-      {/* Cutting tip — a small block flush with the blade's leading (−Z) face. */}
-      <mesh position={[s * 0.28, 0, 0]}>
+      {/* Cutting tip — a small block flush with the blade's leading (−Z) face,
+          its top edge on Y=0 so the cut is at spindle centre. */}
+      <mesh position={[s * 0.28, -depth * 1.02 / 2, 0]}>
         <boxGeometry args={[s * 0.55, depth * 1.02, w * 1.15]} />
         <meshStandardMaterial color="#e0a92a" metalness={0.72} roughness={0.3} />
       </mesh>

@@ -14,6 +14,10 @@
 
 const TWO_PI = Math.PI * 2;
 const EPS = 1e-6;
+/** Max sagitta (mm) between an arc and its chords — the tessellation tolerance. */
+const CHORD_TOL = 0.002;
+/** Floor on the chord angle, so a huge radius can't explode the segment count. */
+const MIN_STEP = Math.PI / 360; // 0.5°
 
 /** Solve arc centre from a radius value (R word). */
 function centreFromRadius(su, sv, eu, ev, r, cw) {
@@ -87,7 +91,14 @@ export function tessellateArc(start, end, arc, plane, cw, maxStep = Math.PI / 32
     if (Math.abs(sweep) < EPS) sweep = cw ? -TWO_PI : TWO_PI;
   }
 
-  const steps = Math.max(2, Math.ceil(Math.abs(sweep) / maxStep));
+  // Chord density from a **sagitta tolerance**, not a fixed angle: a fixed angle
+  // over-tessellates small arcs and under-tessellates big ones, and on a turned
+  // R or spherical end the radial error near a vertical tangent is the chord
+  // error amplified by the slope — which is what made those surfaces look
+  // faceted. `maxStep` stays as the coarse bound.
+  const byTol = 2 * Math.acos(Math.max(-1, Math.min(1, 1 - CHORD_TOL / radius)));
+  const step = Math.min(maxStep, Math.max(byTol, MIN_STEP));
+  const steps = Math.max(2, Math.ceil(Math.abs(sweep) / step));
   const wStart = start[w];
   const wEnd = end[w];
 

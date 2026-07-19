@@ -145,6 +145,11 @@ export const useSketchStore = create((set, get) => ({
     set({ tool, pending: null, pending2: null, cursor: null, snap: null, axisSnap: null, lineAngle: null, hoverId: null, error: null, dimensionPending: null, editingConstraint: null, offsetPending: false });
   },
 
+  /** Show a message on the sketcher's error line (used by save/open failures). */
+  setError(error) {
+    set({ error });
+  },
+
   /** Pick whether the Chamfer tool cuts a straight chamfer ('C') or rounds ('R'). */
   setChamferKind(chamferKind) {
     set({ chamferKind });
@@ -1105,5 +1110,27 @@ export const useSketchStore = create((set, get) => ({
     get()._snapshot();
     set({ sk: newSketch(), selection: [], pending: null, pending2: null, snap: null, solveResult: null, error: null });
     get()._bump();
+  },
+
+  /**
+   * Replace the sketch with one loaded from a project file (the serialized form
+   * `model.serialize` produces). Snapshotted like any other mutation, so opening
+   * a project can be undone. Returns false if the data won't deserialize.
+   */
+  loadSerialized(data) {
+    let sk;
+    try {
+      sk = deserialize(data);
+    } catch (e) {
+      set({ error: `Could not read the sketch in that project: ${e?.message || e}` });
+      return false;
+    }
+    get()._snapshot();
+    set({
+      sk, selection: [], pending: null, pending2: null, snap: null,
+      solveResult: null, error: null, dimensionPending: null, editingConstraint: null,
+    });
+    get()._bump();
+    return true;
   },
 }));

@@ -8,13 +8,15 @@
  * Drawing itself still happens in the viewport (SketchLayer); this is the toolbar
  * and status readout, wired to the same sketchStore.
  */
-import { Button, Tooltip, Popover, InputNumber, Space, Tag, Typography, Divider, Segmented } from 'antd';
+import { Button, Tooltip, Popover, InputNumber, Space, Tag, Typography, Divider, Segmented, Upload } from 'antd';
 import {
   UndoOutlined, RedoOutlined, DeleteOutlined, ThunderboltOutlined,
   NodeIndexOutlined, EllipsisOutlined, BulbOutlined, ClearOutlined,
+  SaveOutlined, FolderOpenOutlined, ExportOutlined,
 } from '@ant-design/icons';
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useCallback } from 'react';
 import { useSketchStore } from '../stores/sketchStore.js';
+import { saveProject, openProjectFile, exportSketchDxf } from '../lib/projectIO.js';
 
 const { Text } = Typography;
 const DEG = Math.PI / 180;
@@ -544,6 +546,18 @@ export default function SketchToolbar() {
   const mirror = useSketchStore((s) => s.mirror);
   const beginOffset = useSketchStore((s) => s.beginOffset);
 
+  const setError = useSketchStore((s) => s.setError);
+  // Save/open failures land on the sketcher's own error line.
+  const onSaveProject = useCallback(async () => {
+    try { await saveProject(); } catch (e) { setError?.(e?.message || String(e)); }
+  }, [setError]);
+  const onOpenProject = useCallback(async (file) => {
+    try { await openProjectFile(file); } catch (e) { setError?.(e?.message || String(e)); }
+  }, [setError]);
+  const onExportDxf = useCallback(async () => {
+    try { await exportSketchDxf(); } catch (e) { setError?.(e?.message || String(e)); }
+  }, [setError]);
+
   const activeHint = TOOLS.find((t) => t.value === tool)?.hint;
   // Enablement for the sketch-modify tools, from the current selection.
   const selectedTypes = selection.map((id) => sk.entities.get(id)?.type);
@@ -637,6 +651,25 @@ export default function SketchToolbar() {
         placement="bottomLeft"
         content={(
           <Space direction="vertical" size={4}>
+            {/* The sketch only exists in memory until it's saved, so the save /
+                open pair belongs here too — the Sketch page hides the sidebar
+                where the CAM copies of these buttons live. */}
+            <Button size="small" icon={<SaveOutlined />} onClick={onSaveProject} block>
+              Save project
+            </Button>
+            <Upload
+              accept=".json,.camweb.json"
+              showUploadList={false}
+              beforeUpload={(file) => { onOpenProject(file); return false; }}
+            >
+              <Button size="small" icon={<FolderOpenOutlined />} block>Open project</Button>
+            </Upload>
+            <Tooltip title="DXF is the format SolidWorks, CATIA, AutoCAD and other CAM packages all read">
+              <Button size="small" icon={<ExportOutlined />} onClick={onExportDxf} block>
+                Export DXF
+              </Button>
+            </Tooltip>
+            <Divider style={{ margin: '4px 0' }} />
             <Button size="small" icon={<BulbOutlined />} onClick={() => loadDemo()} block>Demo sketch</Button>
             <Button size="small" icon={<ClearOutlined />} onClick={() => clear()} block>Clear all</Button>
           </Space>

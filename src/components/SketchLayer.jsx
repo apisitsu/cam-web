@@ -12,7 +12,7 @@ import { Line, Html } from '@react-three/drei';
 import { invalidate, useFrame } from '@react-three/fiber';
 import * as THREE from 'three';
 import { useSketchStore } from '../stores/sketchStore.js';
-import { axisDimensionGeometry } from '../engine/sketch/edit.js';
+import { dimensionAnnotations } from '../engine/sketch/annotations.js';
 
 const noRaycast = () => null;
 const Z = 0.05; // lift a hair above the Z=0 pick plane to avoid z-fighting
@@ -68,8 +68,6 @@ function arcRing(cx, cy, r, a0, a1, segs = 48) {
 }
 
 const DIM_COLOR = '#facc15'; // yellow — placed dimensions (witness/dimension lines)
-/** Trim a value to at most 2 decimals, dropping trailing zeros. */
-const fmtDim = (v) => String(Math.round(v * 100) / 100);
 const dimLabelStyle = {
   color: '#fde68a', background: 'rgba(15,23,42,0.85)', border: '1px solid #a16207',
   borderRadius: 4, font: '600 11px monospace', padding: '0 4px',
@@ -106,131 +104,14 @@ const angleReadoutStyle = (locked) => ({
  */
 function DimensionAnnotations({ sk, version }) {
   const beginEditConstraint = useSketchStore((s) => s.beginEditConstraint);
-  const { segs, labels } = useMemo(() => {
-    const P = (id) => sk.entities.get(id);
-    const ls = [];
-    const bs = [];
-    let k = 0;
-    sk.constraints.forEach((c, ci) => {
-      if (c.value == null) return;
-      if (c.kind === 'distance') {
-        const a = P(c.refs[0]);
-        const b = P(c.refs[1]);
-        if (!a || !b) return;
-        const dx = b.x - a.x;
-        const dy = b.y - a.y;
-        const len = Math.hypot(dx, dy) || 1;
-        const px = -dy / len;
-        const py = dx / len;
-        const off = Math.max(len * 0.14, 4); // stand the dimension line off the geometry
-        const a2 = [a.x + px * off, a.y + py * off, Z];
-        const b2 = [b.x + px * off, b.y + py * off, Z];
-        ls.push({ key: `s${k++}`, pts: [[a.x, a.y, Z], a2] }); // witness lines
-        ls.push({ key: `s${k++}`, pts: [[b.x, b.y, Z], b2] });
-        ls.push({ key: `s${k++}`, pts: [a2, b2] }); // dimension line
-        bs.push({ key: `b${k++}`, ci, pos: [(a2[0] + b2[0]) / 2, (a2[1] + b2[1]) / 2, Z], text: fmtDim(c.value) });
-      } else if (c.kind === 'distanceX' || c.kind === 'distanceY') {
-        // Axis-locked dimension: the dimension line runs along the measured axis
-        // only, standing off past both points, with witness lines dropped
-        // perpendicular from each point — so it reads as dX/dY, never as the
-        // slanted true distance.
-        const g = axisDimensionGeometry(sk, c.kind, c.refs);
-        if (!g) return;
-        const xyz = (p) => [p.x, p.y, Z];
-        for (const w of g.witness) ls.push({ key: `s${k++}`, pts: w.map(xyz) });
-        ls.push({ key: `s${k++}`, pts: g.line.map(xyz) }); // dimension line, on-axis
-        // Value is signed (planegcs difference); a dimension reads as a magnitude.
-        bs.push({ key: `b${k++}`, ci, pos: xyz(g.label), text: fmtDim(Math.abs(c.value)) });
-      } else if (c.kind === 'pointLineDistance') {
-        // Perpendicular distance from a point to a line — this is what a 2-line
-        // (parallel) dimension, a point↔line, and a line↔circle-centre resolve to.
-        // Draw the dimension line as the actual perpendicular (point → its foot on
-        // the line), extending a witness along the line when the foot lands past
-        // the drawn segment (the common parallel-gap case).
-        const p = P(c.refs[0]);
-        const l = P(c.refs[1]);
-        const a = l && P(l.p1);
-        const b = l && P(l.p2);
-        if (!p || !a || !b) return;
-        const abx = b.x - a.x;
-        const aby = b.y - a.y;
-        const len2 = abx * abx + aby * aby || 1;
-        const t = ((p.x - a.x) * abx + (p.y - a.y) * aby) / len2;
-        const fx = a.x + abx * t;
-        const fy = a.y + aby * t;
-        ls.push({ key: `s${k++}`, pts: [[p.x, p.y, Z], [fx, fy, Z]] }); // dimension line
-        if (t < 0 || t > 1) {
-          const near = t < 0 ? a : b; // witness: extend the line to reach the foot
-          ls.push({ key: `s${k++}`, pts: [[near.x, near.y, Z], [fx, fy, Z]] });
-        }
-        bs.push({ key: `b${k++}`, ci, pos: [(p.x + fx) / 2, (p.y + fy) / 2, Z], text: fmtDim(c.value) });
-      } else if (c.kind === 'radius') {
-        const circ = P(c.refs[0]);
-        const ctr = circ && P(circ.center);
-        if (!ctr) return;
-        bs.push({ key: `b${k++}`, ci, pos: [ctr.x + circ.r * 0.7, ctr.y + circ.r * 0.7, Z], text: `R${fmtDim(c.value)}` });
-      } else if (c.kind === 'diameter') {
-        // A diameter dimension: a line clean across the circle + a Ø label.
-        const circ = P(c.refs[0]);
-        const ctr = circ && P(circ.center);
-        if (!ctr) return;
-        const ux = 0.7071, uy = 0.7071; // 45° diameter line, tidy and unambiguous
-        ls.push({ key: `s${k++}`, pts: [[ctr.x - ux * circ.r, ctr.y - uy * circ.r, Z], [ctr.x + ux * circ.r, ctr.y + uy * circ.r, Z]] });
-        bs.push({ key: `b${k++}`, ci, pos: [ctr.x + ux * circ.r * 0.5, ctr.y + uy * circ.r * 0.5, Z], text: `Ø${fmtDim(c.value)}` });
-      } else if (c.kind === 'arcRadius') {
-        // Radius of a partial arc: a spoke from the centre to the arc's midpoint
-        // plus an R label out at the rim, so it reads as a radius, not a diameter.
-        const arc = P(c.refs[0]);
-        const ctr = arc && P(arc.center);
-        const s = arc && P(arc.start);
-        const en = arc && P(arc.end);
-        if (!ctr || !s || !en) return;
-        const a0 = Math.atan2(s.y - ctr.y, s.x - ctr.x);
-        const mid = a0 + (norm(Math.atan2(en.y - ctr.y, en.x - ctr.x) - a0) || TWO_PI) / 2;
-        const rx = ctr.x + arc.r * Math.cos(mid);
-        const ry = ctr.y + arc.r * Math.sin(mid);
-        ls.push({ key: `s${k++}`, pts: [[ctr.x, ctr.y, Z], [rx, ry, Z]] }); // radius spoke
-        bs.push({ key: `b${k++}`, ci, pos: [(ctr.x + rx) / 2, (ctr.y + ry) / 2, Z], text: `R${fmtDim(c.value)}` });
-      } else if (c.kind === 'angle') {
-        // Draw an angle arc between the two legs around their shared vertex, so a
-        // 2-line angle dimension reads like a real angle, not a bare number.
-        const l1 = P(c.refs[0]);
-        const l2 = P(c.refs[1]);
-        if (!l1 || !l2) return;
-        const sharedId = [l1.p1, l1.p2].find((id) => id === l2.p1 || id === l2.p2);
-        const vId = sharedId != null ? sharedId : l1.p1;
-        const v = P(vId);
-        const f1 = P(l1.p1 === vId ? l1.p2 : l1.p1);
-        const f2 = P(l2.p1 === vId ? l2.p2 : l2.p1);
-        if (!v || !f1 || !f2) return;
-        const a1 = Math.atan2(f1.y - v.y, f1.x - v.x);
-        const a2 = Math.atan2(f2.y - v.y, f2.x - v.x);
-        const legMin = Math.min(Math.hypot(f1.x - v.x, f1.y - v.y), Math.hypot(f2.x - v.x, f2.y - v.y));
-        const r = Math.max(3, Math.min(legMin * 0.4, 14));
-        let d = a2 - a1; // sweep the shorter way between the legs
-        while (d > Math.PI) d -= TWO_PI;
-        while (d < -Math.PI) d += TWO_PI;
-        const N = 24;
-        const pts = [];
-        for (let i = 0; i <= N; i++) {
-          const a = a1 + (d * i) / N;
-          pts.push([v.x + r * Math.cos(a), v.y + r * Math.sin(a), Z]);
-        }
-        ls.push({ key: `s${k++}`, pts });
-        const mid = a1 + d / 2;
-        // Label the *interior* corner angle actually swept (|d|), so a 60° corner
-        // reads 60°, not the 120° directed angle planegcs stores.
-        bs.push({ key: `b${k++}`, ci, pos: [v.x + (r + 2) * Math.cos(mid), v.y + (r + 2) * Math.sin(mid), Z], text: `${fmtDim((Math.abs(d) * 180) / Math.PI)}°` });
-      } else if (c.kind === 'lockX' || c.kind === 'lockY') {
-        const p = P(c.refs[0]);
-        if (!p) return;
-        const dyOff = c.kind === 'lockY' ? 2 : -2;
-        bs.push({ key: `b${k++}`, ci, pos: [p.x + 1.6, p.y + dyOff, Z], text: `${c.kind === 'lockX' ? 'X' : 'Y'}${fmtDim(c.value)}` });
-      }
-    });
-    return { segs: ls, labels: bs };
+  // The geometry is built by a pure module (`engine/sketch/annotations.js`) so
+  // it can be tested without a renderer; this component only maps it to drei.
+  const { segs, labels } = useMemo(
+    () => dimensionAnnotations(sk, { z: Z }),
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [sk, version]);
+    [sk, version],
+  );
+
 
   return (
     <group>

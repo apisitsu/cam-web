@@ -20,4 +20,12 @@ export default defineConfig({
     // WASM kernels (OCCT ~30MB) arrive in later phases — keep Phase 0 light.
     chunkSizeWarningLimit: 4096,
   },
+  test: {
+    // Engine and store suites are plain Node. Component suites opt into a DOM
+    // per file with `@vitest-environment jsdom`, so the fast majority stays fast.
+    environment: 'node',
+    // R3F's test renderer builds a real scene graph without WebGL; three's
+    // ESM build needs to be transformed rather than externalised for that.
+    server: { deps: { inline: [/@react-three/] } },
+  },
 });

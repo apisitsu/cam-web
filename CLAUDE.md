@@ -27,6 +27,39 @@ Corollary: when a change is hard to test, that usually means logic has leaked
 upward into the store or a component. Push it back down rather than reaching for
 a component test.
 
+### The rule does not stop at the `.jsx` boundary
+
+Most bugs found in the view layer were arithmetic that happened to be sitting in
+a component — a camera basis, a marker's Y offset, a chuck size read off the
+wrong axis, a playback clock. None of it needed WebGL to catch. If you are about
+to verify view-layer behaviour by running a throwaway script, that script is the
+test: put the maths in `src/engine/view/` (or `engine/sketch/`) and keep it.
+
+- `engine/view/camera.js` — view directions, screen axes, zoom/standoff framing
+- `engine/view/setup.js` — fit box and chuck derived from bounds
+- `engine/view/playback.js` — pacing, speeds
+- `engine/view/latheTool.js` — tool-marker geometry
+- `engine/sketch/annotations.js` — dimension lines and labels
+
+Components then only map that data onto JSX.
+
+## Component tests
+
+What genuinely needs a component is a **render gate** ("does the input appear for
+this selection?") or a **render decision** ("is under-defined geometry blue?").
+Two harnesses, both in vitest — add `@vitest-environment jsdom` at the top of the
+file:
+
+- **`@react-three/test-renderer`** for anything in the R3F scene. It builds the
+  real scene graph without WebGL. Assert on materials and counts via
+  `node.instance.material.color.getHexString()`. Note drei's `<Html>` labels
+  portal out of the scene graph and are **not** visible to it — test their
+  content through the pure annotation module instead.
+- **`react-dom/client` + `React.act`** for plain DOM components like the toolbar.
+  The rail is icon-only, so assert on button counts and rendered glyphs, not
+  text. antd `Tooltip` titles only exist on hover — assert the trigger, not the
+  message.
+
 ## Verifying
 
 `npm test` and `npm run build` are necessary but not sufficient. Draw, select,

@@ -16,6 +16,10 @@ export { expandProgram } from './macro.js';
 
 /** @param {{mode?:'mill'|'turn', rapidRate?:number, diameterMode?:boolean}} opts */
 export function parseGcode(text, opts) {
+  // Scene coordinates are machine coordinates, for milling and turning alike:
+  // a lathe's X is the radius and Z the spindle, so the turned profile lies in
+  // the X-Z plane and the viewport's Top preset (looking down Y) is the view you
+  // work in. Nothing is rotated here — the view layer picks the camera instead.
   const { segments, bounds, stats } = interpret(text, opts);
   const path = buildPath(segments);
 

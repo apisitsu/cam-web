@@ -107,6 +107,7 @@ export function runTurningSimulation(text, opts = {}) {
     positions: mesh.positions,
     indices: mesh.indices,
     colors: mesh.colors,
+    normals: mesh.normals,
     removedVolume,
     rings: mesh.rings,
     // Geometry the viewport needs to place the chuck: its face sits `gap` mm past
@@ -153,6 +154,7 @@ export function carveTurningSessionTo(session, k) {
     positions: mesh.positions,
     indices: mesh.indices,
     colors: mesh.colors,
+    normals: mesh.normals,
     cursor: session.cursor,
     totalFeeds: session.totalFeeds,
   };

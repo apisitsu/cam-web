@@ -2,6 +2,7 @@ import { describe, it, expect } from 'vitest';
 import { tokenizeLine, stripComments } from './tokenizer.js';
 import { tessellateArc } from './arc.js';
 import { interpret } from './interpreter.js';
+import { parseGcode } from './index.js';
 
 const near = (a, b, eps = 1e-3) => Math.abs(a - b) <= eps;
 
@@ -223,6 +224,36 @@ const SAMPLE_ISH = [
   'G81 X10 Y10 Z-6 R2 F100',
   'G80',
 ].join('\n');
+
+describe('parseGcode — scene coordinates are machine coordinates', () => {
+  // The turned profile must stay in the X-Z plane (X = radius, Z = spindle), so
+  // the viewport's Top preset — looking down Y — is the view the toolpath reads
+  // in. parseGcode must not rotate anything on its way to the scene.
+  const prog = 'G21 G90\nG0 X50 Z0\nG1 X50 Z-30 F0.2';
+
+  it('keeps the turning radius on X, with Y unused', () => {
+    const { bounds, feeds } = parseGcode(prog, { mode: 'turn' });
+    expect(near(bounds.max[0], 25)).toBe(true); // Ø50 → radius 25, on X
+    expect(near(bounds.max[1], 0)).toBe(true); // the lathe never leaves Y=0
+    expect(near(bounds.min[2], -30)).toBe(true);
+    expect(near(feeds[0], 25)).toBe(true); // a.x
+    expect(near(feeds[1], 0)).toBe(true); // a.y
+  });
+
+  it('matches the interpreter exactly, so the simulator and the scene agree', () => {
+    const machine = interpret(prog, { mode: 'turn' }).bounds;
+    const scene = parseGcode(prog, { mode: 'turn' }).bounds;
+    for (const key of ['min', 'max', 'feedMin', 'feedMax']) {
+      expect(scene[key]).toEqual(machine[key]);
+    }
+  });
+
+  it('leaves milling alone too', () => {
+    const { bounds } = parseGcode('G21 G90\nG0 X10 Y20 Z-5', { mode: 'mill' });
+    expect(near(bounds.max[0], 10)).toBe(true);
+    expect(near(bounds.max[1], 20)).toBe(true);
+  });
+});
 
 describe('interpreter — turning mode', () => {
   it('halves the X word into a radius (diameter mode)', () => {

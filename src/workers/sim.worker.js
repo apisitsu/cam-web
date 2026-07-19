@@ -40,10 +40,13 @@ const api = {
     return Comlink.transfer(
       {
         positions: r.positions, indices: r.indices, colors: r.colors,
+        normals: r.normals,
         removedVolume: r.removedVolume,
         rings: r.rings, zMin: r.zMin, zMax: r.zMax, rStock: r.rStock,
       },
-      [r.positions.buffer, r.indices.buffer, r.colors.buffer],
+      // A revolve's normals are exact, so they are computed in the engine and
+      // shipped with the mesh rather than re-derived by face averaging.
+      [r.positions.buffer, r.indices.buffer, r.colors.buffer, r.normals.buffer],
     );
   },
 
@@ -51,14 +54,14 @@ const api = {
   initTurning(text, opts) {
     turnSession = createTurningSession(text, opts);
     const r = carveTurningSessionTo(turnSession, turnSession.totalFeeds);
-    return Comlink.transfer(r, [r.positions.buffer, r.indices.buffer, r.colors.buffer]);
+    return Comlink.transfer(r, [r.positions.buffer, r.indices.buffer, r.colors.buffer, r.normals.buffer]);
   },
 
   /** Carve the turning session until `k` feed moves have run (for playback). */
   carveTurningStep(k) {
     if (!turnSession) throw new Error('turning session not initialised');
     const r = carveTurningSessionTo(turnSession, k);
-    return Comlink.transfer(r, [r.positions.buffer, r.indices.buffer, r.colors.buffer]);
+    return Comlink.transfer(r, [r.positions.buffer, r.indices.buffer, r.colors.buffer, r.normals.buffer]);
   },
 
   /** Start a playback session; returns totalFeeds + the uncut stock mesh. */

@@ -13,10 +13,13 @@ import {
 import {
   ThunderboltOutlined, ReloadOutlined, ExperimentOutlined,
   PlayCircleFilled, PauseCircleFilled, UploadOutlined, StepBackwardOutlined,
-  ExpandOutlined,
+  ExpandOutlined, SaveOutlined, FolderOpenOutlined, DownloadOutlined,
 } from '@ant-design/icons';
 import { useCamStore } from './stores/camStore.js';
 import { useSketchStore } from './stores/sketchStore.js';
+import { saveProject, saveGcode, openProjectFile } from './lib/projectIO.js';
+import { fitBoundsFor, chuckFromBounds } from './engine/view/setup.js';
+import { SPEEDS, PLAY_BASE_SECONDS, perTick } from './engine/view/playback.js';
 import { sketchBounds } from './engine/sketch/edit.js';
 import { lineAt, timeAt, rotaryAt, toolAt, segmentAtTime, toolPointAt } from './engine/gcode/path.js';
 import { STANDARD_TURN_TOOLS } from './engine/sim/turning.js';
@@ -29,15 +32,6 @@ import { getBuf } from './engine/bufferCache.js';
 
 const { Sider, Content, Header } = Layout;
 const { Title, Text } = Typography;
-
-const SPEEDS = [
-  { label: '0.1×', value: 0.1 },
-  { label: '0.25×', value: 0.25 },
-  { label: '0.5×', value: 0.5 },
-  { label: '1×', value: 1 },
-  { label: '2×', value: 2 },
-  { label: '4×', value: 4 },
-];
 
 const PAGES = [
   { label: 'Milling', value: 'mill' },
@@ -270,14 +264,24 @@ export default function App() {
   // pacing gives every operation screen-time proportional to how long it runs.
   const playTimeRef = useRef(0);
   useEffect(() => {
-    const path = getBuf().path;
-    if (!playing || !path) return undefined;
-    const totalT = path.totalTime || 1;
+    if (!playing) return undefined;
+    const startPath = getBuf().path;
+    if (!startPath) return undefined;
     // Resume from wherever the playhead sits (0 after a restart).
-    playTimeRef.current = timeAt(path, useCamStore.getState().playhead);
-    const perTick = (totalT * 0.04 / 15) * speed; // whole program ≈ 15 s at 1×
+    playTimeRef.current = timeAt(startPath, useCamStore.getState().playhead);
     const id = setInterval(() => {
-      playTimeRef.current += perTick;
+      // The path is read per tick rather than captured, so a re-parse mid-run is
+      // picked up **without** this effect depending on `bufVer`. It must not:
+      // carving bumps `bufVer` on every step, so with "cut with playback" on the
+      // loop was torn down and rebuilt constantly, and each rebuild snapped the
+      // time cursor to `timeAt(playhead)` — the *end* of the segment in progress.
+      // Playback then advanced a whole segment per carve, running at the speed of
+      // the worker instead of the speed setting.
+      const path = getBuf().path;
+      if (!path) return;
+      const totalT = path.totalTime || 1;
+      // 40 ms per tick; the whole program spans PLAY_BASE_SECONDS at 1×.
+      playTimeRef.current += perTick(totalT, speed);
       const k = segmentAtTime(path, playTimeRef.current);
       useCamStore.getState().setPlayhead(k);
       useCamStore.setState({ playT: playTimeRef.current }); // smooth marker interpolation
@@ -285,7 +289,39 @@ export default function App() {
       invalidate(); // wake up the demand-mode canvas
     }, 40);
     return () => clearInterval(id);
-  }, [playing, bufVer, speed]);
+  }, [playing, speed]);
+
+  // Saving / opening work. Errors surface in the store's `error` alert, the same
+  // place a parse failure lands, so there is one place to look.
+  const [saveMsg, setSaveMsg] = useState(null);
+  const report = useCallback(async (fn, done) => {
+    try {
+      const name = await fn();
+      // A null name means the user closed the save dialog — say nothing.
+      if (name !== null) setSaveMsg(done(name));
+    } catch (err) {
+      useCamStore.setState({ error: err?.message || String(err) });
+    }
+  }, []);
+  const onSaveProject = useCallback(
+    () => report(saveProject, (n) => `Saved project ${n}`), [report],
+  );
+  const onSaveGcode = useCallback(
+    () => report(saveGcode, (n) => `Saved ${n}`), [report],
+  );
+  const onOpenProject = useCallback(
+    (file) => report(async () => {
+      await openProjectFile(file);
+      return file.name;
+    }, (n) => `Opened project ${n}`),
+    [report],
+  );
+  // Let a save confirmation fade rather than linger.
+  useEffect(() => {
+    if (!saveMsg) return undefined;
+    const id = setTimeout(() => setSaveMsg(null), 4000);
+    return () => clearTimeout(id);
+  }, [saveMsg]);
 
   // Drag-and-drop a real G-code file anywhere on the window.
   const onDrop = useCallback(
@@ -319,32 +355,19 @@ export default function App() {
   // Frame the camera to the cutting geometry (the part), not the rapid retracts.
   // Deliberately NOT keyed on bufVer: the values don't change as the sim carves,
   // and refitting on every playback tick was resetting the user's zoom.
-  const fitBounds = useMemo(() => {
-    if (!bounds) return null;
-    const has = bounds.feedMin && Number.isFinite(bounds.feedMin[0]);
-    const min = [...(has ? bounds.feedMin : bounds.min)];
-    const max = [...(has ? bounds.feedMax : bounds.max)];
-    if (turning) {
-      // Turning backplot is one-sided in X (radius ≥ 0) and the part revolves, so
-      // frame it symmetric about the spindle and pull back a little toward the
-      // chuck end, so the whole setup is in view rather than zoomed onto a sliver.
-      const r = Math.max(max[0], 1) * 1.5;
-      min[0] = -r; max[0] = r;
-      min[1] = -r; max[1] = r;
-      min[2] -= 10;
-    }
-    return { min, max };
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [bounds, turning]);
+  const fitBounds = useMemo(
+    () => fitBoundsFor(turning ? 'turn' : 'mill', bounds),
+    [bounds, turning],
+  );
 
   // Chuck placement uses the *real* cutting bounds (not the padded fit), so the
   // 5 mm clearance to the deepest cut is preserved regardless of framing. The
   // chuck grips the **raw bar** diameter (turned OD + oversize) — the same
   // uniform bar the sim carves — so the whole bar reads as one stock size.
-  const turnChuck = useMemo(() => {
-    if (!turning || !bounds?.feedMin || !Number.isFinite(bounds.feedMin[0])) return null;
-    return { z: bounds.feedMin[2], od: Math.max(bounds.feedMax[0] + stockOversize / 2, 1) };
-  }, [bounds, turning, stockOversize]);
+  const turnChuck = useMemo(
+    () => chuckFromBounds(turning ? 'turn' : 'mill', bounds, stockOversize),
+    [bounds, turning, stockOversize],
+  );
   // Tools auto-detected from the program's comments, and the one cutting now.
   const detectedTools = stats?.tools ?? [];
   const currentToolNum = useMemo(() => toolAt(path, playhead), [path, playhead, bufVer]);
@@ -473,9 +496,32 @@ export default function App() {
                 </Button>
               </Space>
 
+              {/* Saving. A project keeps the program, the machine setup and the
+                  sketch in one file — the sketch had no way to survive a reload
+                  before. Saving G-code alone is for handing the program on. */}
+              <Space wrap>
+                <Tooltip title="Save the program, machine setup and sketch as one .camweb.json project">
+                  <Button icon={<SaveOutlined />} onClick={onSaveProject}>Save project</Button>
+                </Tooltip>
+                <Upload
+                  accept=".json,.camweb.json"
+                  showUploadList={false}
+                  beforeUpload={(file) => { onOpenProject(file); return false; }}
+                >
+                  <Button icon={<FolderOpenOutlined />}>Open project</Button>
+                </Upload>
+                <Tooltip title="Save just the G-code text">
+                  <Button icon={<DownloadOutlined />} disabled={!gcode} onClick={onSaveGcode}>
+                    Save G-code
+                  </Button>
+                </Tooltip>
+              </Space>
+
               <Text style={{ color: '#475569', fontSize: 12 }}>
                 …or drag &amp; drop a .nc / .gcode / .tap file anywhere
               </Text>
+
+              {saveMsg && <Alert type="success" showIcon message={saveMsg} />}
 
               <GcodePanel gcode={gcode} activeLine={activeLine} onChange={setGcode} />
 

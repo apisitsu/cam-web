@@ -34,6 +34,18 @@ export const VIEW_DIRS = {
 };
 
 /**
+ * Turning overrides the side views. The lathe is drawn with the spindle along Z,
+ * so **Front looks down the X axis and shows the Y-Z plane** (Z across, Y up);
+ * the X-Z plane moved onto Right/Left. Top/bottom/iso keep the shared directions.
+ */
+export const TURN_VIEW_DIRS = {
+  front: [-1, 0, 0],
+  back:  [1, 0, 0],
+  right: [0, 1, 0],
+  left:  [0, -1, 0],
+};
+
+/**
  * Frame an **orthographic** camera on the toolpath from `view`.
  *
  * Orthographic (not perspective) so a Top/Front/Side preset is a true flat 2D
@@ -60,12 +72,11 @@ function CameraRig({ bounds, sketchFit, view, viewNonce, controlsRef, mode }) {
     bounds ? bounds.max.map((n) => Math.round(n * 100)).join(',') : 'x',
   ].join('|');
   useEffect(() => {
-    // On a lathe (X-up) the conventional side view — chuck left, face right — is
-    // reached from +Y, i.e. the mill's "Back" direction. Swap Front/Back so the
-    // Front preset is the correct lathe view.
-    let key = view;
-    if (mode === 'turn') key = view === 'front' ? 'back' : view === 'back' ? 'front' : view;
-    const dir = new THREE.Vector3(...(VIEW_DIRS[key] ?? VIEW_DIRS.iso)).normalize();
+    // A lathe gets its own side views (see TURN_VIEW_DIRS): Front is the Y-Z
+    // plane, looking down the X axis, with the spindle (Z) still across screen.
+    const dirArr = (mode === 'turn' ? TURN_VIEW_DIRS[view] : null)
+      ?? VIEW_DIRS[view] ?? VIEW_DIRS.iso;
+    const dir = new THREE.Vector3(...dirArr).normalize();
     // Fit target = toolpath bounds unioned with the live sketch bounds, so an
     // explicit Fit frames whichever exists (or both). `sketchFit` is intentionally
     // read here but excluded from `fitKey`, so ongoing sketch edits don't refit.
@@ -96,7 +107,10 @@ function CameraRig({ bounds, sketchFit, view, viewNonce, controlsRef, mode }) {
     const viewDir = dir.clone().negate();
     let upRef = worldUp.clone();
     if (Math.abs(viewDir.dot(upRef)) > 0.99) {
-      upRef = mode === 'turn' ? new THREE.Vector3(0, 0, 1) : new THREE.Vector3(0, 1, 0);
+      // Looking straight down the world-up axis. On a lathe that's the new
+      // Front/Back (down X), where Y up keeps the spindle (Z) running across the
+      // screen instead of standing the part on end; Y also suits the mill's Top.
+      upRef = new THREE.Vector3(0, 1, 0);
     }
     const right = new THREE.Vector3().crossVectors(viewDir, upRef).normalize();
     const up = new THREE.Vector3().crossVectors(right, viewDir).normalize();

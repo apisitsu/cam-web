@@ -21,9 +21,11 @@ import {
   getOrCreatePoint, hitTestPoint, hitTestLine, hitTestCircle, hitTestArc,
   deleteEntity, removeConstraint, chamfer as chamferEdit, fillet as filletEdit,
   filletLineArc as filletLineArcEdit, filletArcArc as filletArcArcEdit,
+  filletCircleCircle as filletCircleCircleEdit,
   trimLine, trimCircle, trimArc, mirror as mirrorEdit, offsetEntity,
   distancePointToLine, farEndpointFromLine, nearestRimPoint, nearestTangent,
-  measureConstraint, lineArcMeet, angleSpec, interiorAngleToModel,
+  measureConstraint, lineArcMeet, arcArcMeet, angleSpec, interiorAngleToModel,
+  axisFromPlacement,
 } from '../engine/sketch/edit.js';
 
 const DEG = Math.PI / 180;
@@ -86,9 +88,13 @@ export const useSketchStore = create((set, get) => ({
   axisSnap: null, // { x, y, deg } line-tool angle lock to the nearest 45° axis, or null
   lineAngle: null, // ° the line rubber-band currently points at (readout while drawing a line)
   chamferKind: 'C', // 'C' straight chamfer | 'R' rounded fillet — which the Chamfer tool applies
+  chamferPick: null, // { x, y } of the last chamfer/fillet pick — picks the corner when two curves meet at more than one
+  chamferPicks: {}, // entity id → { x, y } it was picked at — decides which half of a circle survives an auto-trim fillet
+  dimensionAxis: 'aligned', // 'aligned' true distance | 'x' horizontal (dX) | 'y' vertical (dY) — SW's dimension orientation
   hoverId: null, // entity id a click would pick right now — drives the pre-select highlight
   selection: [], // selected entity ids — points, lines, circles, and/or arcs (mixed)
   dimensionPending: null, // { kind, refs, label, current } set on a dimension-mode empty-click → shows the inline value input
+  offsetPending: false, // true while the Offset rail button is waiting for its distance
   editingConstraint: null, // { index, kind, label, angular, value } set when a placed dimension is double-clicked → shows the edit input
   pickTol: SNAP, // world-unit pick/snap tolerance — kept ~constant on screen (set per camera zoom)
   dragging: null, // { id, wasFixed, moved } while a point is being dragged (SW drag-to-modify)
@@ -136,12 +142,28 @@ export const useSketchStore = create((set, get) => ({
   },
 
   setTool(tool) {
-    set({ tool, pending: null, pending2: null, cursor: null, snap: null, axisSnap: null, lineAngle: null, hoverId: null, error: null, dimensionPending: null, editingConstraint: null });
+    set({ tool, pending: null, pending2: null, cursor: null, snap: null, axisSnap: null, lineAngle: null, hoverId: null, error: null, dimensionPending: null, editingConstraint: null, offsetPending: false });
   },
 
   /** Pick whether the Chamfer tool cuts a straight chamfer ('C') or rounds ('R'). */
   setChamferKind(chamferKind) {
     set({ chamferKind });
+  },
+
+  /**
+   * Pick the orientation a point-to-point dimension measures in: 'aligned' (the
+   * true slanted distance), 'x' (horizontal gap only), or 'y' (vertical gap
+   * only). Normally set for you from where the dimension was placed (see the
+   * dimension branch of `clickAt`, which mirrors SolidWorks reading it off the
+   * drag); this is the manual override behind the toggle. Re-resolves an open
+   * dimension input so the value shown switches with the mode.
+   */
+  setDimensionAxis(dimensionAxis) {
+    set({ dimensionAxis });
+    if (get().dimensionPending) {
+      const spec = get().resolveDimension();
+      if (spec) set({ dimensionPending: spec });
+    }
   },
 
   /**
@@ -415,9 +437,18 @@ export const useSketchStore = create((set, get) => ({
       // ChamferInput applies the size once two are picked. Empty space clears.
       const lineHit = hitTestLine(sk, x, y, tol);
       const arcHit = lineHit == null ? hitTestArc(sk, x, y, tol) : null;
-      if (lineHit != null) get().toggleSelect(lineHit);
-      else if (arcHit != null) get().toggleSelect(arcHit);
-      else set({ selection: [] });
+      // Full circles are pickable too — not because a fillet can round one (it
+      // has no corner), but so the tool can say *why* instead of ignoring the
+      // click and looking broken.
+      const circleHit = lineHit == null && arcHit == null ? hitTestCircle(sk, x, y, tol) : null;
+      const hitId = lineHit ?? arcHit ?? circleHit;
+      if (hitId != null) {
+        // Remember where the pick landed — both the last one (which corner of a
+        // multi-corner junction was meant) and per entity (which half of a whole
+        // circle the user is pointing at, for an auto-trim fillet).
+        set({ chamferPick: { x, y }, chamferPicks: { ...get().chamferPicks, [hitId]: { x, y } } });
+        get().toggleSelect(hitId);
+      } else set({ selection: [], chamferPicks: {} });
     } else {
       // select / dimension: points take priority over lines, then circles, under
       // the cursor; all route through toggleSelect. Empty space clears the
@@ -432,7 +463,19 @@ export const useSketchStore = create((set, get) => ({
       const arcHit = hitTestArc(sk, x, y, tol);
       if (arcHit != null) { get().toggleSelect(arcHit); return; }
       if (tool === 'dimension') {
-        const spec = get().resolveDimension();
+        // Where the dimension is placed picks its orientation, the way
+        // SolidWorks reads it off the drag: click below/above a pair for a
+        // horizontal (dX) dimension, out to the side for a vertical (dY) one,
+        // square off the line for the aligned true distance. The toggle in the
+        // input still overrides it afterwards.
+        let spec = get().resolveDimension();
+        if (spec?.axial) {
+          const axis = axisFromPlacement(sk, spec.refs[0], spec.refs[1], { x, y });
+          if (axis !== get().dimensionAxis) {
+            set({ dimensionAxis: axis });
+            spec = get().resolveDimension() || spec;
+          }
+        }
         // Empty click with a dimensionable selection → open the inline input;
         // otherwise clear (a click on nothing with nothing to dimension).
         set(spec ? { dimensionPending: spec } : { selection: [] });
@@ -505,17 +548,36 @@ export const useSketchStore = create((set, get) => ({
     };
     const originId = [...sk.entities.values()].find((e) => e.origin)?.id;
 
+    // A point-to-point dimension, measured along whichever axis `dimensionAxis`
+    // selects. Refs are ordered so the value the user types is positive (a
+    // dimension reads as a magnitude), since distanceX/Y are signed p2−p1.
+    const p2p = (aId, bId, label) => {
+      const axis = get().dimensionAxis;
+      const a = sk.entities.get(aId);
+      const b = sk.entities.get(bId);
+      if (axis !== 'x' && axis !== 'y') {
+        return { kind: 'distance', refs: [aId, bId], label, current: pdist(aId, bId), axial: true };
+      }
+      const d = axis === 'x' ? b.x - a.x : b.y - a.y;
+      const refs = d < 0 ? [bId, aId] : [aId, bId];
+      return {
+        kind: axis === 'x' ? 'distanceX' : 'distanceY',
+        refs, label: `${label} (${axis === 'x' ? 'dX' : 'dY'})`,
+        current: Math.abs(d), axial: true,
+      };
+    };
+
     // A single non-origin point → dimension its distance to the origin, the most
     // common "locate this relative to the datum" case (2 points where one is the
     // origin works too, but that needs the origin explicitly picked).
     if (ents.length === 1 && ents[0].type === 'point' && !ents[0].origin && originId != null) {
-      return { kind: 'distance', refs: [originId, selection[0]], label: 'To origin', current: pdist(originId, selection[0]) };
+      return p2p(originId, selection[0], 'To origin');
     }
     if (ents.length === 2 && ents.every((e) => e.type === 'point')) {
-      return { kind: 'distance', refs: selection.slice(), label: 'Distance', current: pdist(selection[0], selection[1]) };
+      return p2p(selection[0], selection[1], 'Distance');
     }
     if (ents.length === 1 && ents[0].type === 'line') {
-      return { kind: 'distance', refs: [ents[0].p1, ents[0].p2], label: 'Length', current: pdist(ents[0].p1, ents[0].p2) };
+      return p2p(ents[0].p1, ents[0].p2, 'Length');
     }
     if (ents.length === 1 && ents[0].type === 'circle') {
       // SolidWorks defaults a circle dimension to diameter (Ø); radius is still
@@ -571,7 +633,7 @@ export const useSketchStore = create((set, get) => ({
       };
     }
     if (ents.length === 2 && ents.every((e) => e.type === 'circle')) {
-      return { kind: 'distance', refs: [ents[0].center, ents[1].center], label: 'Centre ↔ centre', current: pdist(ents[0].center, ents[1].center) };
+      return p2p(ents[0].center, ents[1].center, 'Centre ↔ centre');
     }
     return null;
   },
@@ -625,7 +687,7 @@ export const useSketchStore = create((set, get) => ({
     const c = get().sk.constraints[index];
     if (!c || c.value == null) return;
     const angular = c.kind === 'angle';
-    const LABELS = { distance: 'Distance', pointLineDistance: 'Distance', radius: 'Radius', arcRadius: 'Radius', diameter: 'Diameter', angle: 'Angle', lockX: 'Lock X', lockY: 'Lock Y' };
+    const LABELS = { distance: 'Distance', distanceX: 'Horizontal', distanceY: 'Vertical', pointLineDistance: 'Distance', radius: 'Radius', arcRadius: 'Radius', diameter: 'Diameter', angle: 'Angle', lockX: 'Lock X', lockY: 'Lock Y' };
     // For an angle, seed the interior corner angle (what's shown) and carry the
     // conversion so applyEditConstraint stores the right planegcs value.
     const asp = angular ? angleSpec(get().sk, c.refs[0], c.refs[1]) : null;
@@ -716,18 +778,48 @@ export const useSketchStore = create((set, get) => ({
     }
     const lines = selection.filter((id) => sk.entities.get(id)?.type === 'line');
     const arcs = selection.filter((id) => sk.entities.get(id)?.type === 'arc');
+    const circles = selection.filter((id) => sk.entities.get(id)?.type === 'circle');
+    // "Touching" = within the on-screen pick tolerance (so two endpoints drawn to
+    // the same spot but never merged still count), clamped to a sane mm range.
+    const touchTol = Math.min(Math.max(get().pickTol || 1.5, 0.75), 3);
+    // Where the user last clicked in the tool — picks the corner when the two
+    // curves meet at more than one (two trimmed circles meet at both crossings).
+    const hint = get().chamferPick;
+    if (circles.length === 2) {
+      // Two whole circles: round where they cross and auto-trim both into arcs,
+      // the way SolidWorks does — no need to trim by hand first. Which half of
+      // each circle survives comes from where each was picked.
+      get()._snapshot();
+      const res = filletCircleCircleEdit(sk, circles[0], circles[1], radius, hint, get().chamferPicks);
+      if (res == null) {
+        get()._undoSnapshot();
+        set({
+          error: 'Those two circles don\'t cross, or R is too large to fit where they do — check they overlap and try a smaller radius.',
+        });
+        return;
+      }
+      set({ selection: [], error: null, chamferPicks: {} });
+      get()._bump();
+      get().solve();
+      return;
+    }
+    if (circles.length) {
+      // One circle paired with a line/arc: there's no crossing pair to trim
+      // against, so this still needs a manual trim first.
+      set({ error: 'A whole circle has no corner to round — trim it to an arc first, then apply R.' });
+      return;
+    }
     let run = null;
     // `meets` = do the two picks actually touch at a corner? (drives the message)
     let meets = true;
     if (lines.length === 2) run = (s) => filletEdit(s, lines[0], lines[1], radius);
     else if (lines.length === 1 && arcs.length === 1) {
-      // "Touching" = within the on-screen pick tolerance (so two endpoints drawn to
-      // the same spot but never merged still count), clamped to a sane mm range.
-      const touchTol = Math.min(Math.max(get().pickTol || 1.5, 0.75), 3);
       meets = lineArcMeet(sk, lines[0], arcs[0], touchTol);
       run = (s) => filletLineArcEdit(s, lines[0], arcs[0], radius, touchTol);
-    } else if (arcs.length === 2) run = (s) => filletArcArcEdit(s, arcs[0], arcs[1], radius);
-    else { set({ error: 'Fillet needs 2 lines, 1 line + 1 arc, or 2 arcs' }); return; }
+    } else if (arcs.length === 2) {
+      meets = arcArcMeet(sk, arcs[0], arcs[1], touchTol);
+      run = (s) => filletArcArcEdit(s, arcs[0], arcs[1], radius, touchTol, hint);
+    } else { set({ error: 'Fillet needs 2 lines, 1 line + 1 arc, or 2 arcs' }); return; }
     get()._snapshot();
     const res = run(sk);
     if (res == null) {
@@ -949,6 +1041,26 @@ export const useSketchStore = create((set, get) => ({
     get().solve();
   },
 
+  /**
+   * Open the inline distance entry for Offset (the rail button). Offset is a
+   * sketch *tool*, not a relation, so it lives on the toolbar and asks for its
+   * distance the same way Chamfer/Dimension do.
+   */
+  beginOffset() {
+    const { sk, selection } = get();
+    const geom = selection.filter((id) => {
+      const t = sk.entities.get(id)?.type;
+      return t === 'line' || t === 'circle' || t === 'arc';
+    });
+    if (!geom.length) { set({ error: 'Select lines/circles/arcs to offset' }); return; }
+    set({ offsetPending: true, error: null });
+  },
+
+  /** Dismiss the inline offset input without applying. */
+  cancelOffset() {
+    set({ offsetPending: false });
+  },
+
   /** Offset the selected line(s)/circle(s)/arc(s) by signed distance `dist`. */
   offset(dist) {
     const { sk, selection } = get();
@@ -961,7 +1073,7 @@ export const useSketchStore = create((set, get) => ({
     get()._snapshot();
     const created = geom.map((id) => offsetEntity(sk, id, dist)).filter((x) => x != null);
     if (!created.length) { get()._undoSnapshot(); set({ error: 'Nothing could be offset (radius would collapse?)' }); return; }
-    set({ selection: [], error: null });
+    set({ selection: [], error: null, offsetPending: false });
     get()._bump();
     get().solve();
   },

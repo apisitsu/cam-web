@@ -57,6 +57,12 @@ export const CONSTRAINT_KINDS = {
   pointOnCircle: { refTypes: ['point', 'circle'], value: false, dof: 1 },
   pointOnArc: { refTypes: ['point', 'arc'], value: false, dof: 1 },
   distance: { refTypes: ['point', 'point'], value: true, dof: 1 },
+  // Axis-aligned separations (SW horizontal/vertical dimension): the x-only or
+  // y-only gap between two points, so the dimension stays locked to the axis
+  // instead of measuring the slanted true distance. Signed p2−p1, so ref order
+  // decides which way is positive.
+  distanceX: { refTypes: ['point', 'point'], value: true, dof: 1 },
+  distanceY: { refTypes: ['point', 'point'], value: true, dof: 1 },
   pointLineDistance: { refTypes: ['point', 'line'], value: true, dof: 1 },
   radius: { refTypes: ['circle'], value: true, dof: 1 },
   arcRadius: { refTypes: ['arc'], value: true, dof: 1 }, // radius of a partial arc

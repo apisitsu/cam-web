@@ -6,6 +6,8 @@ import {
   trimCircle, trimArc, sketchBounds, nearestRimPoint, circleIntersections,
   chamfer, fillet, filletLineArc, filletArcArc, tangentPoint, nearestTangent,
   deleteEntity, mirror, offsetEntity, angleSpec, interiorAngleToModel,
+  axisDimensionGeometry, measureConstraint, axisFromPlacement, arcArcMeet,
+  filletCircleCircle,
 } from './edit.js';
 
 const near = (a, b, eps = 1e-6) => Math.abs(a - b) <= eps;
@@ -456,5 +458,317 @@ describe('nearestRimPoint', () => {
     const c = addPoint(sk, 0, 0);
     addCircle(sk, c, 10);
     expect(nearestRimPoint(sk, 20, 0, 3)).toBeNull();
+  });
+});
+
+describe('axisDimensionGeometry — dimension lines locked to an axis', () => {
+  // The whole point of distanceX/distanceY: the drawn dimension line must run
+  // along the axis, never diagonally between the two points.
+  it('a horizontal (dX) dimension line has constant y', () => {
+    const sk = createSketch();
+    const a = addPoint(sk, 0, 0);
+    const b = addPoint(sk, 100, 40); // diagonal pair
+    const g = axisDimensionGeometry(sk, 'distanceX', [a, b]);
+    expect(g.horiz).toBe(true);
+    expect(near(g.line[0].y, g.line[1].y)).toBe(true); // on-axis
+    expect(near(g.line[0].x, 0)).toBe(true);
+    expect(near(g.line[1].x, 100)).toBe(true);
+    expect(near(g.span, 100)).toBe(true);
+    expect(g.line[0].y < 0).toBe(true); // stood off below the lower point
+  });
+
+  it('a vertical (dY) dimension line has constant x', () => {
+    const sk = createSketch();
+    const a = addPoint(sk, 0, 0);
+    const b = addPoint(sk, 100, 40);
+    const g = axisDimensionGeometry(sk, 'distanceY', [a, b]);
+    expect(g.horiz).toBe(false);
+    expect(near(g.line[0].x, g.line[1].x)).toBe(true); // on-axis
+    expect(near(g.span, 40)).toBe(true);
+    expect(g.line[0].x > 100).toBe(true); // stood off right of the rightmost point
+  });
+
+  it('witness lines connect each measured point to the dimension line', () => {
+    const sk = createSketch();
+    const a = addPoint(sk, 0, 0);
+    const b = addPoint(sk, 100, 40);
+    const g = axisDimensionGeometry(sk, 'distanceX', [a, b]);
+    const [w1, w2] = g.witness;
+    expect(near(w1[0].x, 0) && near(w1[0].y, 0)).toBe(true); // starts at the point
+    expect(near(w1[1].y, g.line[0].y)).toBe(true); // lands on the dimension line
+    expect(near(w1[1].x, w1[0].x)).toBe(true); // dropped straight down
+    expect(near(w2[0].x, 100) && near(w2[0].y, 40)).toBe(true);
+    expect(near(w2[1].y, g.line[0].y)).toBe(true);
+  });
+
+  it('the label sits mid-span on the dimension line', () => {
+    const sk = createSketch();
+    const a = addPoint(sk, 0, 0);
+    const b = addPoint(sk, 100, 40);
+    const g = axisDimensionGeometry(sk, 'distanceX', [a, b]);
+    expect(near(g.label.x, 50)).toBe(true);
+    expect(near(g.label.y, g.line[0].y)).toBe(true);
+  });
+
+  it('measureConstraint reports the signed axis gap, not the true distance', () => {
+    const sk = createSketch();
+    const a = addPoint(sk, 0, 0);
+    const b = addPoint(sk, 3, 4); // true distance 5
+    expect(near(measureConstraint(sk, 'distanceX', [a, b]), 3)).toBe(true);
+    expect(near(measureConstraint(sk, 'distanceY', [a, b]), 4)).toBe(true);
+    expect(near(measureConstraint(sk, 'distanceX', [b, a]), -3)).toBe(true); // signed
+  });
+
+  it('returns null for a missing point', () => {
+    const sk = createSketch();
+    const a = addPoint(sk, 0, 0);
+    expect(axisDimensionGeometry(sk, 'distanceX', [a, 999])).toBeNull();
+  });
+});
+
+describe('axisFromPlacement — SolidWorks-style orientation from the placement point', () => {
+  // A diagonal pair, so all three orientations are genuinely distinct.
+  const diag = () => {
+    const sk = createSketch();
+    const a = addPoint(sk, 0, 0);
+    const b = addPoint(sk, 100, 40);
+    return { sk, a, b };
+  };
+
+  it('placing below the pair gives a horizontal (dX) dimension', () => {
+    const { sk, a, b } = diag();
+    expect(axisFromPlacement(sk, a, b, { x: 50, y: -60 })).toBe('x');
+  });
+
+  it('placing above the pair also gives dX', () => {
+    const { sk, a, b } = diag();
+    expect(axisFromPlacement(sk, a, b, { x: 50, y: 90 })).toBe('x');
+  });
+
+  it('placing out to the side gives a vertical (dY) dimension', () => {
+    const { sk, a, b } = diag();
+    expect(axisFromPlacement(sk, a, b, { x: 180, y: 20 })).toBe('y');
+    expect(axisFromPlacement(sk, a, b, { x: -90, y: 20 })).toBe('y');
+  });
+
+  it('placing square off the line itself gives the aligned dimension', () => {
+    const { sk, a, b } = diag();
+    // Perpendicular to the 100×40 pair, offset from its midpoint.
+    const len = Math.hypot(100, 40);
+    const px = -40 / len;
+    const py = 100 / len;
+    expect(axisFromPlacement(sk, a, b, { x: 50 + px * 40, y: 20 + py * 40 })).toBe('aligned');
+  });
+
+  it('an already-horizontal pair resolves ties to aligned', () => {
+    const sk = createSketch();
+    const a = addPoint(sk, 0, 0);
+    const b = addPoint(sk, 100, 0);
+    // Below the pair: aligned and dX are the same measurement here.
+    expect(axisFromPlacement(sk, a, b, { x: 50, y: -30 })).toBe('aligned');
+    // Out to the side is still unambiguously dY.
+    expect(axisFromPlacement(sk, a, b, { x: 200, y: 0 })).toBe('y');
+  });
+
+  it('a vertical pair placed to the side stays aligned (which is already dY)', () => {
+    const sk = createSketch();
+    const a = addPoint(sk, 0, 0);
+    const b = addPoint(sk, 0, 100);
+    // Aligned and dY measure the same 100 here, so the tie resolving to the
+    // simpler 'aligned' is correct — dX would be a useless zero dimension.
+    expect(axisFromPlacement(sk, a, b, { x: 60, y: 50 })).toBe('aligned');
+  });
+
+  it('falls back to aligned with no placement or a degenerate one', () => {
+    const { sk, a, b } = diag();
+    expect(axisFromPlacement(sk, a, b, null)).toBe('aligned');
+    expect(axisFromPlacement(sk, a, b, { x: 50, y: 20 })).toBe('aligned'); // the midpoint
+    expect(axisFromPlacement(sk, a, 999, { x: 0, y: 0 })).toBe('aligned');
+  });
+});
+
+describe('filletArcArc — corner modes between two curves', () => {
+  /**
+   * Two overlapping circles trimmed into a lens: arc1 is the right bulge of a
+   * circle at (0,0) r50, arc2 the left bulge of one at (80,0) r50. They cross at
+   * (40, ±30). `merged` controls whether the touching endpoints are the same
+   * point id (as if drawn merged) or two distinct points at the same spot (what
+   * trimming two circles actually leaves behind).
+   */
+  const lens = ({ merged }) => {
+    const sk = createSketch();
+    const c1 = addPoint(sk, 0, 0);
+    const c2 = addPoint(sk, 80, 0);
+    const low1 = addPoint(sk, 40, -30);
+    const top1 = addPoint(sk, 40, 30);
+    const top2 = merged ? top1 : addPoint(sk, 40, 30);
+    const low2 = merged ? low1 : addPoint(sk, 40, -30);
+    const arc1 = addArc(sk, c1, low1, top1, 50); // CCW through (50,0)
+    const arc2 = addArc(sk, c2, top2, low2, 50); // CCW through (30,0)
+    return { sk, arc1, arc2, top1, top2 };
+  };
+
+  it('fillets a corner where the two arcs share an endpoint id', () => {
+    const { sk, arc1, arc2 } = lens({ merged: true });
+    const f = filletArcArc(sk, arc1, arc2, 5);
+    expect(f).not.toBeNull();
+    const arc = sk.entities.get(f);
+    expect(near(arc.r, 5)).toBe(true);
+  });
+
+  /** The fillet must be genuinely tangent to both arcs: its centre sits at
+   *  R∓r from each arc's centre. */
+  const assertTangent = (sk, filletId, arcIds, r) => {
+    const f = sk.entities.get(filletId);
+    const fc = sk.entities.get(f.center);
+    for (const id of arcIds) {
+      const a = sk.entities.get(id);
+      const ac = sk.entities.get(a.center);
+      const d = Math.hypot(fc.x - ac.x, fc.y - ac.y);
+      const tangent = near(d, a.r - r, 1e-6) || near(d, a.r + r, 1e-6);
+      expect(tangent).toBe(true);
+    }
+  };
+
+  it('fillets a corner where the endpoints are coincident but distinct points', () => {
+    // This is the case trimming two circles leaves behind — it used to return
+    // null, so R simply could not be applied between two curves.
+    const { sk, arc1, arc2 } = lens({ merged: false });
+    const f = filletArcArc(sk, arc1, arc2, 5);
+    expect(f).not.toBeNull();
+    expect(near(sk.entities.get(f).r, 5)).toBe(true);
+    assertTangent(sk, f, [arc1, arc2], 5);
+  });
+
+  it('fillets the corner nearest where the user clicked, not just the first one', () => {
+    // A lens has TWO corners, (40,30) and (40,-30). Without a hint the pick is
+    // arbitrary; the hint is the chamfer tool's last click.
+    for (const corner of [{ x: 40, y: 30 }, { x: 40, y: -30 }]) {
+      const { sk, arc1, arc2 } = lens({ merged: false });
+      const f = filletArcArc(sk, arc1, arc2, 5, undefined, corner);
+      expect(f).not.toBeNull();
+      const fc = sk.entities.get(sk.entities.get(f).center);
+      // The fillet centre must land near the corner that was pointed at, not the
+      // one 60mm away on the other side.
+      expect(Math.hypot(fc.x - corner.x, fc.y - corner.y) < 20).toBe(true);
+      assertTangent(sk, f, [arc1, arc2], 5);
+    }
+  });
+
+  it('returns null when the two arcs never come near each other', () => {
+    const sk = createSketch();
+    const a1 = addArc(sk, addPoint(sk, 0, 0), addPoint(sk, 10, 0), addPoint(sk, 0, 10), 10);
+    const a2 = addArc(sk, addPoint(sk, 500, 0), addPoint(sk, 510, 0), addPoint(sk, 500, 10), 10);
+    expect(filletArcArc(sk, a1, a2, 3)).toBeNull();
+  });
+
+  it('arcArcMeet reports whether a fillet corner exists at all', () => {
+    const merged = lens({ merged: true });
+    expect(arcArcMeet(merged.sk, merged.arc1, merged.arc2)).toBe(true);
+    const apart = lens({ merged: false });
+    expect(arcArcMeet(apart.sk, apart.arc1, apart.arc2)).toBe(true);
+    const sk = createSketch();
+    const a1 = addArc(sk, addPoint(sk, 0, 0), addPoint(sk, 10, 0), addPoint(sk, 0, 10), 10);
+    const a2 = addArc(sk, addPoint(sk, 500, 0), addPoint(sk, 510, 0), addPoint(sk, 500, 10), 10);
+    expect(arcArcMeet(sk, a1, a2)).toBe(false);
+  });
+});
+
+describe('filletCircleCircle — fillet two whole circles, auto-trimming them', () => {
+  /** Two r50 circles 80 apart, crossing at (40, ±30). */
+  const pair = () => {
+    const sk = createSketch();
+    const c1 = addCircle(sk, addPoint(sk, 0, 0), 50);
+    const c2 = addCircle(sk, addPoint(sk, 80, 0), 50);
+    return { sk, c1, c2 };
+  };
+  const ofKind = (sk, t) => [...sk.entities.values()].filter((e) => e.type === t);
+
+  it('replaces both circles with arcs plus a tangent fillet', () => {
+    const { sk, c1, c2 } = pair();
+    const res = filletCircleCircle(sk, c1, c2, 8, { x: 40, y: 30 });
+    expect(res).not.toBeNull();
+    expect(ofKind(sk, 'circle').length).toBe(0); // both were trimmed away
+    expect(ofKind(sk, 'arc').length).toBe(3); // two trimmed arcs + the fillet
+    const f = sk.entities.get(res.fillet);
+    expect(near(f.r, 8)).toBe(true);
+    // Tangency: the fillet centre sits at R∓r from each original centre.
+    const fc = sk.entities.get(f.center);
+    for (const [cx, cy] of [[0, 0], [80, 0]]) {
+      const d = Math.hypot(fc.x - cx, fc.y - cy);
+      expect(near(d, 50 - 8, 1e-6) || near(d, 50 + 8, 1e-6)).toBe(true);
+    }
+  });
+
+  it('rounds the crossing nearest the pick', () => {
+    for (const pick of [{ x: 40, y: 30 }, { x: 40, y: -30 }]) {
+      const { sk, c1, c2 } = pair();
+      const res = filletCircleCircle(sk, c1, c2, 8, pick);
+      const fc = sk.entities.get(sk.entities.get(res.fillet).center);
+      expect(Math.hypot(fc.x - pick.x, fc.y - pick.y) < 25).toBe(true);
+    }
+  });
+
+  it('keeps the half each circle was picked on', () => {
+    const { sk, c1, c2 } = pair();
+    // Pick the inner (lens) side of each circle: near (40,0) from both.
+    const res = filletCircleCircle(sk, c1, c2, 5, { x: 40, y: 30 }, {
+      [c1]: { x: 50, y: 0 }, // circle 1's right-hand side, inside circle 2
+      [c2]: { x: 30, y: 0 }, // circle 2's left-hand side, inside circle 1
+    });
+    expect(res).not.toBeNull();
+    const covers = (arcId, px, py) => {
+      const arc = sk.entities.get(arcId);
+      const c = sk.entities.get(arc.center);
+      const s = sk.entities.get(arc.start);
+      const e = sk.entities.get(arc.end);
+      const TAU = Math.PI * 2;
+      const n = (x) => ((x % TAU) + TAU) % TAU;
+      const a0 = n(Math.atan2(s.y - c.y, s.x - c.x));
+      const sweep = n(n(Math.atan2(e.y - c.y, e.x - c.x)) - a0) || TAU;
+      return n(n(Math.atan2(py - c.y, px - c.x)) - a0) <= sweep;
+    };
+    expect(covers(res.arcs[0], 50, 0)).toBe(true); // the picked side survived
+    expect(covers(res.arcs[0], -50, 0)).toBe(false); // the far side was trimmed
+  });
+
+  it('defaults to keeping the outer (blob) halves when nothing was picked', () => {
+    const { sk, c1, c2 } = pair();
+    const res = filletCircleCircle(sk, c1, c2, 8, { x: 40, y: 30 });
+    // The kept arc of circle 1 must still cover its far side (180°, i.e. (-50,0))
+    // and must NOT cover the rounded corner at (40,30).
+    const a1 = sk.entities.get(res.arcs[0]);
+    const span = (arc, px, py) => {
+      const c = sk.entities.get(arc.center);
+      const s = sk.entities.get(arc.start);
+      const e = sk.entities.get(arc.end);
+      const TAU = Math.PI * 2;
+      const n = (x) => ((x % TAU) + TAU) % TAU;
+      const a0 = n(Math.atan2(s.y - c.y, s.x - c.x));
+      const sweep = n(n(Math.atan2(e.y - c.y, e.x - c.x)) - a0) || TAU;
+      return n(n(Math.atan2(py - c.y, px - c.x)) - a0) <= sweep;
+    };
+    expect(span(a1, -50, 0)).toBe(true); // far side kept
+    expect(span(a1, 40, 30)).toBe(false); // corner trimmed off
+  });
+
+  it('carries a diameter dimension over to the trimmed arc as a radius', () => {
+    const { sk, c1, c2 } = pair();
+    addConstraint(sk, 'diameter', [c1], 100);
+    const res = filletCircleCircle(sk, c1, c2, 8, { x: 40, y: 30 });
+    const dim = sk.constraints.find((c) => c.kind === 'arcRadius' && c.refs[0] === res.arcs[0]);
+    expect(dim).toBeTruthy();
+    expect(near(dim.value, 50)).toBe(true); // Ø100 → R50
+    expect(sk.constraints.some((c) => c.kind === 'diameter')).toBe(false);
+  });
+
+  it('refuses circles that do not genuinely cross', () => {
+    const sk = createSketch();
+    const a = addCircle(sk, addPoint(sk, 0, 0), 10);
+    const b = addCircle(sk, addPoint(sk, 500, 0), 10); // far apart
+    expect(filletCircleCircle(sk, a, b, 3, null)).toBeNull();
+    const t1 = addCircle(sk, addPoint(sk, 0, 200), 10);
+    const t2 = addCircle(sk, addPoint(sk, 20, 200), 10); // exactly tangent
+    expect(filletCircleCircle(sk, t1, t2, 3, null)).toBeNull();
   });
 });

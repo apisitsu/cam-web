@@ -100,13 +100,15 @@ test('removeConstraint by index, with bounds checking', () => {
   assert.equal(sk.constraints.length, 0);
 });
 
-test('chamfer cuts the shared corner: new points at dist along each line, corner dropped', () => {
+test('chamfer cuts the shared corner: new points at dist along each line, corner kept as a virtual sharp', () => {
   const { sk, far1, far2, l1, l2, corner } = makeCorner();
   const chamferId = chamfer(sk, l1, l2, 2);
   assert.notEqual(chamferId, null);
 
-  // old corner is gone; both far ends survive
-  assert.equal(sk.entities.has(corner), false);
+  // The corner survives as a *construction* virtual sharp (SW behaviour): it's
+  // what keeps dimensions on the corner meaningful and the chamfer parametric.
+  assert.equal(sk.entities.has(corner), true);
+  assert.equal(sk.entities.get(corner).construction, true);
   assert.equal(sk.entities.has(far1), true);
   assert.equal(sk.entities.has(far2), true);
 
@@ -129,18 +131,24 @@ test('chamfer cuts the shared corner: new points at dist along each line, corner
   assert.equal(L1.p1 !== corner && L1.p2 !== corner, true);
   assert.equal(L2.p1 !== corner && L2.p2 !== corner, true);
 
-  // 4 points (2 far + 2 new) and 3 lines (2 original + chamfer)
+  // 5 points (2 far + 2 new + the retained virtual sharp) and 3 lines
   const kinds = [...sk.entities.values()].map((e) => e.type);
-  assert.equal(kinds.filter((t) => t === 'point').length, 4);
+  assert.equal(kinds.filter((t) => t === 'point').length, 5);
   assert.equal(kinds.filter((t) => t === 'line').length, 3);
 });
 
-test('chamfer drops any constraint that referenced the removed corner', () => {
+test('chamfer keeps a dimension on the corner, pinning the virtual sharp instead', () => {
   const { sk, l1, l2, corner } = makeCorner();
   addConstraint(sk, 'lockX', [corner], 10);
   assert.equal(sk.constraints.length, 1);
   assert.notEqual(chamfer(sk, l1, l2, 2), null);
-  assert.equal(sk.constraints.length, 0);
+  // The original dimension survives untouched (it still names the virtual
+  // sharp), and the chamfer adds its own pinning/setback constraints.
+  const lock = sk.constraints.find((c) => c.kind === 'lockX');
+  assert.ok(lock, 'the corner dimension survived the chamfer');
+  assert.deepEqual(lock.refs, [corner]);
+  assert.equal(lock.value, 10);
+  assert.ok(sk.constraints.length > 1, 'chamfer added its own constraints');
 });
 
 test('chamfer returns null when the two lines share no corner', () => {

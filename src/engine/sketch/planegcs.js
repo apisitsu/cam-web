@@ -87,6 +87,19 @@ export function toPlanegcs(sk) {
       case 'distance':
         prims.push({ id: cid(), type: 'p2p_distance', p1_id: a, p2_id: b, distance: c.value, driving });
         break;
+      case 'distanceX':
+      case 'distanceY': {
+        // planegcs has no dx/dy constraint; `difference` works on raw object
+        // params instead — difference = param2 − param1, so pointing both at the
+        // same property of two points gives the axis-aligned gap.
+        const prop = c.kind === 'distanceX' ? 'x' : 'y';
+        prims.push({
+          id: cid(), type: 'difference',
+          param1: { o_id: a, prop }, param2: { o_id: b, prop },
+          difference: c.value, driving,
+        });
+        break;
+      }
       case 'pointLineDistance':
         prims.push({ id: cid(), type: 'p2l_distance', p_id: a, l_id: b, distance: c.value, driving });
         break;

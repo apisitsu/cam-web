@@ -12,6 +12,7 @@ import { Line, Html } from '@react-three/drei';
 import { invalidate, useFrame } from '@react-three/fiber';
 import * as THREE from 'three';
 import { useSketchStore } from '../stores/sketchStore.js';
+import { axisDimensionGeometry } from '../engine/sketch/edit.js';
 
 const noRaycast = () => null;
 const Z = 0.05; // lift a hair above the Z=0 pick plane to avoid z-fighting
@@ -92,6 +93,8 @@ const angleReadoutStyle = (locked) => ({
  * On-canvas annotations for every *dimensional* constraint (one carrying a value)
  * so it's visible which lines / distances are already sized:
  *   - distance          → parallel dimension line + witness lines + value;
+ *   - distanceX/Y       → the same, but locked to the x or y axis (SW horizontal
+ *     and vertical dimensions), so the line never runs diagonally;
  *   - pointLineDistance → the perpendicular dimension line (point → foot on the
  *     line), which is what a 2-line/parallel gap, point↔line and line↔centre use;
  *   - angle             → an arc swept between the two legs + the degree value;
@@ -126,6 +129,18 @@ function DimensionAnnotations({ sk, version }) {
         ls.push({ key: `s${k++}`, pts: [[b.x, b.y, Z], b2] });
         ls.push({ key: `s${k++}`, pts: [a2, b2] }); // dimension line
         bs.push({ key: `b${k++}`, ci, pos: [(a2[0] + b2[0]) / 2, (a2[1] + b2[1]) / 2, Z], text: fmtDim(c.value) });
+      } else if (c.kind === 'distanceX' || c.kind === 'distanceY') {
+        // Axis-locked dimension: the dimension line runs along the measured axis
+        // only, standing off past both points, with witness lines dropped
+        // perpendicular from each point — so it reads as dX/dY, never as the
+        // slanted true distance.
+        const g = axisDimensionGeometry(sk, c.kind, c.refs);
+        if (!g) return;
+        const xyz = (p) => [p.x, p.y, Z];
+        for (const w of g.witness) ls.push({ key: `s${k++}`, pts: w.map(xyz) });
+        ls.push({ key: `s${k++}`, pts: g.line.map(xyz) }); // dimension line, on-axis
+        // Value is signed (planegcs difference); a dimension reads as a magnitude.
+        bs.push({ key: `b${k++}`, ci, pos: xyz(g.label), text: fmtDim(Math.abs(c.value)) });
       } else if (c.kind === 'pointLineDistance') {
         // Perpendicular distance from a point to a line — this is what a 2-line
         // (parallel) dimension, a point↔line, and a line↔circle-centre resolve to.

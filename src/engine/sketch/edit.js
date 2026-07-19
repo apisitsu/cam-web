@@ -214,6 +214,12 @@ export function measureConstraint(sk, kind, refs) {
     const b = P(refs[1]);
     return a && b ? Math.hypot(a.x - b.x, a.y - b.y) : null;
   }
+  if (kind === 'distanceX' || kind === 'distanceY') {
+    const a = P(refs[0]);
+    const b = P(refs[1]);
+    if (!a || !b) return null;
+    return kind === 'distanceX' ? b.x - a.x : b.y - a.y; // signed, matches planegcs
+  }
   if (kind === 'pointLineDistance') return distancePointToLine(sk, refs[0], refs[1]);
   if (kind === 'radius' || kind === 'arcRadius') {
     const c = P(refs[0]);
@@ -243,6 +249,77 @@ export function measureConstraint(sk, kind, refs) {
     return dir(l2) - dir(l1);
   }
   return null;
+}
+
+/**
+ * Which orientation a point-to-point dimension should take, inferred from where
+ * the user placed it — SolidWorks picks horizontal/vertical/aligned from the
+ * drag direction, and the placement click is our equivalent of that drag.
+ *
+ * A dimension line always sits roughly *perpendicular* to the offset from the
+ * geometry it measures. So of the three candidate line directions — the pair's
+ * own direction (aligned), the x axis (dX), the y axis (dY) — the right one is
+ * whichever is most perpendicular to the placement offset. Drag below a pair and
+ * the x axis wins (dX); drag out to the side and the y axis wins (dY); drag
+ * square off the line itself and aligned wins.
+ *
+ * Ties (e.g. an already-horizontal pair, where aligned and dX coincide) resolve
+ * to 'aligned', which is the simpler constraint and measures the same thing.
+ * Returns 'aligned' | 'x' | 'y'.
+ */
+export function axisFromPlacement(sk, aId, bId, at) {
+  const a = sk.entities.get(aId);
+  const b = sk.entities.get(bId);
+  if (!a || !b || !at) return 'aligned';
+  const mx = (a.x + b.x) / 2;
+  const my = (a.y + b.y) / 2;
+  let vx = at.x - mx;
+  let vy = at.y - my;
+  const vlen = Math.hypot(vx, vy);
+  if (vlen < 1e-9) return 'aligned'; // placed on the midpoint — no direction to read
+  vx /= vlen;
+  vy /= vlen;
+  const dx = b.x - a.x;
+  const dy = b.y - a.y;
+  const dlen = Math.hypot(dx, dy) || 1;
+  // |cos| between the placement offset and each candidate dimension-line
+  // direction; smaller = more perpendicular = better fit.
+  const cands = [
+    { axis: 'aligned', dot: Math.abs((dx / dlen) * vx + (dy / dlen) * vy) },
+    { axis: 'x', dot: Math.abs(vx) }, // x-axis direction (1,0)
+    { axis: 'y', dot: Math.abs(vy) }, // y-axis direction (0,1)
+  ];
+  const EPS = 1e-6; // ties → the earlier (aligned-first) candidate
+  return cands.reduce((best, c) => (c.dot < best.dot - EPS ? c : best)).axis;
+}
+
+/**
+ * Geometry for drawing an axis-locked (distanceX / distanceY) dimension: the
+ * on-axis dimension line, the two witness lines dropped perpendicular from the
+ * measured points, and where the value label sits. Pure so the annotation can be
+ * tested without a renderer — `SketchLayer` just maps this to lines.
+ *
+ * The dimension line stands off past the lower (dX) / right (dY) side of the
+ * pair, which is why it never reads as the slanted true distance.
+ */
+export function axisDimensionGeometry(sk, kind, refs) {
+  const a = sk.entities.get(refs[0]);
+  const b = sk.entities.get(refs[1]);
+  if (!a || !b) return null;
+  const horiz = kind === 'distanceX';
+  const span = Math.abs(horiz ? b.x - a.x : b.y - a.y);
+  const off = Math.max(span * 0.14, 4);
+  const level = horiz ? Math.min(a.y, b.y) - off : Math.max(a.x, b.x) + off;
+  const at = (p) => (horiz ? { x: p.x, y: level } : { x: level, y: p.y });
+  const a2 = at(a);
+  const b2 = at(b);
+  return {
+    horiz,
+    line: [a2, b2], // the dimension line itself — constant y (dX) or x (dY)
+    witness: [[{ x: a.x, y: a.y }, a2], [{ x: b.x, y: b.y }, b2]],
+    label: { x: (a2.x + b2.x) / 2, y: (a2.y + b2.y) / 2 },
+    span,
+  };
 }
 
 /**
@@ -568,28 +645,83 @@ export function filletLineArc(sk, lineId, arcId, radius, touchTol) {
 }
 
 /**
- * Fillet the corner where **two arcs** meet at a shared endpoint with a tangent
- * arc of radius `radius`. The fillet centre lies at distance R1∓radius from the
- * first arc's centre and R2∓radius from the second's, so it is a circle-circle
- * intersection over the internal/external tangency combinations; the candidate
- * whose tangent points fall within both arcs' spans and hugs the corner is used.
+ * Where two arcs meet at a corner a fillet could round: a shared endpoint id, or
+ * two distinct endpoints sitting within `touchTol` of each other (what trimming
+ * two overlapping circles leaves behind — the endpoints coincide on screen but
+ * were never merged).
+ *
+ * Two trimmed circles usually meet at **both** of their intersections (a lens),
+ * so this returns every corner found; `hint` — where the user clicked — selects
+ * the nearest one, which is what makes "R at the corner I picked" behave. With
+ * no hint the first corner wins. Returns { mode, c1Id, c2Id } or null. Pure.
+ */
+function arcArcCorners(sk, arc1, arc2, tol) {
+  const out = [];
+  for (const e1 of [arc1.start, arc1.end]) {
+    const p1 = sk.entities.get(e1);
+    if (!p1) continue;
+    for (const e2 of [arc2.start, arc2.end]) {
+      if (e1 === e2) { out.push({ mode: 'shared', c1Id: e1, c2Id: e1, at: p1 }); continue; }
+      const p2 = sk.entities.get(e2);
+      if (!p2) continue;
+      if (Math.hypot(p1.x - p2.x, p1.y - p2.y) <= tol) {
+        out.push({ mode: 'coincident', c1Id: e1, c2Id: e2, at: p1 });
+      }
+    }
+  }
+  return out;
+}
+
+function arcArcCorner(sk, arc1, arc2, tol, hint) {
+  const cs = arcArcCorners(sk, arc1, arc2, tol);
+  if (!cs.length) return null;
+  // Prefer a shared-id corner over a merely coincident one at the same spot.
+  const rank = (c) => (c.mode === 'shared' ? 0 : 1);
+  if (!hint) return cs.sort((a, b) => rank(a) - rank(b))[0];
+  const d = (c) => Math.hypot(c.at.x - hint.x, c.at.y - hint.y);
+  return cs.sort((a, b) => d(a) - d(b) || rank(a) - rank(b))[0];
+}
+
+/**
+ * Whether two arcs meet at a corner a fillet could round. Pure detection (no
+ * mutation) so the UI can say *why* a fillet failed — too big a radius versus
+ * the two curves not actually touching. The arc↔arc twin of `lineArcMeet`.
+ */
+export function arcArcMeet(sk, arc1Id, arc2Id, touchTol) {
+  const arc1 = sk.entities.get(arc1Id);
+  const arc2 = sk.entities.get(arc2Id);
+  if (!arc1 || arc1.type !== 'arc' || !arc2 || arc2.type !== 'arc') return false;
+  return arcArcCorner(sk, arc1, arc2, touchTol ?? FILLET_TOUCH_TOL) != null;
+}
+
+/**
+ * Fillet the corner where **two arcs** meet with a tangent arc of radius
+ * `radius`. The fillet centre lies at distance R1∓radius from the first arc's
+ * centre and R2∓radius from the second's, so it is a circle-circle intersection
+ * over the internal/external tangency combinations; the candidate whose tangent
+ * points fall within both arcs' spans and hugs the corner is used.
+ *
+ * Handles both corner flavours `filletLineArc` does — a shared endpoint id, and
+ * two coincident-but-distinct endpoints (the normal result of trimming two
+ * overlapping circles, which is how most arc↔arc corners get made).
  * Returns the new fillet-arc id or null. The arc↔arc companion to `filletLineArc`.
  */
-export function filletArcArc(sk, arc1Id, arc2Id, radius) {
+export function filletArcArc(sk, arc1Id, arc2Id, radius, touchTol, hint) {
   const arc1 = sk.entities.get(arc1Id);
   const arc2 = sk.entities.get(arc2Id);
   if (!arc1 || arc1.type !== 'arc' || !arc2 || arc2.type !== 'arc') return null;
   if (!(radius > 0)) return null;
-  const shared = [arc1.start, arc1.end].find((id) => id === arc2.start || id === arc2.end);
-  if (shared == null) return null;
-  const P = sk.entities.get(shared);
+  const corner = arcArcCorner(sk, arc1, arc2, touchTol ?? FILLET_TOUCH_TOL, hint);
+  if (corner == null) return null;
+  const { mode, c1Id: corner1, c2Id: corner2 } = corner;
+  const P = sk.entities.get(corner1);
   const C1 = sk.entities.get(arc1.center);
   const C2 = sk.entities.get(arc2.center);
   const R1 = arc1.r;
   const R2 = arc2.r;
   if (!P || !C1 || !C2) return null;
-  const farArc1Id = arc1.start === shared ? arc1.end : arc1.start;
-  const farArc2Id = arc2.start === shared ? arc2.end : arc2.start;
+  const farArc1Id = arc1.start === corner1 ? arc1.end : arc1.start;
+  const farArc2Id = arc2.start === corner2 ? arc2.end : arc2.start;
 
   const cands = [];
   for (const s1 of radius < R1 ? [R1 - radius, R1 + radius] : [R1 + radius]) {
@@ -606,12 +738,21 @@ export function filletArcArc(sk, arc1Id, arc2Id, radius) {
     }
   }
   const repoint = (c1, c2) => {
-    if (arc1.start === shared) arc1.start = c1; else arc1.end = c1;
-    if (arc2.start === shared) arc2.start = c2; else arc2.end = c2;
+    if (arc1.start === corner1) arc1.start = c1; else arc1.end = c1;
+    if (arc2.start === corner2) arc2.start = c2; else arc2.end = c2;
   };
   const finalize = (c1, c2) => {
-    repointCorner(sk, shared, c1, c2, arc1Id, arc2Id, farArc1Id, farArc2Id);
-    deleteEntity(sk, shared);
+    if (mode === 'shared') {
+      repointCorner(sk, corner1, c1, c2, arc1Id, arc2Id, farArc1Id, farArc2Id);
+      deleteEntity(sk, corner1);
+    } else {
+      // Two distinct coincident corners: move each one's constraints onto its own
+      // tangent point, then drop the old points if nothing else references them.
+      repointCorner(sk, corner1, c1, c1, arc1Id, arc1Id, farArc1Id, farArc1Id);
+      repointCorner(sk, corner2, c2, c2, arc2Id, arc2Id, farArc2Id, farArc2Id);
+      removeIfOrphan(sk, corner1);
+      removeIfOrphan(sk, corner2);
+    }
   };
   const filletArc = buildFillet(sk, cands, radius, repoint, finalize);
   if (filletArc != null) {
@@ -621,6 +762,138 @@ export function filletArcArc(sk, arc1Id, arc2Id, radius) {
     } catch { /* already tangent; skip if unaddable */ }
   }
   return filletArc;
+}
+
+/** The point on the circle (C, R) in the direction of F. */
+function projectToCircle(F, C, R) {
+  const d = Math.hypot(F.x - C.x, F.y - C.y) || 1;
+  return { x: C.x + ((F.x - C.x) / d) * R, y: C.y + ((F.y - C.y) / d) * R };
+}
+
+/** Whether the CCW arc from angle `a0` to `a1` (about C) covers point `p`. */
+function ccwCovers(C, a0, a1, p) {
+  const at = normAngle(Math.atan2(p.y - C.y, p.x - C.x));
+  const span = normAngle(a1 - a0) || TAU;
+  return normAngle(at - a0) <= span;
+}
+
+/**
+ * Re-attach a size dimension from a deleted circle onto the arc that replaced it,
+ * so auto-trimming doesn't silently drop the user's Ø/R. A circle's `diameter`
+ * becomes the arc's `arcRadius` (half the value); `radius` carries over as-is.
+ */
+function migrateCircleSize(sk, circleId, arcId) {
+  for (const c of sk.constraints) {
+    if (c.refs.length !== 1 || c.refs[0] !== circleId) continue;
+    if (c.kind === 'diameter') { c.kind = 'arcRadius'; c.value /= 2; c.refs = [arcId]; }
+    else if (c.kind === 'radius') { c.kind = 'arcRadius'; c.refs = [arcId]; }
+  }
+}
+
+/**
+ * Fillet two **whole circles** that cross each other, rounding the notch at one
+ * crossing and **auto-trimming** both circles into arcs — SolidWorks' sketch
+ * fillet does this, so you don't have to trim them by hand first.
+ *
+ * Two crossing circles cut each other into two arcs apiece, so *which* halves to
+ * keep is a real choice (lens, blob, or either crescent). SolidWorks resolves it
+ * from what you clicked, and so does this: `picks` maps each circle id to where
+ * it was picked, and the half containing that point survives. `hint` (the last
+ * click) chooses which of the two crossings gets rounded; the other one, `Q`,
+ * stays sharp and anchors both trims. The result is a closed profile:
+ * arc1 → fillet → arc2. With no picks, the halves facing away from the other
+ * circle are kept (the blob outline), which is the common intent.
+ *
+ * Returns { fillet, arcs: [id, id] } or null when the circles don't genuinely
+ * cross or no fillet of that radius fits.
+ */
+export function filletCircleCircle(sk, c1Id, c2Id, radius, hint, picks) {
+  const c1 = sk.entities.get(c1Id);
+  const c2 = sk.entities.get(c2Id);
+  if (!c1 || c1.type !== 'circle' || !c2 || c2.type !== 'circle') return null;
+  if (!(radius > 0)) return null;
+  const C1 = sk.entities.get(c1.center);
+  const C2 = sk.entities.get(c2.center);
+  if (!C1 || !C2) return null;
+  const xs = circleCircleInts(C1.x, C1.y, c1.r, C2.x, C2.y, c2.r);
+  if (xs.length < 2) return null; // tangent or apart → no notch to round
+
+  // Round the crossing nearest the pick; the other one anchors the trims.
+  let [P, Q] = xs;
+  if (hint) {
+    const d = (p) => Math.hypot(p.x - hint.x, p.y - hint.y);
+    if (d(xs[1]) < d(xs[0])) [P, Q] = [xs[1], xs[0]];
+  }
+
+  // Which half of each circle survives. The crossings P and Q split a circle
+  // into the CCW arc P→Q and the CCW arc Q→P; keep whichever covers the pick.
+  // Default pick = the point facing away from the other circle (blob outline).
+  const keepDir = (C, R, otherC, pick) => {
+    const aP = normAngle(Math.atan2(P.y - C.y, P.x - C.x));
+    const aQ = normAngle(Math.atan2(Q.y - C.y, Q.x - C.x));
+    const away = { x: C.x - (otherC.x - C.x), y: C.y - (otherC.y - C.y) };
+    const probe = pick ?? projectToCircle(away, C, R);
+    // true → the kept arc runs CCW from P to Q (so trimming moves the P end).
+    return ccwCovers(C, aP, aQ, probe);
+  };
+  const keep1PtoQ = keepDir(C1, c1.r, C2, picks?.[c1Id]);
+  const keep2PtoQ = keepDir(C2, c2.r, C1, picks?.[c2Id]);
+
+  // Fillet centre: R∓radius from each circle centre (internal/external tangency).
+  // Only combinations whose tangent points land on the *kept* halves are usable;
+  // among those the one hugging the chosen crossing wins.
+  const onKept = (C, t, keepPtoQ) => {
+    const aP = normAngle(Math.atan2(P.y - C.y, P.x - C.x));
+    const aQ = normAngle(Math.atan2(Q.y - C.y, Q.x - C.x));
+    return keepPtoQ ? ccwCovers(C, aP, aQ, t) : ccwCovers(C, aQ, aP, t);
+  };
+  const cands = [];
+  for (const s1 of [c1.r + radius, c1.r - radius]) {
+    if (!(s1 > 0)) continue;
+    for (const s2 of [c2.r + radius, c2.r - radius]) {
+      if (!(s2 > 0)) continue;
+      for (const F of circleCircleInts(C1.x, C1.y, s1, C2.x, C2.y, s2)) {
+        const t1 = projectToCircle(F, C1, c1.r);
+        const t2 = projectToCircle(F, C2, c2.r);
+        if (!onKept(C1, t1, keep1PtoQ) || !onKept(C2, t2, keep2PtoQ)) continue;
+        cands.push({
+          F, t1, t2,
+          setback: Math.hypot(t1.x - P.x, t1.y - P.y) + Math.hypot(t2.x - P.x, t2.y - P.y),
+        });
+      }
+    }
+  }
+  if (!cands.length) return null;
+  cands.sort((a, b) => a.setback - b.setback);
+  const { F, t1, t2 } = cands[0];
+
+  const qPt = addPoint(sk, Q.x, Q.y);
+  const t1Pt = addPoint(sk, t1.x, t1.y);
+  const t2Pt = addPoint(sk, t2.x, t2.y);
+  const fCentre = addPoint(sk, F.x, F.y);
+
+  // Trim: the kept half, with its P end pulled back to the tangent point.
+  const arc1 = keep1PtoQ
+    ? addArc(sk, c1.center, t1Pt, qPt, c1.r)
+    : addArc(sk, c1.center, qPt, t1Pt, c1.r);
+  const arc2 = keep2PtoQ
+    ? addArc(sk, c2.center, t2Pt, qPt, c2.r)
+    : addArc(sk, c2.center, qPt, t2Pt, c2.r);
+  migrateCircleSize(sk, c1Id, arc1);
+  migrateCircleSize(sk, c2Id, arc2);
+  deleteEntity(sk, c1Id);
+  deleteEntity(sk, c2Id);
+
+  // The fillet itself: the minor sweep between the two tangent points.
+  const a1 = normAngle(Math.atan2(t1.y - F.y, t1.x - F.x));
+  const a2 = normAngle(Math.atan2(t2.y - F.y, t2.x - F.x));
+  const [fs, fe] = normAngle(a2 - a1) <= Math.PI ? [t1Pt, t2Pt] : [t2Pt, t1Pt];
+  const filletArc = addArc(sk, fCentre, fs, fe, radius);
+  try {
+    addConstraint(sk, 'tangentArcArc', [arc1, filletArc]);
+    addConstraint(sk, 'tangentArcArc', [arc2, filletArc]);
+  } catch { /* already tangent; skip if unaddable */ }
+  return { fillet: filletArc, arcs: [arc1, arc2] };
 }
 
 /**

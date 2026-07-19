@@ -43,6 +43,10 @@ const ArcIcon = glyph(<><path d="M4 18A14 14 0 0 1 18 4" /><circle cx="4" cy="18
 const DimIcon = glyph(<><path d="M4 7v10M20 7v10M4 12h16" /><path d="M7 9l-3 3 3 3M17 9l3 3-3 3" /></>);
 const TrimIcon = glyph(<><circle cx="6" cy="7" r="2.4" /><circle cx="6" cy="17" r="2.4" /><path d="M8 8.4L20 16M8 15.6L20 8" /></>);
 const ChamferIcon = glyph(<path d="M5 20V10L11 4H20" />);
+// Sketch-modify tools (SolidWorks keeps these on the Sketch tab, not with relations).
+const ConstructionIcon = glyph(<path d="M4 18L20 6" strokeDasharray="3 2.5" />);
+const MirrorIcon = glyph(<><path d="M12 3v18" strokeDasharray="3 2" /><path d="M9 7L4 12l5 5z" /><path d="M15 7l5 5-5 5z" /></>);
+const OffsetIcon = glyph(<><path d="M4 16c4-8 12-8 16 0" /><path d="M4 20c4-8 12-8 16 0" opacity="0.55" /></>);
 
 const TOOLS = [
   { value: 'select', label: 'Select', Icon: SelectIcon, hint: 'Click to select points, lines, circles or arcs · drag a point to move it (the sketch re-solves) · double-click a dimension to edit it' },
@@ -77,8 +81,8 @@ const LINE_CONSTRAINTS = [
 function ConstraintsPanel() {
   const {
     sk, selection, applyConstraint, applyConstraintRefs, dimension,
-    removeConstraintAt, resolveDimension,
-    toggleConstruction, mirror, offset, toggleDriven,
+    removeConstraintAt, resolveDimension, toggleDriven,
+    dimensionAxis, setDimensionAxis,
   } = useSketchStore();
   const [value, setValue] = useState(10);
 
@@ -98,9 +102,6 @@ function ConstraintsPanel() {
   const centreOf = (id) => sk.entities.get(id)?.center;
   // 2 points + 1 line → Symmetric (the line is the axis).
   const symmetricSel = selection.length === 3 && pointIds.length === 2 && lineIds.length === 1;
-  // Geometry present → construction toggle / offset; ≥2 with a line → mirror.
-  const geomSel = [...lineIds, ...circleIds, ...arcIds];
-  const canMirror = selection.length >= 2 && lineIds.length >= 1;
   // What (if anything) a dimension would apply to for the current selection.
   const dimSpec = resolveDimension();
 
@@ -113,6 +114,22 @@ function ConstraintsPanel() {
           {dimSpec ? `Dim: ${dimSpec.label}` : 'Dimension'}
         </Button>
       </Space>
+      {dimSpec?.axial && (
+        <div style={{ marginTop: 6 }}>
+          <Tooltip title="Set by where you placed the dimension (below → dX, to the side → dY, square off the line → aligned). Change it here to override.">
+            <Segmented
+              size="small"
+              value={dimensionAxis}
+              onChange={setDimensionAxis}
+              options={[
+                { label: '⤢ aligned', value: 'aligned' },
+                { label: '↔ dX', value: 'x' },
+                { label: '↕ dY', value: 'y' },
+              ]}
+            />
+          </Tooltip>
+        </div>
+      )}
 
       <Divider style={{ margin: '8px 0' }} />
 
@@ -207,21 +224,6 @@ function ConstraintsPanel() {
 
       <Divider style={{ margin: '8px 0' }} />
 
-      {/* Modify tools: construction toggle, mirror, offset. */}
-      <Space wrap size={4}>
-        <Button size="small" disabled={!geomSel.length} onClick={() => toggleConstruction()}>
-          Construction
-        </Button>
-        <Tooltip title="Mirror the selection about an axis line (make the axis a construction line)">
-          <Button size="small" disabled={!canMirror} onClick={() => mirror()}>Mirror</Button>
-        </Tooltip>
-        <Tooltip title="Offset the selected lines/circles/arcs by the value (negative flips the side)">
-          <Button size="small" disabled={!geomSel.length} onClick={() => offset(value)}>Offset</Button>
-        </Tooltip>
-      </Space>
-
-      <Divider style={{ margin: '8px 0' }} />
-
       <Text type="secondary" style={{ fontSize: 12 }}>Constraints ({sk.constraints.length})</Text>
       <div style={{ maxHeight: 160, overflow: 'auto', marginTop: 4 }}>
         {sk.constraints.map((c, i) => (
@@ -271,6 +273,8 @@ function DimensionInput() {
   const dimension = useSketchStore((s) => s.dimension);
   const cancelDimension = useSketchStore((s) => s.cancelDimension);
   const swapDimensionRefs = useSketchStore((s) => s.swapDimensionRefs);
+  const dimensionAxis = useSketchStore((s) => s.dimensionAxis);
+  const setDimensionAxis = useSketchStore((s) => s.setDimensionAxis);
   const [val, setVal] = useState(10);
 
   useEffect(() => {
@@ -307,6 +311,20 @@ function DimensionInput() {
             <Button size="small" onClick={swapDimensionRefs} style={{ padding: '0 6px' }}>⇄</Button>
           </Tooltip>
         </>
+      )}
+      {dimensionPending.axial && (
+        <Tooltip title="Measure the true distance, the horizontal gap (dX), or the vertical gap (dY)">
+          <Segmented
+            size="small"
+            value={dimensionAxis}
+            onChange={setDimensionAxis}
+            options={[
+              { label: '⤢', value: 'aligned' },
+              { label: '↔', value: 'x' },
+              { label: '↕', value: 'y' },
+            ]}
+          />
+        </Tooltip>
       )}
       <InputNumber controls={false}
         autoFocus
@@ -393,11 +411,36 @@ function ChamferInput() {
   // Valid pairings: 2 lines (chamfer or fillet), or a curve is involved
   // (1 line + 1 arc, or 2 arcs) → fillet only, since a straight chamfer needs
   // two straight edges.
+  const circleIds = selection.filter((id) => sk.entities.get(id)?.type === 'circle');
   const twoLines = selection.length === 2 && lineIds.length === 2;
   const withArc = selection.length === 2 && arcIds.length >= 1 && lineIds.length + arcIds.length === 2;
-  if (tool !== 'chamfer' || (!twoLines && !withArc)) return null;
+  // A whole circle is a closed curve — there is no corner on it to round. Rather
+  // than render nothing (which just looks like the tool is broken), explain it.
+  // Two whole circles that cross are filleted directly — the fillet auto-trims
+  // them into arcs (SolidWorks behaviour). A circle paired with a line or arc
+  // still has to be trimmed by hand, so that case just explains itself.
+  const twoCircles = selection.length === 2 && circleIds.length === 2;
+  const loneCircle = selection.length === 2 && circleIds.length === 1;
+  if (tool !== 'chamfer' || (!twoLines && !withArc && !twoCircles && !loneCircle)) return null;
+  if (loneCircle) {
+    return (
+      <div
+        style={{
+          position: 'absolute', top: 60, left: 12, zIndex: 6,
+          display: 'flex', gap: 8, alignItems: 'center', maxWidth: 420,
+          background: 'rgba(15,23,42,0.95)', border: '1px solid #f59e0b',
+          padding: '6px 10px', borderRadius: 8,
+        }}
+      >
+        <Text style={{ color: '#fbbf24', fontSize: 12 }}>Fillet</Text>
+        <Text style={{ color: '#cbd5e1', fontSize: 12 }}>
+          A whole circle has no corner to round against a line or arc — Trim it to an arc first, then apply R.
+        </Text>
+      </div>
+    );
+  }
   // A curve pairing forces fillet (R); two lines respect the C/R toggle.
-  const rounded = withArc || chamferKind === 'R';
+  const rounded = withArc || twoCircles || chamferKind === 'R';
   const apply = () => {
     if (!(Number.isFinite(val) && val > 0)) return;
     rounded ? fillet(val) : chamfer(val);
@@ -441,6 +484,46 @@ function ChamferInput() {
   );
 }
 
+/**
+ * Inline distance entry for the Offset tool — the rail button arms it
+ * (`offsetPending`) and this asks for the distance, matching how Chamfer and
+ * Dimension take their values. Negative flips the side.
+ */
+function OffsetInput() {
+  const offsetPending = useSketchStore((s) => s.offsetPending);
+  const offset = useSketchStore((s) => s.offset);
+  const cancelOffset = useSketchStore((s) => s.cancelOffset);
+  const [val, setVal] = useState(5);
+
+  if (!offsetPending) return null;
+  const apply = () => { if (Number.isFinite(val) && val !== 0) offset(val); };
+
+  return (
+    <div
+      onKeyDown={(e) => { if (e.key === 'Escape') cancelOffset(); }}
+      style={{
+        position: 'absolute', top: 60, left: 12, zIndex: 6,
+        display: 'flex', gap: 6, alignItems: 'center',
+        background: 'rgba(15,23,42,0.95)', border: '1px solid #34d399',
+        padding: '6px 10px', borderRadius: 8,
+      }}
+    >
+      <Text style={{ color: '#cbd5e1', fontSize: 12 }}>Offset</Text>
+      <InputNumber controls={false}
+        autoFocus
+        size="small"
+        value={val}
+        onChange={(v) => setVal(v ?? 0)}
+        onPressEnter={apply}
+        style={{ width: 96 }}
+        addonAfter="mm"
+      />
+      <Button size="small" type="primary" onClick={apply}>Set</Button>
+      <Button size="small" type="text" style={{ color: '#94a3b8' }} onClick={cancelOffset}>✕</Button>
+    </div>
+  );
+}
+
 export default function SketchToolbar() {
   const tool = useSketchStore((s) => s.tool);
   const selection = useSketchStore((s) => s.selection);
@@ -456,8 +539,16 @@ export default function SketchToolbar() {
   const deleteSelected = useSketchStore((s) => s.deleteSelected);
   const loadDemo = useSketchStore((s) => s.loadDemo);
   const clear = useSketchStore((s) => s.clear);
+  const sk = useSketchStore((s) => s.sk);
+  const toggleConstruction = useSketchStore((s) => s.toggleConstruction);
+  const mirror = useSketchStore((s) => s.mirror);
+  const beginOffset = useSketchStore((s) => s.beginOffset);
 
   const activeHint = TOOLS.find((t) => t.value === tool)?.hint;
+  // Enablement for the sketch-modify tools, from the current selection.
+  const selectedTypes = selection.map((id) => sk.entities.get(id)?.type);
+  const geomSelected = selectedTypes.some((t) => t === 'line' || t === 'circle' || t === 'arc');
+  const canMirror = selection.length >= 2 && selectedTypes.filter((t) => t === 'line').length >= 1;
 
   const railBtn = () => ({ width: 34, height: 34 });
   // Vertical hairline separating groups in the horizontal rail.
@@ -484,13 +575,46 @@ export default function SketchToolbar() {
 
       {sep}
 
+      {/* Sketch-modify tools. SolidWorks puts these on the Sketch tab next to the
+          drawing tools — they change geometry, unlike the relations in the
+          popover — so they sit on the rail, acting on the current selection. */}
+      <Tooltip title="Construction — toggle the selected lines/circles/arcs to reference geometry (dashed; excluded from the profile)" placement="bottom">
+        <Button
+          type="text"
+          icon={<ConstructionIcon />}
+          disabled={!geomSelected}
+          onClick={() => toggleConstruction()}
+          style={{ ...railBtn(), color: geomSelected ? '#cbd5e1' : undefined }}
+        />
+      </Tooltip>
+      <Tooltip title="Mirror — reflect the selection about an axis line (make the axis a construction line first)" placement="bottom">
+        <Button
+          type="text"
+          icon={<MirrorIcon />}
+          disabled={!canMirror}
+          onClick={() => mirror()}
+          style={{ ...railBtn(), color: canMirror ? '#cbd5e1' : undefined }}
+        />
+      </Tooltip>
+      <Tooltip title="Offset — copy the selected lines/circles/arcs a set distance away (negative flips the side)" placement="bottom">
+        <Button
+          type="text"
+          icon={<OffsetIcon />}
+          disabled={!geomSelected}
+          onClick={() => beginOffset()}
+          style={{ ...railBtn(), color: geomSelected ? '#cbd5e1' : undefined }}
+        />
+      </Tooltip>
+
+      {sep}
+
       <Popover
         trigger="click"
         placement="bottomLeft"
-        title="Constraints & dimensions"
+        title="Relations & dimensions"
         content={<ConstraintsPanel />}
       >
-        <Tooltip title="Constraints & dimensions" placement="bottom">
+        <Tooltip title="Relations & dimensions" placement="bottom">
           <Button type="text" icon={<NodeIndexOutlined />} style={{ ...railBtn(), color: '#cbd5e1' }} />
         </Tooltip>
       </Popover>
@@ -554,6 +678,7 @@ export default function SketchToolbar() {
     <DimensionInput />
     <EditDimensionInput />
     <ChamferInput />
+    <OffsetInput />
     </>
   );
 }

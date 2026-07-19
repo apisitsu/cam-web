@@ -205,6 +205,44 @@ test('tangentArcArc makes two arcs tangent (centre distance = R1+R2)', () => {
   assert.ok(near(d, 14, 1e-2), `arc centres 14 apart (external tangency), got ${d}`);
 });
 
+test('distanceX / distanceY drive the axis gap only, leaving the other axis free', () => {
+  const sk = createSketch();
+  const o = addPoint(sk, 0, 0, true); // fixed datum
+  // A free point sitting diagonally away; dX pins x, dY pins y, independently.
+  const p = addPoint(sk, 37, 12);
+  addConstraint(sk, 'distanceX', [o, p], 100);
+  addConstraint(sk, 'distanceY', [o, p], 40);
+
+  const res = solver.solve(sk);
+  assert.ok(res.success, `solve status ${res.status}`);
+  const pt = sk.entities.get(p);
+  assert.ok(near(pt.x, 100, 1e-4), `dX drove x to 100, got ${pt.x}`);
+  assert.ok(near(pt.y, 40, 1e-4), `dY drove y to 40, got ${pt.y}`);
+});
+
+test('difference is signed p2 − p1, so ref order sets the positive direction', () => {
+  const sk = createSketch();
+  const o = addPoint(sk, 0, 0, true);
+  const p = addPoint(sk, 5, 0);
+  // refs reversed: [p, o] means o.x − p.x = 30, so p lands at −30.
+  addConstraint(sk, 'distanceX', [p, o], 30);
+  const res = solver.solve(sk);
+  assert.ok(res.success, `solve status ${res.status}`);
+  assert.ok(near(sk.entities.get(p).x, -30, 1e-4), `got ${sk.entities.get(p).x}`);
+});
+
+test('distanceX emits a difference primitive on the points x params', () => {
+  const sk = createSketch();
+  const p1 = addPoint(sk, 0, 0);
+  const p2 = addPoint(sk, 10, 4);
+  addConstraint(sk, 'distanceX', [p1, p2], 10);
+  const c = toPlanegcs(sk).find((x) => x.type === 'difference');
+  assert.ok(c, 'emitted a difference primitive');
+  assert.equal(c.param1.prop, 'x');
+  assert.equal(c.param2.prop, 'x');
+  assert.equal(c.difference, 10);
+});
+
 test('pointLineDistance drives a point to a set perpendicular gap from a line', () => {
   const sk = createSketch();
   // fixed horizontal line along the x-axis

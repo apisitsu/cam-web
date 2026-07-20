@@ -12,6 +12,7 @@ import { OrbitControls, Html } from '@react-three/drei';
 import * as THREE from 'three';
 import Backplot from './Backplot.jsx';
 import StockMesh from './StockMesh.jsx';
+import PartMesh, { FeatureHighlight } from './PartMesh.jsx';
 import SketchLayer from './SketchLayer.jsx';
 import { getBuf, setView } from '../engine/bufferCache.js';
 import { sliceUpTo } from '../engine/gcode/path.js';
@@ -403,9 +404,63 @@ function SpindleAxis({ bounds }) {
   );
 }
 
+/**
+ * Everything drawn inside the canvas.
+ *
+ * Split out of `Viewport` so it can be mounted directly by
+ * `@react-three/test-renderer`, which builds its own canvas and cannot host a
+ * nested `<Canvas>`. That makes the scene graph — is the imported part actually
+ * there? is the backplot? — testable without WebGL, which is the only way the
+ * viewport gets any automated coverage at all.
+ */
+export function SceneContents({
+  bounds, turnChuck, showStock, toolPos, toolRotary, toolRadius, toolType,
+  toolLength, turnInsert, bufVer, drawVer, partVer, showPart = true,
+  mode = 'mill', sketching = false,
+}) {
+  return (
+    <>
+      <ambientLight intensity={0.8} />
+      <directionalLight position={[100, 100, 200]} intensity={0.6} />
+
+      <axesHelper args={[20]} />
+      <AxisLabels len={22} />
+
+      {/* CAM geometry (backplot, stock, tool, lathe fixtures) belongs to the
+          Milling / Turning pages; the Sketch page shows only the sketcher. */}
+      {sketching ? (
+        <SketchLayer />
+      ) : (
+        <>
+          {mode === 'turn' && <SpindleAxis bounds={bounds} />}
+          {mode === 'turn' && turnChuck && (
+            <Chuck zEnd={turnChuck.z - 5} od={turnChuck.od} />
+          )}
+
+          <Backplot drawVer={drawVer} />
+          <StockMesh simVer={bufVer} visible={showStock} />
+          {/* The imported model. Drawn on both machining pages: a part is a
+              part whether it is going to be turned or milled. */}
+          <PartMesh meshVer={partVer} visible={showPart} />
+          {showPart && <FeatureHighlight meshVer={partVer} />}
+          <Tool
+            pos={toolPos}
+            rotary={toolRotary}
+            radius={toolRadius}
+            type={toolType}
+            length={toolLength}
+            insert={turnInsert}
+            mode={mode}
+          />
+        </>
+      )}
+    </>
+  );
+}
+
 export default function Viewport({
   bounds, fitBounds, sketchFit, turnChuck, showStock, toolPos, toolRotary, toolRadius, toolType,
-  toolLength, turnInsert, bufVer, playhead,
+  toolLength, turnInsert, bufVer, playhead, partVer, showPart = true,
   mode = 'mill', sketching = false, view = 'iso', viewNonce = 0,
 }) {
   const controlsRef = useRef();
@@ -434,7 +489,7 @@ export default function Viewport({
   // Re-render the demand-mode canvas whenever inputs change.
   useEffect(() => {
     invalidate();
-  }, [drawVer, showStock, toolPos, toolRotary, toolRadius, toolType, toolLength, turnInsert, mode]);
+  }, [drawVer, showStock, toolPos, toolRotary, toolRadius, toolType, toolLength, turnInsert, mode, partVer, showPart]);
 
   return (
     <Canvas
@@ -442,36 +497,23 @@ export default function Viewport({
       camera={{ position: [80, -80, 80], up: [0, 0, 1], zoom: 6, near: 0.1, far: 100000 }}
       style={{ background: '#0f172a' }}
     >
-      <ambientLight intensity={0.8} />
-      <directionalLight position={[100, 100, 200]} intensity={0.6} />
-
-      <axesHelper args={[20]} />
-      <AxisLabels len={22} />
-
-      {/* CAM geometry (backplot, stock, tool, lathe fixtures) belongs to the
-          Milling / Turning pages; the Sketch page shows only the sketcher. */}
-      {sketching ? (
-        <SketchLayer />
-      ) : (
-        <>
-          {mode === 'turn' && <SpindleAxis bounds={bounds} />}
-          {mode === 'turn' && turnChuck && (
-            <Chuck zEnd={turnChuck.z - 5} od={turnChuck.od} />
-          )}
-
-          <Backplot drawVer={drawVer} />
-          <StockMesh simVer={bufVer} visible={showStock} />
-          <Tool
-            pos={toolPos}
-            rotary={toolRotary}
-            radius={toolRadius}
-            type={toolType}
-            length={toolLength}
-            insert={turnInsert}
-            mode={mode}
-          />
-        </>
-      )}
+      <SceneContents
+        bounds={bounds}
+        turnChuck={turnChuck}
+        showStock={showStock}
+        toolPos={toolPos}
+        toolRotary={toolRotary}
+        toolRadius={toolRadius}
+        toolType={toolType}
+        toolLength={toolLength}
+        turnInsert={turnInsert}
+        bufVer={bufVer}
+        drawVer={drawVer}
+        partVer={partVer}
+        showPart={showPart}
+        mode={mode}
+        sketching={sketching}
+      />
 
       <CameraRig
         bounds={fitBounds ?? bounds}

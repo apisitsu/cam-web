@@ -326,3 +326,46 @@ describe('interpreter — turning mode', () => {
     expect(near(last.b[2], 2)).toBe(true);
   });
 });
+
+describe('interpreter — constant surface speed (G96 / G97 / G50)', () => {
+  const turn = { mode: 'turn', diameterMode: true };
+  /** Cutting minutes for one feed move at a given diameter. */
+  const minutes = (src) => interpret(src, turn).stats.cycleTime / 60;
+
+  it('reads S under G96 as a surface speed, not as RPM', () => {
+    // Ø30 at 200 m/min is ~2122 rpm, so 0.2 mm/rev feeds ~424 mm/min.
+    // Reading S=200 as RPM would give 40 mm/min — an order of magnitude out,
+    // which is what made generated lathe programs look ten times slower than
+    // they run.
+    const src = 'G21 G18 G99\nG96 S200 M03\nG00 X30. Z2.\nG01 Z-100. F0.2';
+    expect(minutes(src)).toBeCloseTo(102 / 424, 1);
+  });
+
+  it('G97 puts the S word back to plain RPM', () => {
+    const css = 'G21 G18 G99\nG96 S200 M03\nG00 X30. Z2.\nG01 Z-100. F0.2';
+    const rpm = 'G21 G18 G99\nG97 S200 M03\nG00 X30. Z2.\nG01 Z-100. F0.2';
+    expect(minutes(rpm)).toBeGreaterThan(minutes(css) * 5);
+  });
+
+  it('spins faster as the tool works toward centre', () => {
+    // Same feed and length, smaller diameter: higher rpm, so less time.
+    const big = 'G21 G18 G99\nG96 S200 M03\nG00 X60. Z2.\nG01 Z-100. F0.2';
+    const small = 'G21 G18 G99\nG96 S200 M03\nG00 X10. Z2.\nG01 Z-100. F0.2';
+    expect(minutes(small)).toBeLessThan(minutes(big));
+  });
+
+  it('honours the G50 clamp near centre instead of running away', () => {
+    const clamped = 'G21 G18 G99\nG50 S1000\nG96 S200 M03\nG00 X0.4 Z2.\nG01 Z-100. F0.2';
+    const free = 'G21 G18 G99\nG96 S200 M03\nG00 X0.4 Z2.\nG01 Z-100. F0.2';
+    // Without a clamp the implied rpm is enormous and the time collapses.
+    expect(minutes(clamped)).toBeGreaterThan(minutes(free));
+    // 1000 rpm at 0.2 mm/rev = 200 mm/min over 102 mm.
+    expect(minutes(clamped)).toBeCloseTo(102 / 200, 1);
+  });
+
+  it('leaves milling programs alone', () => {
+    // G50 on a mill cancels scaling and carries no S; G96/G97 are not used.
+    const { stats } = interpret('G21 G17 G94\nS2000 M03\nG00 X0 Y0\nG01 X100 F500', { mode: 'mill' });
+    expect(stats.cycleTime).toBeCloseTo((100 / 500) * 60, 1);
+  });
+});

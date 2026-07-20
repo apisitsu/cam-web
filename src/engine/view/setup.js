@@ -40,6 +40,32 @@ export function fitBoundsFor(mode, bounds) {
 }
 
 /**
+ * The fit box for an imported model, before any program exists.
+ *
+ * An STL is loaded to be machined, so the camera has to frame it the moment it
+ * arrives — there is no toolpath yet to fit to, and a part that cannot be seen
+ * cannot be checked for a wrong axis or a wrong scale.
+ *
+ * Turning gets the same symmetric treatment `fitBoundsFor` gives a program: the
+ * model may be modelled off to one side of the spindle, and framing it lopsided
+ * would suggest the part is off-centre when it is only the view that is.
+ *
+ * @param {'mill'|'turn'} mode
+ * @param {{min:number[],max:number[]}|null} partBounds  from `analyzeMesh`
+ */
+export function fitBoundsForPart(mode, partBounds) {
+  if (!partBounds) return null;
+  const min = [...partBounds.min];
+  const max = [...partBounds.max];
+  if (mode === 'turn') {
+    const r = Math.max(Math.abs(max[TURN_RADIAL]), Math.abs(min[TURN_RADIAL]), 1) * 1.4;
+    min[0] = -r; max[0] = r;
+    min[1] = -r; max[1] = r;
+  }
+  return { min, max };
+}
+
+/**
  * Where the chuck sits and how big it grips, from the *cutting* bounds (not the
  * padded fit) so the clearance to the deepest cut is preserved however the view
  * is framed. The chuck grips the **raw bar** — the turned OD plus the oversize —

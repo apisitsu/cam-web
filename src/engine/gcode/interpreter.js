@@ -137,7 +137,13 @@ export function interpret(text, opts = {}) {
     // up in feed-per-rev (G99) and a mill in feed-per-minute (G94); a program
     // that means otherwise says so with G98/G94 or G99/G95.
     feedMode: turning ? 95 : 94,
-    spindle: 0, // last S word (rpm) — needed for feed-per-rev timing
+    spindle: 0, // last S word (rpm under G97) — needed for feed-per-rev timing
+    // Constant surface speed. G96 makes the S word a surface speed in m/min and
+    // the spindle chase it as the diameter changes; G97 goes back to plain RPM.
+    // G50 S… sets the ceiling the control will not spin past.
+    cssActive: false,
+    cssSpeed: 0,
+    spindleClamp: 0,
     pos: [0, 0, 0],
     aAxis: 0, // 4th-axis rotary index, degrees about X
     bAxis: 0, // 5th-axis rotary index, degrees about Y
@@ -183,13 +189,36 @@ export function interpret(text, opts = {}) {
     }
   };
 
+  /**
+   * Spindle speed in rev/min right now.
+   *
+   * Under **G97** (and on a mill) the S word *is* the RPM. Under **G96** it is
+   * a surface speed in m/min, and the RPM the machine actually runs follows
+   * from the diameter being cut: `S = 1000·Vc / (π·D)`. Reading G96's S as an
+   * RPM makes a lathe program's cycle time wrong by roughly the ratio between
+   * them — a Ø30 part at 200 m/min really turns at 2100 rpm, so feed-per-rev
+   * timing came out about ten times too slow.
+   *
+   * As the tool approaches centre the diameter goes to zero and the ideal RPM
+   * runs away, which is exactly what `G50 S…` clamps on a real control; the
+   * clamp is honoured here for the same reason.
+   */
+  const currentRpm = () => {
+    if (!state.cssActive) return Math.abs(state.spindle);
+    // pos[0] is already a radius in turning mode.
+    const diameter = Math.abs(state.pos[0]) * 2;
+    if (diameter < 1e-6) return state.spindleClamp || Math.abs(state.spindle);
+    const ideal = (1000 * Math.abs(state.cssSpeed)) / (Math.PI * diameter);
+    return state.spindleClamp > 0 ? Math.min(ideal, state.spindleClamp) : ideal;
+  };
+
   /** Effective cutting feed in mm/min for the current modal state. */
   const effectiveFeed = () => {
     if (state.feedMode === 95) {
       if (state.feed > PER_REV_MAX) {
         warnOnce(`F${state.feed} is implausible as a feed per revolution — if the program means mm/min, select it with G98 (lathe) or G94 (mill)`);
       }
-      const rpm = Math.abs(state.spindle);
+      const rpm = currentRpm();
       if (state.feed > 0 && rpm > 0) return state.feed * rpm;
       warnOnce('Feed per revolution (G95/G99) with no S word — cycle time estimated at 100 mm/min');
       return FALLBACK_FEED;
@@ -448,6 +477,7 @@ export function interpret(text, opts = {}) {
       let motionThisBlock;
       let dwellThisBlock = false;
       let refReturn = 0;
+      let clampThisBlock = false; // this block's S is a G50 spindle ceiling
       for (const g of gCodes) {
         switch (g) {
           case 4: dwellThisBlock = true; break;
@@ -471,6 +501,15 @@ export function interpret(text, opts = {}) {
             break;
           case 94: state.feedMode = 94; break;
           case 95: state.feedMode = 95; break;
+          // Constant surface speed on/off. On a mill G96/G97 are not used, so
+          // this only ever changes how a lathe program is timed.
+          case 96: if (turning) state.cssActive = true; break;
+          case 97: if (turning) state.cssActive = false; break;
+          case 50:
+            // On a lathe G50 S… is the spindle clamp that must accompany G96.
+            // (On a mill G50 cancels scaling and carries no S.)
+            if (turning) clampThisBlock = true;
+            break;
           case 93:
             warnOnce('G93 inverse-time feed is not modelled — cycle time uses the F word as mm/min');
             state.feedMode = 94;
@@ -485,7 +524,13 @@ export function interpret(text, opts = {}) {
       }
 
       if (words.F !== undefined) state.feed = words.F * state.scale;
-      if (words.S !== undefined) state.spindle = words.S;
+      // Which quantity the S word carries depends on the block it appears in:
+      // a clamp under G50, a surface speed under G96, otherwise plain RPM.
+      if (words.S !== undefined) {
+        if (clampThisBlock) state.spindleClamp = words.S;
+        else if (state.cssActive) state.cssSpeed = words.S;
+        else state.spindle = words.S;
+      }
       // The rotary axes index the part, not the tool. Degrees, never scaled.
       if (words.A !== undefined) {
         state.aAxis = state.absolute ? words.A : state.aAxis + words.A;

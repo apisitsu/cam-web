@@ -16,9 +16,12 @@ import {
   ExpandOutlined, SaveOutlined, FolderOpenOutlined, DownloadOutlined,
 } from '@ant-design/icons';
 import { useCamStore } from './stores/camStore.js';
+import { useCamPlanStore } from './stores/camPlanStore.js';
+import CamPanel from './components/CamPanel.jsx';
 import { useSketchStore } from './stores/sketchStore.js';
 import { saveProject, saveGcode, openProjectFile } from './lib/projectIO.js';
-import { fitBoundsFor, chuckFromBounds } from './engine/view/setup.js';
+import { fitBoundsFor, fitBoundsForPart, chuckFromBounds } from './engine/view/setup.js';
+import { unionBounds } from './engine/view/camera.js';
 import { SPEEDS, PLAY_BASE_SECONDS, perTick } from './engine/view/playback.js';
 import { sketchBounds } from './engine/sketch/edit.js';
 import { lineAt, timeAt, rotaryAt, toolAt, segmentAtTime, toolPointAt } from './engine/gcode/path.js';
@@ -248,6 +251,10 @@ export default function App() {
   const setRapidRate = useCamStore((s) => s.setRapidRate);
   const setDiameterMode = useCamStore((s) => s.setDiameterMode);
   const setAIndex   = useCamStore((s) => s.setAIndex);
+  const loadStl       = useCamPlanStore((s) => s.loadStl);
+  const partAnalysis  = useCamPlanStore((s) => s.analysis);
+  const partVer       = useCamPlanStore((s) => s.meshVer);
+  const [showPart, setShowPart] = useState(true);
 
   const [speed, setSpeed] = useState(1);
   const [dragActive, setDragActive] = useState(false);
@@ -329,9 +336,14 @@ export default function App() {
       e.preventDefault();
       setDragActive(false);
       const file = e.dataTransfer?.files?.[0];
-      if (file) loadFile(file);
+      if (!file) return;
+      // An STL is a model to be machined, not a program to be run, so it goes to
+      // the planner rather than the interpreter. Routing on the extension keeps
+      // one drop target for both.
+      if (/\.stl$/i.test(file.name)) loadStl(file);
+      else loadFile(file);
     },
-    [loadFile]
+    [loadFile, loadStl]
   );
 
   // Read large buffers from cache (not from React state). Viewport slices the
@@ -355,9 +367,15 @@ export default function App() {
   // Frame the camera to the cutting geometry (the part), not the rapid retracts.
   // Deliberately NOT keyed on bufVer: the values don't change as the sim carves,
   // and refitting on every playback tick was resetting the user's zoom.
+  // An imported model is framed too, and unioned with the program's bounds when
+  // both exist — after "Verify in viewport" the toolpath and the part it came
+  // from should be on screen together, not one of them off the edge.
   const fitBounds = useMemo(
-    () => fitBoundsFor(turning ? 'turn' : 'mill', bounds),
-    [bounds, turning],
+    () => unionBounds(
+      fitBoundsFor(turning ? 'turn' : 'mill', bounds),
+      fitBoundsForPart(turning ? 'turn' : 'mill', partAnalysis?.bounds ?? null),
+    ),
+    [bounds, turning, partAnalysis],
   );
 
   // Chuck placement uses the *real* cutting bounds (not the padded fit), so the
@@ -518,10 +536,17 @@ export default function App() {
               </Space>
 
               <Text style={{ color: '#475569', fontSize: 12 }}>
-                …or drag &amp; drop a .nc / .gcode / .tap file anywhere
+                …or drag &amp; drop a .nc / .gcode / .tap program — or an .stl to machine
               </Text>
 
               {saveMsg && <Alert type="success" showIcon message={saveMsg} />}
+
+              {/* CAM from a model. Sits above the program panel because it is
+                  what *produces* a program — the G-code below is its output. */}
+              <CamPanel />
+
+              <Divider style={{ margin: '4px 0' }} />
+              <Title level={5} style={{ color: '#e2e8f0', margin: 0 }}>Program</Title>
 
               <GcodePanel gcode={gcode} activeLine={activeLine} onChange={setGcode} />
 
@@ -933,7 +958,7 @@ export default function App() {
                 display: 'flex', alignItems: 'center', justifyContent: 'center',
                 color: '#e2e8f0', fontSize: 20, pointerEvents: 'none',
               }}>
-                Drop G-code file to load
+                Drop a G-code program or an .stl model
               </div>
             )}
 
@@ -945,9 +970,20 @@ export default function App() {
               padding: '6px 12px', borderRadius: 8,
             }}>
               <Segmented size="small" value={view} onChange={setViewPreset} options={VIEWS} />
-              <Tooltip title={sketching ? 'Fit sketch to view' : 'Fit toolpath to view'}>
+              <Tooltip title={sketching ? 'Fit sketch to view' : 'Fit part and toolpath to view'}>
                 <Button size="small" icon={<ExpandOutlined />} onClick={() => setViewPreset(view)} />
               </Tooltip>
+              {/* Only offered once a model exists — a dead toggle is worse than
+                  no toggle. Hiding the part is how you see a toolpath that runs
+                  inside it. */}
+              {!sketching && partAnalysis && (
+                <Tooltip title="Show the imported STL model">
+                  <Space size={4}>
+                    <Switch size="small" checked={showPart} onChange={setShowPart} />
+                    <Text style={{ color: '#94a3b8', fontSize: 12 }}>Part</Text>
+                  </Space>
+                </Tooltip>
+              )}
               {!sketching && <>
               <div style={{ width: 1, alignSelf: 'stretch', background: '#334155' }} />
               <Tooltip title="Restart">
@@ -985,6 +1021,8 @@ export default function App() {
             <Viewport
               bounds={bounds}
               fitBounds={fitBounds}
+              partVer={partVer}
+              showPart={showPart}
               sketchFit={sketchFit}
               turnChuck={turnChuck}
               showStock={showStock}

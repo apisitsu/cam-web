@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { fitBoundsFor, chuckFromBounds, TURN_RADIAL } from './setup.js';
+import { fitBoundsFor, fitBoundsForPart, chuckFromBounds, TURN_RADIAL } from './setup.js';
 import {
   playbackStep, perTick, wallClockSeconds, SPEEDS, PLAY_BASE_SECONDS, TICK_SECONDS,
 } from './playback.js';
@@ -144,5 +144,42 @@ describe('playback pacing', () => {
   it('survives a zero-length program without dividing by zero', () => {
     expect(Number.isFinite(perTick(0, 1))).toBe(true);
     expect(perTick(0, 1)).toBeGreaterThan(0);
+  });
+});
+
+describe('fitBoundsForPart', () => {
+  const part = { min: [-9.2, -8.4, -57.4], max: [9.2, 8.4, 9.2] };
+
+  it('frames a milled model as it sits', () => {
+    expect(fitBoundsForPart('mill', part)).toEqual({
+      min: [-9.2, -8.4, -57.4], max: [9.2, 8.4, 9.2],
+    });
+  });
+
+  it('returns null when nothing is imported', () => {
+    expect(fitBoundsForPart('mill', null)).toBeNull();
+  });
+
+  it('makes the turning box symmetric about the spindle', () => {
+    // A model can sit entirely on one side of the centreline; framing it
+    // lopsided would read as an off-centre part rather than an off-centre view.
+    const fit = fitBoundsForPart('turn', { min: [0, 0, 0], max: [12, 12, 60] });
+    expect(fit.min[0]).toBeCloseTo(-16.8, 6);
+    expect(fit.max[0]).toBeCloseTo(16.8, 6);
+    expect(fit.min[1]).toBeCloseTo(-16.8, 6);
+    // The spindle axis is left alone.
+    expect(fit.min[2]).toBe(0);
+    expect(fit.max[2]).toBe(60);
+  });
+
+  it('never collapses to a zero-width box', () => {
+    const fit = fitBoundsForPart('turn', { min: [0, 0, 0], max: [0, 0, 10] });
+    expect(fit.max[0]).toBeGreaterThan(0);
+  });
+
+  it('does not mutate the bounds it was given', () => {
+    const input = { min: [0, 0, 0], max: [12, 12, 60] };
+    fitBoundsForPart('turn', input);
+    expect(input.min).toEqual([0, 0, 0]);
   });
 });

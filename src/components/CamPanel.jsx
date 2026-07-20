@@ -6,6 +6,13 @@
  * and to hand the result on. Anything that looks like a calculation in this
  * file belongs downstairs instead.
  *
+ * The workflow runs in the order the work does: **import, look, pick, cut.**
+ * Importing measures the part and nothing more, so the faces and edges are
+ * pickable immediately; choosing one is what creates an operation. The
+ * automatic plan is still here as `Auto-plan`, but as a button rather than a
+ * gate — it replaces the whole recipe, which is a fine starting point and a
+ * bad thing to have happen to you.
+ *
  * Three things the planner cannot infer from geometry are chosen here:
  *
  * - the **machine**, by make and model — which decides the process, the
@@ -97,30 +104,31 @@ function ToolSelect({ step, choices, onChange }) {
  * overhang, the underside, the face that is currently pointing away. The list
  * reaches everything, and hovering a row is what highlights it in the viewport.
  */
-function FeaturePicker({ features, selected, onSelect, onAddFace, onAddEdge }) {
+function FeaturePicker({ features, selected, onSelect, onPreview }) {
   const { faces = [], edges = [] } = features;
   if (faces.length === 0 && edges.length === 0) return null;
 
-  const row = (item, label, reachable, onAdd) => (
+  const row = (item, label, reachable) => (
     <div
       key={item.id}
-      onMouseEnter={() => onSelect(item)}
-      onMouseLeave={() => onSelect(null)}
+      onClick={() => onSelect(item)}
+      onMouseEnter={() => onPreview(item)}
+      onMouseLeave={() => onPreview(null)}
       style={{
-        display: 'flex', alignItems: 'center', gap: 6, padding: '2px 4px',
-        borderRadius: 4, cursor: 'default',
-        background: selected?.id === item.id ? 'rgba(56,189,248,0.15)' : 'transparent',
+        display: 'flex', alignItems: 'center', gap: 6, padding: '3px 4px',
+        borderRadius: 4, cursor: 'pointer',
+        background: selected?.id === item.id ? 'rgba(251,191,36,0.18)' : 'transparent',
       }}
     >
       <Tag style={{ margin: 0, minWidth: 34, textAlign: 'center' }}>{item.id}</Tag>
       <Text style={{ flex: 1, fontSize: 11, color: reachable ? '#cbd5e1' : '#64748b' }}>
         {label}
       </Text>
-      <Tooltip title={reachable
-        ? 'Add an operation for this'
-        : 'Not reachable along the tool axis from this index — turn the table first'}>
-        <Button size="small" type="text" icon={<PlusOutlined />} onClick={onAdd} />
-      </Tooltip>
+      {!reachable && (
+        <Tooltip title="Not reachable along the tool axis from this index — turn the table first">
+          <Tag color="orange" style={{ margin: 0 }}>tilt</Tag>
+        </Tooltip>
+      )}
     </div>
   );
 
@@ -128,13 +136,14 @@ function FeaturePicker({ features, selected, onSelect, onAddFace, onAddEdge }) {
     <Collapse
       size="small"
       ghost
+      defaultActiveKey={['faces']}
       items={[
         {
           key: 'faces',
           label: <Text style={{ fontSize: 12 }}>{`Faces (${faces.length})`}</Text>,
           children: (
-            <div style={{ maxHeight: 190, overflowY: 'auto' }}>
-              {faces.map((f) => row(f, describeFace(f), f.facing === 'up', () => onAddFace(f.id)))}
+            <div style={{ maxHeight: 180, overflowY: 'auto' }}>
+              {faces.map((f) => row(f, describeFace(f), f.facing === 'up'))}
             </div>
           ),
         },
@@ -142,13 +151,80 @@ function FeaturePicker({ features, selected, onSelect, onAddFace, onAddEdge }) {
           key: 'edges',
           label: <Text style={{ fontSize: 12 }}>{`Edges (${edges.length})`}</Text>,
           children: (
-            <div style={{ maxHeight: 190, overflowY: 'auto' }}>
-              {edges.map((e) => row(e, describeEdge(e), true, () => onAddEdge(e.id)))}
+            <div style={{ maxHeight: 180, overflowY: 'auto' }}>
+              {edges.map((e) => row(e, describeEdge(e), true))}
             </div>
           ),
         },
       ]}
     />
+  );
+}
+
+/**
+ * What to do with the thing that is selected.
+ *
+ * The whole workflow turns on this bar existing. Picking a face and then
+ * hunting for a generic "add operation" menu is two decisions in the wrong
+ * order; here the selection *is* the subject, and the only question left is
+ * which cut to make on it.
+ */
+function SelectionActions({ feature, onAddFace, onAddEdge, onClear }) {
+  const [depth, setDepth] = React.useState(0.5);
+  if (!feature) return null;
+
+  const isEdge = Boolean(feature.points);
+  const reachable = isEdge || feature.facing === 'up';
+
+  return (
+    <div style={{
+      border: '1px solid rgba(251,191,36,0.4)', borderRadius: 6,
+      padding: '8px 10px', background: 'rgba(251,191,36,0.08)',
+    }}>
+      <Space wrap style={{ width: '100%', justifyContent: 'space-between' }}>
+        <Space size={6}>
+          <Tag color="gold" style={{ margin: 0 }}>{feature.id}</Tag>
+          <Text style={{ fontSize: 11, color: '#e2e8f0' }}>
+            {isEdge ? describeEdge(feature) : describeFace(feature)}
+          </Text>
+        </Space>
+        <Button size="small" type="text" onClick={onClear}>clear</Button>
+      </Space>
+
+      {!reachable && (
+        <Text type="warning" style={{ fontSize: 11, display: 'block', marginTop: 4 }}>
+          This face points {feature.facing}. A 3-axis cutter cannot reach it —
+          index the part until it faces up.
+        </Text>
+      )}
+
+      <Space wrap style={{ marginTop: 8 }}>
+        {isEdge ? (
+          <>
+            <Tooltip title="Depth below the edge">
+              <InputNumber
+                size="small" min={0} max={50} step={0.1} style={{ width: 82 }}
+                addonAfter="mm" value={depth} onChange={(v) => setDepth(v ?? 0)}
+              />
+            </Tooltip>
+            <Button
+              size="small" type="primary" icon={<PlusOutlined />}
+              onClick={() => onAddEdge(feature.id, { depth })}
+            >
+              Trace this edge
+            </Button>
+          </>
+        ) : (
+          <Button
+            size="small" type="primary" icon={<PlusOutlined />}
+            disabled={!reachable}
+            onClick={() => onAddFace(feature.id)}
+          >
+            Clear this face
+          </Button>
+        )}
+      </Space>
+    </div>
   );
 }
 
@@ -187,10 +263,15 @@ export default function CamPanel() {
   const selectFeature = useCamPlanStore((s) => s.selectFeature);
   const features = useCamPlanStore((s) => s.features);
   const addFaceStep = useCamPlanStore((s) => s.addFaceStep);
+  const previewFeatureAt = useCamPlanStore((s) => s.previewFeatureAt);
   const addEdgeStep = useCamPlanStore((s) => s.addEdgeStep);
 
   const busy = status === 'loading' || status === 'planning';
   const machine = machineById(machineId);
+  // Read once per render: `features()` is memoised on the context, but calling
+  // it three times in the tree still reads better as one named value.
+  const detected = features();
+  const pickable = detected.faces.length > 0 || detected.edges.length > 0;
   const dialect = dialectFor(machine.controller);
 
   // The recipe is the source of truth for the table: it holds the disabled rows
@@ -293,15 +374,19 @@ export default function CamPanel() {
             Import STL
           </Button>
         </Upload>
-        <Button
-          type="primary"
-          icon={<ExperimentOutlined />}
-          disabled={!analysis}
-          loading={status === 'planning'}
-          onClick={() => makePlan()}
-        >
-          Analyse &amp; plan
-        </Button>
+        {/* Secondary, and deliberately so. It replaces the whole recipe, which
+            is fine as a starting point and wrong as a thing that happens to
+            you — so it is a button you press, not a gate you pass through. */}
+        <Tooltip title="Replace everything with an automatic plan for the whole part">
+          <Button
+            icon={<ExperimentOutlined />}
+            disabled={!analysis}
+            loading={status === 'planning'}
+            onClick={() => makePlan()}
+          >
+            Auto-plan
+          </Button>
+        </Tooltip>
       </Space>
 
       {stlName && <Tag color="purple">{stlName}</Tag>}
@@ -467,10 +552,31 @@ export default function CamPanel() {
         </>
       )}
 
-      {/* Indexing and picking, both only meaningful on a mill. */}
-      {plan?.mode === 'mill' && (
+      {/* Picking comes before planning, because that is the order the work
+          happens in: look at the part, choose the face, cut it. Gated on the
+          measured geometry rather than on a plan existing — waiting for a plan
+          is exactly the gate this workflow removes. */}
+      {analysis && pickable && (
         <>
           <Divider style={{ margin: '4px 0' }} />
+          <Text style={{ color: '#94a3b8', fontSize: 11 }}>
+            Pick a face or edge — click the model, or a row below
+          </Text>
+
+          <SelectionActions
+            feature={selectedFeature}
+            onAddFace={(id) => addFaceStep(id)}
+            onAddEdge={(id, opts) => addEdgeStep(id, opts)}
+            onClear={() => selectFeature(null)}
+          />
+
+          <FeaturePicker
+            features={detected}
+            selected={selectedFeature}
+            onSelect={selectFeature}
+            onPreview={previewFeatureAt}
+          />
+
           {machine.rotary.length > 0 ? (
             <div>
               <Text style={{ color: '#94a3b8', fontSize: 11 }}>
@@ -491,18 +597,10 @@ export default function CamPanel() {
               {machine.label} has no rotary — pick a 4-axis machine to index the part.
             </Text>
           )}
-
-          <FeaturePicker
-            features={features()}
-            selected={selectedFeature}
-            onSelect={selectFeature}
-            onAddFace={(id) => addFaceStep(id)}
-            onAddEdge={(id) => addEdgeStep(id)}
-          />
         </>
       )}
 
-      {plan && (
+      {plan && recipe.length > 0 && (
         <>
           <Divider style={{ margin: '4px 0' }} />
           <Space wrap style={{ justifyContent: 'space-between', width: '100%' }}>
@@ -622,6 +720,20 @@ export default function CamPanel() {
             </Tooltip>
           </Space>
         </>
+      )}
+
+      {/* A part is loaded but nothing has been asked of it yet. Says what the
+          two ways forward are, rather than showing an empty table that looks
+          like a failure. */}
+      {analysis && recipe.length === 0 && !busy && (
+        <Empty
+          image={Empty.PRESENTED_IMAGE_SIMPLE}
+          description={(
+            <Text type="secondary" style={{ fontSize: 12 }}>
+              No operations yet — pick a face or edge above, or Auto-plan the whole part
+            </Text>
+          )}
+        />
       )}
 
       {!analysis && !busy && (

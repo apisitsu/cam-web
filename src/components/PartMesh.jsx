@@ -117,7 +117,9 @@ export default function PartMesh({ meshVer, visible = true, wireframe = false })
  * highlighting tells you nothing about which side you are looking at.
  */
 export function FeatureHighlight({ meshVer }) {
-  const selected = useCamPlanStore((s) => s.selectedFeature);
+  // The decision wins over the hover: once a face is picked, moving the mouse
+  // across the list must not appear to change what you picked.
+  const selected = useCamPlanStore((s) => s.selectedFeature ?? s.previewFeature);
   const highlight = useMemo(
     () => highlightGeometry(selected, getMesh().soup),
     // eslint-disable-next-line react-hooks/exhaustive-deps

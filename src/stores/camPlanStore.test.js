@@ -52,7 +52,7 @@ describe('camPlanStore', () => {
   it('bumps meshVer so views re-render on a new import', async () => {
     const before = store().meshVer;
     await store().loadStl(stlFile(box()));
-    expect(store().meshVer).toBe(before + 1);
+    expect(store().meshVer).toBeGreaterThan(before);
   });
 
   it('plans and posts in one step', async () => {
@@ -151,26 +151,28 @@ function stlFileEmpty() {
 describe('camPlanStore — work orientation', () => {
   beforeEach(() => { store().clear(); });
 
-  it('shows the part laid down once a milling plan has laid it down', async () => {
+  it('lays the part down on import, before anything is planned', async () => {
     // The model and the toolpath must share one frame, or the viewport shows a
-    // setup that is not the one being programmed.
+    // setup that is not the one being programmed. Since the operator now picks
+    // faces straight after import, the frame has to be right by then — waiting
+    // until a plan exists would have them picking faces off the wrong setup.
     await store().loadStl(stlFile(box(18, 17, 67), 'fork.stl'));
-    const before = store().analysis.bounds.size;
-    expect(before[2]).toBeCloseTo(67, 3); // standing on end as modelled
-
-    const plan = await store().makePlan();
-    expect(plan.orientation.changed).toBe(true);
-    // Both the reported analysis and the cached mesh follow the plan.
     expect(store().analysis.bounds.size[2]).toBeCloseTo(17, 2);
     const { boundsOf } = await import('../engine/mesh/analyze.js');
     expect(boundsOf(getMesh().soup).size[2]).toBeCloseTo(17, 2);
+
+    // And planning it afterwards finds nothing left to reorient, because the
+    // import already did it — not because it decided the part was fine.
+    const plan = await store().makePlan();
+    expect(plan.orientation.changed).toBe(false);
+    expect(plan.part.top - plan.part.bottom).toBeCloseTo(17, 2);
   });
 
-  it('bumps meshVer so the viewport redraws in the new orientation', async () => {
-    await store().loadStl(stlFile(box(18, 17, 67)));
+  it('bumps meshVer when the import reorients the part', async () => {
     const before = store().meshVer;
-    await store().makePlan();
-    expect(store().meshVer).toBeGreaterThan(before);
+    await store().loadStl(stlFile(box(18, 17, 67)));
+    // Twice: once for the new mesh, once for laying it down.
+    expect(store().meshVer).toBeGreaterThan(before + 1);
   });
 
   it('leaves a part that already lies flat exactly where it was', async () => {
@@ -178,6 +180,13 @@ describe('camPlanStore — work orientation', () => {
     const before = Array.from(getMesh().soup.positions.slice(0, 30));
     await store().makePlan();
     expect(Array.from(getMesh().soup.positions.slice(0, 30))).toEqual(before);
+  });
+
+  it('does not bump meshVer for a part that needs no laying down', async () => {
+    await store().loadStl(stlFile(box(60, 40, 12)));
+    const before = store().meshVer;
+    await store().makePlan();
+    expect(store().meshVer).toBe(before);
   });
 
   it('does not reorient a turned part', async () => {
@@ -303,8 +312,9 @@ describe('camPlanStore — the operator edits the plan', () => {
     await store().makePlan();
     store().setStepTool('rough', 'em6');
 
+    // No re-planning: importing reconciles the recipe against the new part, so
+    // the shop's tool choice is simply still there.
     await store().loadStl(stlFile(box(80, 50, 20)));
-    await store().makePlan();
     expect(store().recipe.find((e) => e.kind === 'rough').toolId).toBe('em6');
   });
 });
@@ -496,6 +506,83 @@ describe('camPlanStore — indexing the rotary', () => {
     await store().makePlan();
     store().selectFeature(store().features().faces[0]);
     store().setIndexAngle(90);
+    expect(store().selectedFeature).toBeNull();
+  });
+});
+
+describe('camPlanStore — the workflow starts at the part, not at a plan', () => {
+  beforeEach(() => {
+    store().clear();
+    useCamPlanStore.setState({ machineId: DEFAULT_MILL_ID, forceMode: 'auto', material: 'aluminium' });
+  });
+
+  it('makes the geometry pickable the moment the part is imported', async () => {
+    // The point of the change: no "analyse & plan" gate between importing a
+    // part and being able to point at it.
+    await store().loadStl(stlFile(box(60, 40, 20)));
+    expect(store().plan).toBeNull();
+    expect(store().recipe).toEqual([]);
+    expect(store().features().faces).toHaveLength(6);
+  });
+
+  it('decides nothing on import', async () => {
+    await store().loadStl(stlFile(box(60, 40, 20)));
+    expect(store().recipe).toEqual([]);
+    expect(store().nc).toBeNull();
+  });
+
+  it('builds a program from one picked face, with no plan ever made', async () => {
+    await store().loadStl(stlFile(box(60, 40, 20)));
+    const top = store().features().faces.find((f) => f.facing === 'up');
+
+    store().addFaceStep(top.id);
+    expect(store().plan.steps).toHaveLength(1);
+    expect(store().plan.steps[0].kind).toBe('region');
+    expect(store().nc).toContain('M30');
+  });
+
+  it('keeps picked operations when the machine changes', async () => {
+    // Changing machine re-measures; it must not throw away what was picked.
+    await store().loadStl(stlFile(box(60, 40, 20)));
+    const top = store().features().faces.find((f) => f.facing === 'up');
+    store().addFaceStep(top.id);
+
+    store().setMachine('brother-s700');
+    expect(store().plan.steps.some((s) => s.kind === 'region')).toBe(true);
+    expect(store().nc).toMatch(/MACHINE: BROTHER/);
+  });
+
+  it('auto-plan replaces the recipe, and only when asked', async () => {
+    await store().loadStl(stlFile(box(60, 40, 20)));
+    const top = store().features().faces.find((f) => f.facing === 'up');
+    store().addFaceStep(top.id);
+    expect(store().recipe).toHaveLength(1);
+
+    await store().makePlan();
+    expect(store().recipe.length).toBeGreaterThan(1);
+    expect(store().recipe.some((e) => e.kind === 'region')).toBe(false);
+  });
+
+  it('separates the sticky pick from the passing hover', async () => {
+    // Hovering the list is how you find a face; it must not look like picking
+    // one, and it must not undo the one you picked.
+    await store().loadStl(stlFile(box(60, 40, 20)));
+    const [a, b] = store().features().faces;
+
+    store().previewFeatureAt(a);
+    expect(store().highlightedFeature().id).toBe(a.id);
+    expect(store().selectedFeature).toBeNull();
+
+    store().selectFeature(a);
+    store().previewFeatureAt(b);
+    expect(store().highlightedFeature().id).toBe(a.id);
+  });
+
+  it('clears the pick when the same feature is clicked again', async () => {
+    await store().loadStl(stlFile(box(60, 40, 20)));
+    const face = store().features().faces[0];
+    store().selectFeature(face);
+    store().selectFeature({ ...face });
     expect(store().selectedFeature).toBeNull();
   });
 });

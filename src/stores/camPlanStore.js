@@ -88,11 +88,15 @@ export const useCamPlanStore = create((set, get) => ({
    */
   setMachine(id) {
     const machine = machineById(id);
-    const modeChanged = get().plan && get().plan.mode !== machine.kind;
+    const modeChanged = _ctx && _ctx.mode !== machine.kind;
     set({ machineId: machine.id, forceMode: machine.kind });
     if (!_mesh.welded) return;
-    if (modeChanged || !_ctx) get().makePlan();
-    else get().rebuild();
+    // Re-measure when the process changed — a turning profile and a milling
+    // slice are different measurements of the same mesh — but *keep the
+    // recipe*. Changing machine must not throw away the operations the
+    // operator picked; `reconcile` drops only the ones that cannot apply.
+    if (modeChanged || !_ctx) get().prepare();
+    get().rebuild();
   },
 
   /** Choose the process directly; the machine follows it. */
@@ -101,7 +105,9 @@ export const useCamPlanStore = create((set, get) => ({
       ? machineById(get().machineId)
       : machineForMode(mode, get().machineId);
     set({ forceMode: mode, machineId: machine.id });
-    if (_mesh.welded) get().makePlan();
+    if (!_mesh.welded) return;
+    get().prepare();
+    get().rebuild();
   },
 
   /**
@@ -134,6 +140,14 @@ export const useCamPlanStore = create((set, get) => ({
         forceMode: 'auto',
       });
 
+      // Measure it straight away, so the operator can pick a face the moment
+      // the part appears. Nothing is decided by this — no operations, no tools
+      // — it only makes the geometry available to point at.
+      get().prepare();
+      // Any operations that survive from the previous part are worth showing
+      // against this one; an empty recipe stays empty until something is picked.
+      if (get().recipe.length) get().rebuild();
+
       // Bring the user to a page that can actually show the part.
       //
       // The app opens on Sketch, where both the CAM panel and the 3D part are
@@ -157,47 +171,63 @@ export const useCamPlanStore = create((set, get) => ({
   },
 
   /**
-   * Measure the part and propose a plan for it.
+   * Measure the part. Do not decide anything about it.
    *
-   * This is the expensive half — slicing, profiling, hole detection — so it
-   * runs when the part or the process changes, and *not* when a tool does.
-   * Tool edits go through `rebuild`.
+   * Split out from planning because the operator's workflow starts here: import
+   * a part, look at its faces, pick one, cut it. Requiring a full automatic
+   * plan first — which then has to be edited back down — put a decision in
+   * front of them before they had made any.
+   *
+   * This is the expensive half (slicing, profiling, hole detection) so it runs
+   * when the part or the process changes and never when a tool does.
+   */
+  prepare() {
+    if (!_mesh.welded) return null;
+    const { forceMode, partOff, machineId } = get();
+    _ctx = planContext(_mesh.soup, _mesh.welded, {
+      mode: forceMode, partOff, machineId,
+    });
+
+    // A milling plan may have laid the part down to make it reachable. Show it
+    // in that orientation, or the model on screen and the toolpath beside it
+    // would disagree about where everything is.
+    const laid = _ctx.orientedMesh;
+    const reoriented = Boolean(laid && _ctx.orientation?.changed);
+    if (reoriented) {
+      _mesh.soup = laid.soup;
+      _mesh.welded = laid.welded;
+    }
+
+    set({
+      analysis: _ctx.analysisOriented ?? get().analysis,
+      // Only when the buffers actually changed. Bumping regardless would make
+      // every re-measure look like a new mesh and rebuild the viewport's
+      // geometry for nothing.
+      meshVer: reoriented ? get().meshVer + 1 : get().meshVer,
+      machineId: machineForMode(_ctx.mode, machineId).id,
+      recipe: recipeOps.reconcile(get().recipe, _ctx),
+      selectedFeature: null,
+      previewFeature: null,
+    });
+    return _ctx;
+  },
+
+  /**
+   * Propose a full plan for the part — the automatic route, now opt-in.
+   *
+   * Replaces the recipe wholesale, which is why it is a button the operator
+   * presses rather than something that happens on import: it would otherwise
+   * silently discard the operations they had picked by hand.
    */
   async makePlan() {
     if (!_mesh.welded) return null;
     set({ status: 'planning', error: null });
     try {
-      const { material, forceMode, partOff, machineId } = get();
-      _ctx = planContext(_mesh.soup, _mesh.welded, {
-        mode: forceMode, partOff, machineId,
-      });
-
-      // A milling plan may have laid the part down to make it reachable. Show
-      // the part in that orientation, or the model on screen and the toolpath
-      // beside it would disagree about where everything is — and the operator
-      // would be looking at a setup that is not the one being programmed.
-      const laid = _ctx.orientedMesh;
-      if (laid && _ctx.orientation?.changed) {
-        _mesh.soup = laid.soup;
-        _mesh.welded = laid.welded;
-      }
-
-      // Keep the operator's choices where they still apply to this part; the
-      // planner fills in the rest.
-      const previous = get().recipe;
-      const recipe = previous.length
-        ? recipeOps.reconcile(previous, _ctx)
-        : recipeOps.autoRecipe(_ctx);
-
-      set({
-        recipe,
-        analysis: _ctx.analysisOriented ?? get().analysis,
-        meshVer: get().meshVer + 1,
-        // The machine has to match the process actually chosen — dropping a
-        // round part while a mill is selected routes it to the lathe, and the
-        // machine label must follow or the posted program names the wrong one.
-        machineId: machineForMode(_ctx.mode, machineId).id,
-      });
+      // Always re-measured, never reused: this is the button that says "plan
+      // the whole part with the settings as they stand", and material, process
+      // and part-off all feed the measurement.
+      get().prepare();
+      set({ recipe: recipeOps.autoRecipe(_ctx) });
       return get().rebuild();
     } catch (err) {
       set({ status: 'error', error: err.message || String(err) });
@@ -286,7 +316,7 @@ export const useCamPlanStore = create((set, get) => ({
   indexAngle: 0,
 
   setIndexAngle(angle) {
-    set({ indexAngle: angle ? normalizeAngle(angle) : 0, selectedFeature: null });
+    set({ indexAngle: angle ? normalizeAngle(angle) : 0, selectedFeature: null, previewFeature: null });
   },
 
   /** Throw the edits away and take the planner's proposal again. */
@@ -325,11 +355,33 @@ export const useCamPlanStore = create((set, get) => ({
     return (angle ? _ctx.indexAt(angle) : _ctx).features;
   },
 
-  /** Highlighted in the viewport; null when nothing is picked. */
+  /**
+   * What the viewport highlights.
+   *
+   * Two separate things, because they answer different questions. `selected` is
+   * a decision — the operator picked this face and is about to cut it, and it
+   * must not evaporate when the mouse moves away. `preview` is a hover, which
+   * is how you *find* a face in a list of forty. The viewport shows the
+   * selection when there is one and the hover otherwise.
+   */
   selectedFeature: null,
+  previewFeature: null,
 
   selectFeature(feature) {
-    set({ selectedFeature: feature });
+    // Clicking the selected feature again clears it, which is the gesture
+    // everyone tries first when they want to deselect.
+    const current = get().selectedFeature;
+    const same = feature && current && feature.id === current.id;
+    set({ selectedFeature: same ? null : feature });
+  },
+
+  previewFeatureAt(feature) {
+    set({ previewFeature: feature });
+  },
+
+  /** What the highlight should draw: the decision, or failing that the hover. */
+  highlightedFeature() {
+    return get().selectedFeature ?? get().previewFeature;
   },
 
   /**
@@ -375,7 +427,7 @@ export const useCamPlanStore = create((set, get) => ({
     _ctx = null;
     set({
       stlName: null, analysis: null, plan: null, nc: null, recipe: [],
-      selectedFeature: null, indexAngle: 0,
+      selectedFeature: null, previewFeature: null, indexAngle: 0,
       status: 'idle', error: null, meshVer: get().meshVer + 1,
     });
   },

@@ -75,6 +75,69 @@ describe('before an STL arrives', () => {
   });
 });
 
+describe('the workflow starts at the part', () => {
+  it('offers faces to pick straight after import, with no plan made', async () => {
+    // No "analyse & plan" gate between importing a part and pointing at it.
+    await store().loadStl(stlFile(box(60, 40, 20)));
+    const el = await render();
+    expect(el.textContent).toMatch(/Pick a face or edge/);
+    expect(el.textContent).toMatch(/Faces \(6\)/);
+    expect(store().plan).toBeNull();
+  });
+
+  it('says there are no operations yet rather than showing an empty table', async () => {
+    await store().loadStl(stlFile(box(60, 40, 20)));
+    const el = await render();
+    expect(el.textContent).toMatch(/No operations yet/);
+    expect(el.querySelector('.ant-table')).toBeNull();
+  });
+
+  it('offers the action for a picked face, and names what was picked', async () => {
+    await store().loadStl(stlFile(box(60, 40, 20)));
+    const top = store().features().faces.find((f) => f.facing === 'up');
+    await act(async () => { store().selectFeature(top); });
+    const el = await render();
+    expect(el.textContent).toMatch(/Clear this face/);
+    expect(el.textContent).toMatch(/up face/);
+  });
+
+  it('offers a depth and a trace button for a picked edge', async () => {
+    await store().loadStl(stlFile(box(60, 40, 20)));
+    await act(async () => { store().selectFeature(store().features().edges[0]); });
+    const el = await render();
+    expect(el.textContent).toMatch(/Trace this edge/);
+    expect(el.textContent).not.toMatch(/Clear this face/);
+  });
+
+  it('refuses to arm the button for a face the cutter cannot reach', async () => {
+    await store().loadStl(stlFile(box(60, 40, 20)));
+    const side = store().features().faces.find((f) => f.facing === 'front');
+    await act(async () => { store().selectFeature(side); });
+    const el = await render();
+    expect(el.textContent).toMatch(/A 3-axis cutter cannot reach it/);
+    const button = [...el.querySelectorAll('button')].find((b) => /Clear this face/.test(b.textContent));
+    expect(button.disabled).toBe(true);
+  });
+
+  it('shows the table once something has been picked', async () => {
+    await store().loadStl(stlFile(box(60, 40, 20)));
+    const top = store().features().faces.find((f) => f.facing === 'up');
+    await act(async () => { store().addFaceStep(top.id); });
+    const el = await render();
+    expect(el.querySelector('.ant-table')).toBeTruthy();
+    expect(el.textContent).toMatch(/Clear the picked face/);
+    expect(el.textContent).not.toMatch(/No operations yet/);
+  });
+
+  it('keeps auto-plan available but out of the way', async () => {
+    await store().loadStl(stlFile(box(60, 40, 20)));
+    const el = await render();
+    const auto = [...el.querySelectorAll('button')].find((b) => /Auto-plan/.test(b.textContent));
+    expect(auto).toBeTruthy();
+    expect(auto.className).not.toMatch(/ant-btn-primary/);
+  });
+});
+
 describe('choosing the machine', () => {
   it('names a real machine, not just "mill" or "lathe"', async () => {
     await store().loadStl(stlFile(box(60, 40, 15)));

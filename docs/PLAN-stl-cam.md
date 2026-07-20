@@ -28,7 +28,7 @@
 | Post | `engine/cam/post/fanuc.js` + `post/dialect.js` | NC ตาม controller ของเครื่อง (7 dialect) |
 | Store / UI | `stores/camPlanStore.js`, `components/CamPanel.jsx` | |
 
-ตรวจสอบ: `npm test` 625 tests · `node src/engine/cam/cam_check.mjs` สร้าง NC จริง
+ตรวจสอบ: `npm test` 773 tests · `node src/engine/cam/cam_check.mjs` สร้าง NC จริง
 
 ### ผู้ใช้ควบคุมเองได้ (เพิ่ม 2026-07-19)
 
@@ -93,6 +93,24 @@ STL ไม่มี feature เหลืออยู่ — พื้นกร�
 
 เลือกได้สองทาง: **คลิกบนโมเดล** (raycast → `faceOfTriangle` → หน้าทั้งหน้า ไม่ใช่
 สามเหลี่ยมเดียว) หรือ **เลือกจากลิสต์ในพาเนล** (เข้าถึงหน้าที่มองไม่เห็นได้ด้วย)
+
+### Workflow: import → look → pick → cut (แก้ 2026-07-20)
+
+เดิมต้องกด "Analyse & plan" ก่อนถึงจะเห็นอะไร — เป็นการบังคับให้ตัดสินใจก่อน
+ที่ผู้ใช้จะได้ตัดสินใจอะไรเลย ตอนนี้:
+
+| ขั้น | เกิดอะไร |
+|---|---|
+| import | `prepare()` **วัดอย่างเดียว ไม่ตัดสินใจอะไร** — วางชิ้นงานนอน + ตรวจ face/edge |
+| เลือก | คลิกโมเดลหรือแถวในลิสต์ → sticky selection (hover = preview เฉย ๆ) |
+| สร้าง | แถบ action ของสิ่งที่เลือก → "Clear this face" / "Trace this edge" |
+| (ทางเลือก) | `Auto-plan` = ปุ่มรอง แทนที่ recipe ทั้งหมดด้วยแผนอัตโนมัติ |
+
+- `prepare()` แยกจาก `makePlan()` — recipe เริ่มต้น**ว่าง** ไม่ใช่ autoRecipe
+- เปลี่ยนเครื่อง = `prepare()` + `rebuild()` → **ไม่ทิ้ง op ที่ผู้ใช้เลือกไว้**
+  (`reconcile` ตัดเฉพาะอันที่ใช้กับชิ้นงาน/กระบวนการใหม่ไม่ได้)
+- ชิ้นงานถูกวางนอนตั้งแต่ import ไม่ใช่ตอน plan — เพราะผู้ใช้เลือกหน้าทันที
+  ถ้ารอถึงตอน plan จะเลือกหน้าจาก setup ที่ผิด
 
 
 

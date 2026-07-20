@@ -17,6 +17,7 @@ import {
 } from '@ant-design/icons';
 import { useCamStore } from './stores/camStore.js';
 import { useCamPlanStore } from './stores/camPlanStore.js';
+import { PART_FORMATS } from './engine/mesh/import.js';
 import CamPanel from './components/CamPanel.jsx';
 import { useSketchStore } from './stores/sketchStore.js';
 import { saveProject, saveGcode, openProjectFile } from './lib/projectIO.js';
@@ -251,7 +252,7 @@ export default function App() {
   const setRapidRate = useCamStore((s) => s.setRapidRate);
   const setDiameterMode = useCamStore((s) => s.setDiameterMode);
   const setAIndex   = useCamStore((s) => s.setAIndex);
-  const loadStl       = useCamPlanStore((s) => s.loadStl);
+  const loadPart      = useCamPlanStore((s) => s.loadPart);
   const partAnalysis  = useCamPlanStore((s) => s.analysis);
   const partVer       = useCamPlanStore((s) => s.meshVer);
   const [showPart, setShowPart] = useState(true);
@@ -337,13 +338,15 @@ export default function App() {
       setDragActive(false);
       const file = e.dataTransfer?.files?.[0];
       if (!file) return;
-      // An STL is a model to be machined, not a program to be run, so it goes to
-      // the planner rather than the interpreter. Routing on the extension keeps
-      // one drop target for both.
-      if (/\.stl$/i.test(file.name)) loadStl(file);
-      else loadFile(file);
+      // A model is a thing to be machined, not a program to be run, so it goes
+      // to the planner rather than the interpreter. Routing on the extension
+      // keeps one drop target for both — and the planner re-checks the bytes,
+      // so a mislabelled file still lands in the right place.
+      if (PART_FORMATS.some((f) => f.extensions.some((e) => file.name.toLowerCase().endsWith(e)))) {
+        loadPart(file);
+      } else loadFile(file);
     },
-    [loadFile, loadStl]
+    [loadFile, loadPart]
   );
 
   // Read large buffers from cache (not from React state). Viewport slices the
@@ -536,7 +539,7 @@ export default function App() {
               </Space>
 
               <Text style={{ color: '#475569', fontSize: 12 }}>
-                …or drag &amp; drop a .nc / .gcode / .tap program — or an .stl to machine
+                …or drag &amp; drop a .nc / .gcode / .tap program — or an .stl / .obj / .ply to machine
               </Text>
 
               {saveMsg && <Alert type="success" showIcon message={saveMsg} />}
@@ -958,7 +961,7 @@ export default function App() {
                 display: 'flex', alignItems: 'center', justifyContent: 'center',
                 color: '#e2e8f0', fontSize: 20, pointerEvents: 'none',
               }}>
-                Drop a G-code program or an .stl model
+                Drop a G-code program or an .stl / .obj / .ply model
               </div>
             )}
 

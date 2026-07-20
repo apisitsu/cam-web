@@ -586,3 +586,55 @@ describe('camPlanStore — the workflow starts at the part, not at a plan', () =
     expect(store().selectedFeature).toBeNull();
   });
 });
+
+describe('camPlanStore — part formats other than STL', () => {
+  beforeEach(() => {
+    store().clear();
+    useCamPlanStore.setState({ machineId: DEFAULT_MILL_ID, forceMode: 'auto', material: 'aluminium' });
+  });
+
+  /** The same box as an OBJ file-alike. */
+  function objFile(name = 'part.obj') {
+    const text = [
+      'v -30 -20 -10', 'v 30 -20 -10', 'v 30 20 -10', 'v -30 20 -10',
+      'v -30 -20 10', 'v 30 -20 10', 'v 30 20 10', 'v -30 20 10',
+      'f 1 3 2', 'f 1 4 3', 'f 5 6 7', 'f 5 7 8',
+      'f 1 2 6', 'f 1 6 5', 'f 2 3 7', 'f 2 7 6',
+      'f 3 4 8', 'f 3 8 7', 'f 4 1 5', 'f 4 5 8',
+    ].join('\n');
+    const buf = new TextEncoder().encode(text).buffer;
+    return { name, arrayBuffer: async () => buf };
+  }
+
+  it('imports an OBJ and plans it exactly like an STL', async () => {
+    const analysis = await store().loadPart(objFile());
+    expect(analysis).toBeTruthy();
+    expect(store().partFormat).toBe('obj');
+    expect(analysis.bounds.size[0]).toBeCloseTo(60, 3);
+    // ...and everything downstream is unaware it was ever an OBJ.
+    expect(store().features().faces).toHaveLength(6);
+    const top = store().features().faces.find((f) => f.facing === 'up');
+    store().addFaceStep(top.id);
+    expect(store().nc).toContain('M30');
+  });
+
+  it('names the output after the part, whatever the extension was', async () => {
+    await store().loadPart(objFile('bracket.obj'));
+    const top = store().features().faces.find((f) => f.facing === 'up');
+    store().addFaceStep(top.id);
+    expect(store().nc).toMatch(/\(BRACKET\)/);
+  });
+
+  it('still answers to the old name', async () => {
+    // Anything still calling loadStl keeps working.
+    expect(await store().loadStl(objFile())).toBeTruthy();
+  });
+
+  it('refuses a format it cannot read, and says which it can', async () => {
+    const buf = new TextEncoder().encode('ISO-10303-21;').buffer;
+    await store().loadPart({ name: 'assembly.step', arrayBuffer: async () => buf });
+    expect(store().status).toBe('error');
+    expect(store().error).toMatch(/\.step is not a part format/);
+    expect(store().error).toMatch(/\.stl/);
+  });
+});

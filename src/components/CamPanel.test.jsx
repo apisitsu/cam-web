@@ -67,11 +67,18 @@ async function planned(soup) {
   return render();
 }
 
-describe('before an STL arrives', () => {
+describe('before a part arrives', () => {
   it('shows the import prompt and no machine controls', async () => {
     const el = await render();
-    expect(el.textContent).toMatch(/Import an .stl/);
+    expect(el.textContent).toMatch(/Import a part to plan a job/);
     expect(el.textContent).not.toMatch(/Machine/);
+  });
+
+  it('names every format it can read, so nobody has to guess', async () => {
+    const el = await render();
+    for (const label of ['STL', 'OBJ', 'PLY']) {
+      expect(el.textContent).toContain(label);
+    }
   });
 });
 

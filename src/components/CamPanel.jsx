@@ -46,6 +46,7 @@ import { axisSummary, fitWarnings } from '../engine/cam/envelope.js';
 import { operationKind } from '../engine/cam/recipe.js';
 import { INDEX_PRESETS } from '../engine/mesh/rotate.js';
 import { describeFace, describeEdge } from '../engine/mesh/features.js';
+import { PART_ACCEPT, PART_FORMATS } from '../engine/mesh/import.js';
 import { dialectFor } from '../engine/cam/post/dialect.js';
 
 const { Text, Title } = Typography;
@@ -230,6 +231,7 @@ function SelectionActions({ feature, onAddFace, onAddEdge, onClear }) {
 
 export default function CamPanel() {
   const stlName = useCamPlanStore((s) => s.stlName);
+  const partFormat = useCamPlanStore((s) => s.partFormat);
   const analysis = useCamPlanStore((s) => s.analysis);
   const plan = useCamPlanStore((s) => s.plan);
   const nc = useCamPlanStore((s) => s.nc);
@@ -243,7 +245,7 @@ export default function CamPanel() {
   const diameterMode = useCamPlanStore((s) => s.diameterMode);
   const programNumber = useCamPlanStore((s) => s.programNumber);
 
-  const loadStl = useCamPlanStore((s) => s.loadStl);
+  const loadPart = useCamPlanStore((s) => s.loadPart);
   const makePlan = useCamPlanStore((s) => s.makePlan);
   const sendToViewport = useCamPlanStore((s) => s.sendToViewport);
   const setOption = useCamPlanStore((s) => s.setOption);
@@ -361,17 +363,17 @@ export default function CamPanel() {
   return (
     <Space direction="vertical" size="middle" style={{ width: '100%' }}>
       <Title level={5} style={{ color: '#e2e8f0', margin: 0 }}>
-        CAM from STL
+        CAM from a model
       </Title>
 
       <Space wrap>
         <Upload
-          accept=".stl"
+          accept={PART_ACCEPT}
           showUploadList={false}
-          beforeUpload={(file) => { loadStl(file); return false; }}
+          beforeUpload={(file) => { loadPart(file); return false; }}
         >
           <Button icon={<UploadOutlined />} loading={status === 'loading'}>
-            Import STL
+            Import part
           </Button>
         </Upload>
         {/* Secondary, and deliberately so. It replaces the whole recipe, which
@@ -389,7 +391,12 @@ export default function CamPanel() {
         </Tooltip>
       </Space>
 
-      {stlName && <Tag color="purple">{stlName}</Tag>}
+      {stlName && (
+        <Space size={4}>
+          <Tag color="purple" style={{ margin: 0 }}>{stlName}</Tag>
+          {partFormat && <Tag style={{ margin: 0 }}>{partFormat.toUpperCase()}</Tag>}
+        </Space>
+      )}
 
       {error && <Alert type="error" showIcon message="STL / planning failed" description={error} />}
 
@@ -709,7 +716,7 @@ export default function CamPanel() {
               type="primary"
               icon={<DownloadOutlined />}
               disabled={!nc}
-              onClick={() => downloadNc(nc, `${(stlName || 'part').replace(/\.stl$/i, '')}.nc`)}
+              onClick={() => downloadNc(nc, `${(stlName || 'part').replace(/\.[^.]+$/, '')}.nc`)}
             >
               Export NC
             </Button>
@@ -739,7 +746,11 @@ export default function CamPanel() {
       {!analysis && !busy && (
         <Empty
           image={Empty.PRESENTED_IMAGE_SIMPLE}
-          description={<Text type="secondary">Import an .stl to plan a job</Text>}
+          description={(
+            <Text type="secondary">
+              {`Import a part to plan a job — ${PART_FORMATS.map((f) => f.label).join(', ')}`}
+            </Text>
+          )}
         />
       )}
     </Space>

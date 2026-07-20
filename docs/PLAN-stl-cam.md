@@ -13,6 +13,7 @@
 
 | โมดูล | ไฟล์ | หน้าที่ |
 |---|---|---|
+| Part reader | `engine/mesh/import.js` | **STL / OBJ / PLY** — ตรวจจากไบต์ ไม่เชื่อนามสกุล |
 | STL reader | `engine/mesh/stl.js` | ASCII + binary, `weld()` |
 | วิเคราะห์ | `engine/mesh/analyze.js` | bbox, ปริมาตร, watertight, หาแกนหมุน |
 | ตัดระนาบ | `engine/mesh/slice.js` | Z-level + section ผ่านแกน |
@@ -28,7 +29,7 @@
 | Post | `engine/cam/post/fanuc.js` + `post/dialect.js` | NC ตาม controller ของเครื่อง (7 dialect) |
 | Store / UI | `stores/camPlanStore.js`, `components/CamPanel.jsx` | |
 
-ตรวจสอบ: `npm test` 773 tests · `node src/engine/cam/cam_check.mjs` สร้าง NC จริง
+ตรวจสอบ: `npm test` 806 tests · `node src/engine/cam/cam_check.mjs` สร้าง NC จริง
 
 ### ผู้ใช้ควบคุมเองได้ (เพิ่ม 2026-07-19)
 
@@ -93,6 +94,21 @@ STL ไม่มี feature เหลืออยู่ — พื้นกร�
 
 เลือกได้สองทาง: **คลิกบนโมเดล** (raycast → `faceOfTriangle` → หน้าทั้งหน้า ไม่ใช่
 สามเหลี่ยมเดียว) หรือ **เลือกจากลิสต์ในพาเนล** (เข้าถึงหน้าที่มองไม่เห็นได้ด้วย)
+
+### ไฟล์ที่ import ได้ (เพิ่ม 2026-07-20)
+
+ทุกอย่างใต้ parser ทำงานบน triangle soup ดังนั้น mesh format ใหม่ = แค่ parser
+
+| ฟอร์แมต | สถานะ | หมายเหตุ |
+|---|---|---|
+| **STL** (ascii + binary) | ✅ | |
+| **OBJ** | ✅ | index ติดลบ, หน้า n เหลี่ยม, v/vt/vn ครบทุกแบบ |
+| **PLY** (ascii + binary LE) | ✅ | อ่านตาม header จริง (vertex ที่มีสีก็ไม่เพี้ยน) · big-endian **ปฏิเสธ** ไม่เดา · point cloud ปฏิเสธพร้อมบอกเหตุผล |
+| 3MF / AMF | ⬜ | ต้องเพิ่ม zip lib (~10KB) |
+| **STEP / IGES** | ⬜ **ต้องตัดสินใจ** | ต้อง OCCT ~30MB WASM — แต่ได้ B-rep จริง แก้ปัญหา "รู Ø10 = 32 เหลี่ยม" ที่ต้นตอ |
+
+**ตรวจจากไบต์ ไม่เชื่อนามสกุล** — คนเปลี่ยนชื่อไฟล์กันบ่อย OBJ ที่ชื่อ `.stl`
+ถ้าอ่านเป็น binary STL จะได้พิกัดจาก header bytes ออกมาเป็นชิ้นงานมั่ว ๆ
 
 ### Workflow: import → look → pick → cut (แก้ 2026-07-20)
 

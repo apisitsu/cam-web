@@ -13,7 +13,8 @@
  * state, and a million-float STL kills it.
  */
 import { create } from 'zustand';
-import { parseSTL, weld } from '../engine/mesh/stl.js';
+import { weld } from '../engine/mesh/stl.js';
+import { parsePart } from '../engine/mesh/import.js';
 import { analyzeMesh } from '../engine/mesh/analyze.js';
 import { planJob, planContext, planSummary } from '../engine/cam/plan.js';
 import { post } from '../engine/cam/post/fanuc.js';
@@ -110,17 +111,21 @@ export const useCamPlanStore = create((set, get) => ({
     get().rebuild();
   },
 
+  /** Which format the loaded part came from, for the UI to name. */
+  partFormat: null,
+
   /**
-   * Read an STL and analyse it. Planning is a separate step so the operator can
-   * see what the file actually is — and fix the material or the machine — before
-   * committing to a toolpath.
+   * Read a part file and measure it.
+   *
+   * Any supported mesh format; `parsePart` decides which from the bytes rather
+   * than the extension. Nothing downstream knows or cares which it was — the
+   * whole engine works on the triangle soup that comes out.
    */
-  async loadStl(file) {
+  async loadPart(file) {
     set({ status: 'loading', error: null, plan: null, nc: null });
     try {
       const buffer = await file.arrayBuffer();
-      const soup = parseSTL(buffer);
-      if (soup.triangleCount === 0) throw new Error('That STL contains no triangles.');
+      const soup = parsePart(buffer, file.name);
       const welded = weld(soup);
       _mesh.soup = soup;
       _mesh.welded = welded;
@@ -134,6 +139,7 @@ export const useCamPlanStore = create((set, get) => ({
       const analysis = analyzeMesh(soup, welded);
       set({
         stlName: file.name,
+        partFormat: soup.format,
         analysis,
         meshVer: get().meshVer + 1,
         status: 'ready',
@@ -169,6 +175,9 @@ export const useCamPlanStore = create((set, get) => ({
       return null;
     }
   },
+
+  /** The name this was called by before it read more than STL. */
+  loadStl(file) { return get().loadPart(file); },
 
   /**
    * Measure the part. Do not decide anything about it.
@@ -253,7 +262,7 @@ export const useCamPlanStore = create((set, get) => ({
       });
       const nc = post(
         {
-          name: (get().stlName || 'part').replace(/\.stl$/i, ''),
+          name: (get().stlName || 'part').replace(/\.[^.]+$/, ''),
           mode: plan.mode,
           material: plan.material,
           machineLabel: machine.label,
@@ -413,7 +422,7 @@ export const useCamPlanStore = create((set, get) => ({
     if (!nc || !plan) return;
     const cam = useCamStore.getState();
     if (cam.mode !== plan.mode) await cam.setMode(plan.mode);
-    await useCamStore.getState().parse(nc, `${(get().stlName || 'part').replace(/\.stl$/i, '')}.nc`);
+    await useCamStore.getState().parse(nc, `${(get().stlName || 'part').replace(/\.[^.]+$/, '')}.nc`);
   },
 
   /** The compact JSON a commentary layer would consume. */
@@ -426,7 +435,7 @@ export const useCamPlanStore = create((set, get) => ({
     _mesh.soup = _mesh.welded = null;
     _ctx = null;
     set({
-      stlName: null, analysis: null, plan: null, nc: null, recipe: [],
+      stlName: null, partFormat: null, analysis: null, plan: null, nc: null, recipe: [],
       selectedFeature: null, previewFeature: null, indexAngle: 0,
       status: 'idle', error: null, meshVer: get().meshVer + 1,
     });

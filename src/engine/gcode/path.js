@@ -13,6 +13,9 @@
  *   positions: 6 floats per segment (ax,ay,az,bx,by,bz)
  *   types: 0 = rapid, 1 = feed
  *   feedPrefix: feedPrefix[i] = number of feed segments in [0, i]
+ *   feedPrefixAt: Map<aIndex, Uint32Array> — the same running count, split per
+ *     rotary index, so `feedsBeforeAt` (called once per playback tick) is a
+ *     lookup instead of a rescan — see that function.
  *   lines: lines[i] = 1-based source line number that produced segment i
  *   timePrefix: timePrefix[i] = seconds elapsed once segment i has run
  *   rotary: rotary[i] = A-axis index (degrees) segment i was machined at
@@ -45,7 +48,36 @@ export function buildPath(segments) {
     rotaryB[i] = s.b4 || 0;
     tools[i] = s.tool || 0;
   }
-  return { positions, types, feedPrefix, lines, timePrefix, rotary, rotaryB, tools, totalTime: elapsed, count: n };
+  return {
+    positions, types, feedPrefix, lines, timePrefix, rotary, rotaryB, tools,
+    feedPrefixAt: feedPrefixByIndex(types, rotary, n),
+    totalTime: elapsed,
+    count: n,
+  };
+}
+
+/**
+ * Per rotary index, a running count of feed segments — the same shape as
+ * `feedPrefix` above, just split by `rotary[i]`.
+ *
+ * Every known index's array has to carry its count forward at every `i`, not
+ * just where that index is actually machining, or a lookup at an index this
+ * segment isn't at would read a stale zero instead of its running total.
+ * The number of distinct indices in a real program is small (four quarters,
+ * six sixths — the presets in `rotate.js`), so this one-time pass costs a
+ * small constant factor over a single scan, in exchange for turning every
+ * later `feedsBeforeAt` call — one per playback tick — into O(1).
+ */
+function feedPrefixByIndex(types, rotary, n) {
+  const byIndex = new Map();
+  const running = new Map();
+  for (let i = 0; i < n; i++) {
+    const a = rotary[i];
+    if (!byIndex.has(a)) byIndex.set(a, new Uint32Array(n));
+    if (types[i] === 1) running.set(a, (running.get(a) || 0) + 1);
+    for (const [idx, arr] of byIndex) arr[i] = running.get(idx) || 0;
+  }
+  return byIndex;
 }
 
 /** Rotary indices (A/B degrees) in effect after `k` segments have run. */
@@ -80,14 +112,16 @@ export function feedsBefore(path, k) {
  * Feed segments machined at rotary index `aIndex` by the time `k` segments have
  * run. The simulator only carves one index, so this — not feedsBefore — is what
  * maps the playhead onto its cursor.
+ *
+ * A lookup into `feedPrefixAt` (built once in `buildPath`), not a rescan —
+ * this runs once per playback tick, so an O(k) scan here made a long 4-axis
+ * program's simulation get slower and slower as the playhead advanced.
  */
 export function feedsBeforeAt(path, k, aIndex) {
   const kk = Math.max(0, Math.min(k, path.count));
-  let n = 0;
-  for (let i = 0; i < kk; i++) {
-    if (path.types[i] === 1 && path.rotary[i] === aIndex) n++;
-  }
-  return n;
+  if (kk === 0) return 0;
+  const arr = path.feedPrefixAt?.get(aIndex);
+  return arr ? arr[kk - 1] : 0;
 }
 
 /** Seconds of machine time elapsed once `k` segments have run. */

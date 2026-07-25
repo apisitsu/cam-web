@@ -22,6 +22,7 @@ import { analyzeMesh } from '../mesh/analyze.js';
 import { turningProfile } from '../mesh/profile.js';
 import { sliceLoops } from '../mesh/slice.js';
 import { orientForMilling } from '../mesh/orient.js';
+import { applyDatum, pointFromRawFrame } from '../mesh/datum.js';
 import { rotateAboutX, normalizeAngle } from '../mesh/rotate.js';
 import { detectFeatures } from '../mesh/features.js';
 import { materialById } from './library.js';
@@ -43,7 +44,7 @@ import * as mill from './toolpath/mill.js';
  * @param {object} welded  indexed mesh from `weld`
  * @param {{material?:string, machine?:object, machineId?:string,
  *   mode?:'mill'|'turn'|'auto', partOff?:boolean, stockMargin?:number,
- *   recipe?:object[]}} opts
+ *   datum?:{planeNormal:number[]|null, point:number[]|null}, recipe?:object[]}} opts
  * @returns {{mode, analysis, recipe, operations, steps, warnings, totalMinutes, stock}}
  */
 export function planJob(soup, welded, opts = {}) {
@@ -111,27 +112,46 @@ function resolveMachine(opts) {
  * operations are rebuilt.
  */
 export function planContext(soup, welded, opts = {}) {
-  const { mode = 'auto' } = opts;
+  const { mode = 'auto', datum = null } = opts;
   const analysis = analyzeMesh(soup, welded);
   const chosen = mode === 'auto' ? analysis.recommend : mode;
 
   if (chosen === 'turn') {
     // Turning needs no re-framing: `turningProfile` works about whichever axis
-    // the symmetry test found, and the spindle is that axis by definition.
-    return turnContext(welded, analysis, opts);
+    // the symmetry test found, and the spindle is that axis by definition. A
+    // datum here only ever translates — see `applyDatum` — and only its
+    // component along the spindle axis has any visible effect.
+    const shifted = datum ? applyDatum({ soup, welded }, datum, { mode: 'turn' }) : { soup, welded, orientation: null };
+    const shiftedAnalysis = shifted.soup === soup ? analysis : analyzeMesh(shifted.soup, shifted.welded);
+    const ctx = turnContext(shifted.welded, shiftedAnalysis, opts);
+    ctx.analysisSource = analysis;
+    ctx.orientedMesh = shifted;
+    ctx.analysisOriented = shiftedAnalysis;
+    return ctx;
   }
 
   // Milling does. A part modelled standing on end reads as an unreachably deep
   // pocket, so it is laid down first and everything after — bounds, slices,
   // holes, toolpaths — is computed in the orientation it will actually be
-  // clamped in.
-  const laid = orientForMilling(soup, welded);
-  const oriented = laid.orientation.changed ? analyzeMesh(laid.soup, laid.welded) : analysis;
+  // clamped in. A picked datum plane overrides that automatic decision
+  // outright (see `applyDatum`); with none picked this is byte-for-byte the
+  // automatic lay-down that always ran here.
+  const laid = datum
+    ? applyDatum({ soup, welded }, datum, { mode: 'mill' })
+    : orientForMilling(soup, welded);
+  const oriented = (laid.orientation.changed || datum?.point)
+    ? analyzeMesh(laid.soup, laid.welded)
+    : analysis;
   const ctx = millContext(laid.welded, oriented, opts);
   ctx.analysisSource = analysis;
   ctx.orientation = laid.orientation;
   ctx.orientedMesh = laid;
   ctx.analysisOriented = oriented;
+  // Where the physical A-axis passes through, in this same laid-down frame —
+  // `[0,0]` (the frame's own origin) reproduces exactly what indexing always
+  // assumed before an operator could say otherwise.
+  const rotaryPoint = datum?.rotaryCenter ? pointFromRawFrame(datum.rotaryCenter, laid.orientation) : null;
+  ctx.rotaryCenter = rotaryPoint ? [rotaryPoint[1], rotaryPoint[2]] : [0, 0];
   // The setter has to reproduce this orientation at the vice, and cannot work
   // it out from a toolpath — so it leads the warnings rather than hiding in the
   // plan object.
@@ -204,10 +224,13 @@ export function indexContext(ctx, angle = 0) {
   const hit = ctx._indexed.get(a);
   if (hit) return hit;
 
-  const rotated = rotateAboutX(ctx.welded, a);
+  const rotated = rotateAboutX(ctx.welded, a, { center: ctx.rotaryCenter ?? [0, 0] });
   const derived = millContext(rotated, analyzeMesh(rotated, rotated), { stockMargin: 2 });
   derived.analysisSource = derived.analysis;
   derived.indexA = a;
+  // The table's physical axis does not move when the operator flips through
+  // indices — it is still the same offset the part was measured against.
+  derived.rotaryCenter = ctx.rotaryCenter;
   // The parent's warnings already told the operator about this part; repeating
   // them once per index would bury the one warning that is about this side.
   derived.warnings = derived.warnings.filter((w) => !ctx.warnings.includes(w));

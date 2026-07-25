@@ -10,6 +10,7 @@ import { create } from 'zustand';
 import * as Comlink from 'comlink';
 import { feedsBeforeAt, feedsBefore } from '../engine/gcode/path.js';
 import { setBuffers, clearBuffers, getBuf } from '../engine/bufferCache.js';
+import { getPlanContext } from './camPlanStore.js';
 
 // Lazily create the workers so tests / SSR don't spin them up on import.
 let gcodeApi = null;
@@ -83,6 +84,12 @@ export const useCamStore = create((set, get) => ({
   cutFollowsPlayback: true, // watch the stock carve as playback runs, by default
   showStock: true,
   _carving: false,
+  // The feed-move target `carveToPlayhead` last actually carved to. Scrubbing
+  // ticks every 40ms regardless of whether the playhead crossed a new feed
+  // move — most of a slow move's many ticks land on the same target — so this
+  // is what turns "ask the worker to re-carve and re-triangulate the whole
+  // grid" into a no-op for every tick that has nothing new to show.
+  _lastCarveTarget: null,
   // 4th-axis: the height-field simulator carves one rotary index at a time.
   // null = let the engine pick the one that does the most cutting.
   aIndex: null,
@@ -139,10 +146,22 @@ export const useCamStore = create((set, get) => ({
     if (get().gcode) await get().parse();
   },
 
-  /** Machine options the interpreter needs, in both workers. */
+  /**
+   * Machine options the interpreter needs, in both workers.
+   *
+   * `rotaryCenter` is read off whatever part is loaded in `camPlanStore`, not
+   * stored here — it's how a `.nc` program loaded into this viewport (CAM's
+   * own "Verify in viewport", or an independently dropped file) ends up
+   * pivoting its A-axis moves on the same physical line the plan was indexed
+   * about, without the interpreter needing any G54-style offset table of its
+   * own. Absent for anything but a milling part, since turning has no A-axis
+   * concept here.
+   */
   machineOpts() {
     const { mode, rapidRate, diameterMode } = get();
-    return { mode, rapidRate, diameterMode };
+    const ctx = getPlanContext();
+    const rotaryCenter = mode === 'mill' && ctx?.mode === 'mill' ? ctx.rotaryCenter : undefined;
+    return { mode, rapidRate, diameterMode, ...(rotaryCenter ? { rotaryCenter } : {}) };
   },
 
   setRapidRate(rapidRate) {
@@ -180,6 +199,7 @@ export const useCamStore = create((set, get) => ({
         simReady: false,
         totalFeeds: 0,
         aIndex: null,
+        _lastCarveTarget: null,
         ...(fileName ? { fileName } : {}),
       });
     } catch (err) {
@@ -239,7 +259,9 @@ export const useCamStore = create((set, get) => ({
     if (idx.length > 1) return get().simulateVoxel(text);
     const source = text ?? get().gcode;
     const { toolRadius, toolType, cellSize, stockTop, stockBase, stockMargin } = get();
-    set({ simStatus: 'running', error: null });
+    // A brand new session's targets start over; a stale value here could
+    // coincidentally match the new session's and wrongly skip its first carve.
+    set({ simStatus: 'running', error: null, _lastCarveTarget: null });
     try {
       const api = getSimWorker();
       const init = await api.init(source, {
@@ -311,7 +333,7 @@ export const useCamStore = create((set, get) => ({
     if (get().mode !== 'turn') return;
     const source = text ?? get().gcode;
     const { cellSize, stockMargin, stockOversize } = get();
-    set({ simStatus: 'running', error: null });
+    set({ simStatus: 'running', error: null, _lastCarveTarget: null });
     try {
       const api = getSimWorker();
       const init = await api.initTurning(source, {
@@ -359,22 +381,28 @@ export const useCamStore = create((set, get) => ({
 
   /** Carve the session up to the feed move implied by the current playhead. */
   async carveToPlayhead() {
-    const { playhead, simReady, _carving, aIndex, simMethod } = get();
+    const {
+      playhead, simReady, _carving, aIndex, simMethod, _lastCarveTarget,
+    } = get();
     const path = getBuf().path;
     if (!path || !simReady || _carving) return;
+    // Ticks fire every 40ms regardless of the toolpath's own pacing, so most
+    // ticks during a slow or long move land on the same feed-move target as
+    // the last one already carved — re-asking the worker (and re-building the
+    // whole grid's mesh) for an answer that would come back byte-identical is
+    // exactly the wasted, repeated work that showed up as stutter.
+    const target = simMethod === 'turning'
+      ? feedsBefore(path, playhead)
+      : feedsBeforeAt(path, playhead, aIndex ?? 0);
+    if (target === _lastCarveTarget) return;
     set({ _carving: true });
     try {
       const api = getSimWorker();
-      let sim;
-      if (simMethod === 'turning') {
-        // Turning carves every feed in order — no rotary index to filter.
-        sim = await api.carveTurningStep(feedsBefore(path, playhead));
-      } else {
-        // The mill session only holds the feeds of one rotary index — count those.
-        sim = await api.carve(feedsBeforeAt(path, playhead, aIndex ?? 0));
-      }
+      const sim = simMethod === 'turning'
+        ? await api.carveTurningStep(target)
+        : await api.carve(target);
       setBuffers({ sim });
-      set({ bufVer: get().bufVer + 1, _carving: false });
+      set({ bufVer: get().bufVer + 1, _carving: false, _lastCarveTarget: target });
     } catch (err) {
       set({ error: err.message || String(err), _carving: false });
     }
@@ -391,6 +419,7 @@ export const useCamStore = create((set, get) => ({
       playhead: 0,
       playing: false,
       error: null,
+      _lastCarveTarget: null,
     });
   },
 }));

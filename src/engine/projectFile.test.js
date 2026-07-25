@@ -1,6 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import {
   buildProject, serializeProject, parseProject, projectFileName,
+  encodeFloat32, decodeFloat32,
   PROJECT_KIND, PROJECT_VERSION,
 } from './projectFile.js';
 
@@ -39,6 +40,66 @@ describe('project file — build and parse round trip', () => {
     expect(back.gcode).toBe('');
     expect(back.sketch).toBeNull();
     expect(back.fileName).toBeNull();
+  });
+});
+
+describe('the CAM setup block', () => {
+  const cam = {
+    settings: { material: 'steel', machineId: 'haas-vf2', forceMode: 'mill', programNumber: 7 },
+    datum: { point: [0, 0, 7.5], axesSet: [false, false, true], reverseX: false },
+    recipe: [{ key: 'face', kind: 'face', toolId: 'em20', enabled: true }],
+    part: { name: 'bracket.stl', format: 'stl', triangleCount: 2 },
+  };
+
+  it('carries the whole setup — machine, material, origin, operations, part', () => {
+    const back = parseProject(serializeProject(buildProject({ cam })));
+    expect(back.cam.settings.machineId).toBe('haas-vf2');
+    expect(back.cam.settings.material).toBe('steel');
+    expect(back.cam.datum.point).toEqual([0, 0, 7.5]);
+    expect(back.cam.datum.axesSet).toEqual([false, false, true]);
+    expect(back.cam.recipe).toHaveLength(1);
+    expect(back.cam.part.name).toBe('bracket.stl');
+  });
+
+  it('is null for a project with no imported part', () => {
+    expect(parseProject(serializeProject(buildProject({}))).cam).toBeNull();
+  });
+
+  it('still opens a v1 project (no cam block) without complaint', () => {
+    // A file saved before the CAM block existed: version 1, no `cam`.
+    const v1 = { kind: PROJECT_KIND, version: 1, gcode: 'G0 X0', settings: { mode: 'mill' } };
+    const back = parseProject(JSON.stringify(v1));
+    expect(back.gcode).toBe('G0 X0');
+    expect(back.cam).toBeNull();
+  });
+
+  it('ignores a malformed cam field rather than crashing the parse', () => {
+    const doc = { kind: PROJECT_KIND, version: PROJECT_VERSION, cam: [1, 2, 3] };
+    expect(parseProject(JSON.stringify(doc)).cam).toBeNull();
+  });
+});
+
+describe('the part vertex codec', () => {
+  it('round-trips a Float32Array exactly through base64', () => {
+    const arr = new Float32Array([0, 1, -2.5, 33.5, 1e6, -0.0001, 12345.678]);
+    const back = decodeFloat32(encodeFloat32(arr));
+    expect(Array.from(back)).toEqual(Array.from(arr));
+  });
+
+  it('handles a large buffer without overflowing', () => {
+    const arr = new Float32Array(200000);
+    for (let i = 0; i < arr.length; i += 1) arr[i] = Math.sin(i) * 100;
+    const back = decodeFloat32(encodeFloat32(arr));
+    expect(back.length).toBe(arr.length);
+    expect(back[0]).toBe(arr[0]);
+    expect(back[arr.length - 1]).toBe(arr[arr.length - 1]);
+  });
+
+  it('survives a full save/parse cycle inside a project', () => {
+    const positions = new Float32Array([0, 0, 0, 10, 0, 0, 0, 10, 0]);
+    const cam = { part: { name: 'p.stl', format: 'stl', triangleCount: 1, positions: encodeFloat32(positions) } };
+    const back = parseProject(serializeProject(buildProject({ cam })));
+    expect(Array.from(decodeFloat32(back.cam.part.positions))).toEqual(Array.from(positions));
   });
 });
 

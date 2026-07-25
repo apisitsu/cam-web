@@ -12,7 +12,7 @@ import { OrbitControls, Html } from '@react-three/drei';
 import * as THREE from 'three';
 import Backplot from './Backplot.jsx';
 import StockMesh from './StockMesh.jsx';
-import PartMesh, { FeatureHighlight } from './PartMesh.jsx';
+import PartMesh, { FeatureHighlight, OriginMarker, RotaryAxisLine } from './PartMesh.jsx';
 import SketchLayer from './SketchLayer.jsx';
 import { getBuf, setView } from '../engine/bufferCache.js';
 import { sliceUpTo } from '../engine/gcode/path.js';
@@ -443,6 +443,8 @@ export function SceneContents({
               part whether it is going to be turned or milled. */}
           <PartMesh meshVer={partVer} visible={showPart} />
           {showPart && <FeatureHighlight meshVer={partVer} />}
+          {showPart && <OriginMarker meshVer={partVer} />}
+          {showPart && <RotaryAxisLine meshVer={partVer} />}
           <Tool
             pos={toolPos}
             rotary={toolRotary}
@@ -493,6 +495,7 @@ export default function Viewport({
 
   return (
     <Canvas
+      frameloop="demand"
       orthographic
       camera={{ position: [80, -80, 80], up: [0, 0, 1], zoom: 6, near: 0.1, far: 100000 }}
       style={{ background: '#0f172a' }}

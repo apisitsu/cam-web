@@ -30,7 +30,7 @@
 import React from 'react';
 import {
   Upload, Button, Space, Select, Table, Alert, Tag, Typography, Descriptions,
-  Divider, Switch, Tooltip, Empty, Dropdown, InputNumber, Collapse, Segmented,
+  Divider, Switch, Tooltip, Empty, Dropdown, InputNumber, Collapse,
 } from 'antd';
 import {
   UploadOutlined, ExperimentOutlined, DownloadOutlined, SendOutlined,
@@ -44,8 +44,8 @@ import {
 } from '../engine/cam/machines.js';
 import { axisSummary, fitWarnings } from '../engine/cam/envelope.js';
 import { operationKind } from '../engine/cam/recipe.js';
-import { INDEX_PRESETS } from '../engine/mesh/rotate.js';
 import { describeFace, describeEdge } from '../engine/mesh/features.js';
+import { visibleFeatures, hiddenNote } from '../engine/view/featureList.js';
 import { PART_ACCEPT, PART_FORMATS } from '../engine/mesh/import.js';
 import { dialectFor } from '../engine/cam/post/dialect.js';
 
@@ -105,9 +105,31 @@ function ToolSelect({ step, choices, onChange }) {
  * overhang, the underside, the face that is currently pointing away. The list
  * reaches everything, and hovering a row is what highlights it in the viewport.
  */
-function FeaturePicker({ features, selected, onSelect, onPreview }) {
+/**
+ * The pickable faces and edges, as a list.
+ *
+ * Memoised, and deliberately: the panel re-renders on every store change —
+ * including the `planning → ready` status flip each rebuild causes — while this
+ * list only ever depends on the detected features and the current selection.
+ * Without the memo, changing the material reconciled every row here, which is
+ * what made settings feel slow on a curvy part. `features` is reference-stable
+ * because `detectFeatures` caches against the mesh, so the memo actually hits.
+ */
+const FeaturePicker = React.memo(function FeaturePicker({ features, selected, onSelect, onPreview }) {
   const { faces = [], edges = [] } = features;
   if (faces.length === 0 && edges.length === 0) return null;
+
+  // Only the biggest are drawn; the rest stay pickable on the model itself.
+  const shownFaces = visibleFeatures(faces);
+  const shownEdges = visibleFeatures(edges);
+  const more = (hidden, noun) => {
+    const note = hiddenNote(hidden, noun);
+    return note && (
+      <Text type="secondary" style={{ fontSize: 11, display: 'block', padding: '4px 4px 0' }}>
+        {note}
+      </Text>
+    );
+  };
 
   const row = (item, label, reachable) => (
     <div
@@ -144,7 +166,8 @@ function FeaturePicker({ features, selected, onSelect, onPreview }) {
           label: <Text style={{ fontSize: 12 }}>{`Faces (${faces.length})`}</Text>,
           children: (
             <div style={{ maxHeight: 180, overflowY: 'auto' }}>
-              {faces.map((f) => row(f, describeFace(f), f.facing === 'up'))}
+              {shownFaces.shown.map((f) => row(f, describeFace(f), f.facing === 'up'))}
+              {more(shownFaces.hidden, 'face')}
             </div>
           ),
         },
@@ -153,14 +176,15 @@ function FeaturePicker({ features, selected, onSelect, onPreview }) {
           label: <Text style={{ fontSize: 12 }}>{`Edges (${edges.length})`}</Text>,
           children: (
             <div style={{ maxHeight: 180, overflowY: 'auto' }}>
-              {edges.map((e) => row(e, describeEdge(e), true))}
+              {shownEdges.shown.map((e) => row(e, describeEdge(e), true))}
+              {more(shownEdges.hidden, 'edge')}
             </div>
           ),
         },
       ]}
     />
   );
-}
+});
 
 /**
  * What to do with the thing that is selected.
@@ -259,14 +283,28 @@ export default function CamPanel() {
   const resetRecipe = useCamPlanStore((s) => s.resetRecipe);
   const toolChoices = useCamPlanStore((s) => s.toolChoices);
   const addableKinds = useCamPlanStore((s) => s.addableKinds);
-  const indexAngle = useCamPlanStore((s) => s.indexAngle);
-  const setIndexAngle = useCamPlanStore((s) => s.setIndexAngle);
   const selectedFeature = useCamPlanStore((s) => s.selectedFeature);
   const selectFeature = useCamPlanStore((s) => s.selectFeature);
   const features = useCamPlanStore((s) => s.features);
   const addFaceStep = useCamPlanStore((s) => s.addFaceStep);
   const previewFeatureAt = useCamPlanStore((s) => s.previewFeatureAt);
   const addEdgeStep = useCamPlanStore((s) => s.addEdgeStep);
+  const datum = useCamPlanStore((s) => s.datum);
+  const datumPickMode = useCamPlanStore((s) => s.datumPickMode);
+  const startPickAxis = useCamPlanStore((s) => s.startPickAxis);
+  const cancelPickDatum = useCamPlanStore((s) => s.cancelPickDatum);
+  const setAxisOrigin = useCamPlanStore((s) => s.setAxisOrigin);
+  const clearAxisOrigin = useCamPlanStore((s) => s.clearAxisOrigin);
+  const clearDatum = useCamPlanStore((s) => s.clearDatum);
+  const displayedDatumPoint = useCamPlanStore((s) => s.displayedDatumPoint);
+  const startPickRotaryCenter = useCamPlanStore((s) => s.startPickRotaryCenter);
+  const setRotaryCenter = useCamPlanStore((s) => s.setRotaryCenter);
+  const clearRotaryCenter = useCamPlanStore((s) => s.clearRotaryCenter);
+  const displayedRotaryCenter = useCamPlanStore((s) => s.displayedRotaryCenter);
+  const startPickRotaryZero = useCamPlanStore((s) => s.startPickRotaryZero);
+  const clearRotaryZero = useCamPlanStore((s) => s.clearRotaryZero);
+  const rotaryZeroAngle = useCamPlanStore((s) => s.rotaryZeroAngle);
+  const toggleReverseX = useCamPlanStore((s) => s.toggleReverseX);
 
   const busy = status === 'loading' || status === 'planning';
   const machine = machineById(machineId);
@@ -275,6 +313,35 @@ export default function CamPanel() {
   const detected = features();
   const pickable = detected.faces.length > 0 || detected.edges.length > 0;
   const dialect = dialectFor(machine.controller);
+  const mode = plan?.mode ?? analysis?.recommend;
+  const originPoint = displayedDatumPoint() ?? [0, 0, 0];
+  const rotaryCenterYZ = displayedRotaryCenter() ?? [0, 0];
+
+  // `setAxisOrigin`/`setRotaryCenter` re-measure the whole mesh (see
+  // camPlanStore.js) — expensive, unlike most fields on this panel. antd's
+  // `InputNumber` fires `onChange` on every keystroke, so committing straight
+  // to the store there would re-run that pipeline once per character typed
+  // instead of once per edit. These drafts hold the in-progress text and only
+  // push to the store on blur/Enter, the same way a person touches off: type
+  // the number, then commit it. Committed per axis, so one field never disturbs
+  // another.
+  const [originDraft, setOriginDraft] = React.useState(originPoint);
+  React.useEffect(() => {
+    setOriginDraft(originPoint);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [originPoint[0], originPoint[1], originPoint[2]]);
+  const commitAxis = (i) => {
+    if (originDraft[i] !== originPoint[i]) setAxisOrigin(i, originDraft[i]);
+  };
+
+  const [rotaryDraft, setRotaryDraft] = React.useState(rotaryCenterYZ);
+  React.useEffect(() => {
+    setRotaryDraft(rotaryCenterYZ);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [rotaryCenterYZ[0], rotaryCenterYZ[1]]);
+  const commitRotary = () => {
+    if (rotaryDraft.some((v, i) => v !== rotaryCenterYZ[i])) setRotaryCenter(rotaryDraft);
+  };
 
   // The recipe is the source of truth for the table: it holds the disabled rows
   // too, which the built steps by definition do not. Each row is matched to its
@@ -556,6 +623,92 @@ export default function CamPanel() {
               </>
             )}
           </Space>
+
+          <Divider style={{ margin: '4px 0' }} />
+
+          {/* Where X0/Y0/Z0 physically is. This is what lets a separately
+              loaded .nc program — from a real controller, not this app's own
+              post — simulate against the part correctly: the app has no G54
+              table to teach the interpreter about, so instead the part itself
+              is moved to sit at whatever point the operator actually touched
+              off at. */}
+          <div>
+            <Text style={{ color: '#94a3b8', fontSize: 11 }}>
+              Origin — so a separately loaded .nc program simulates at the same X0/Y0/Z0
+            </Text>
+            <div style={{ marginTop: 4 }}>
+              {/* One axis at a time — like touching off on the machine. Picking
+                  X sets only X0 and leaves Y and Z where they are; the part is
+                  never reoriented by a pick. Each axis locks independently. */}
+              <Text type="secondary" style={{ fontSize: 11, display: 'block', marginBottom: 4 }}>
+                Pick one axis, click the part to set its zero, then lock the next
+              </Text>
+              <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+                {['X', 'Y', 'Z'].map((label, i) => {
+                  const armed = datumPickMode === label.toLowerCase();
+                  const locked = datum.axesSet[i];
+                  return (
+                    <Space key={label} size={6} wrap>
+                      <Tooltip title={`Click the part to set ${label}0 there — only ${label} moves, nothing rotates`}>
+                        <Button
+                          size="small"
+                          style={{ width: 96 }}
+                          type={armed ? 'primary' : 'default'}
+                          onClick={() => (armed ? cancelPickDatum() : startPickAxis(i))}
+                        >
+                          {armed ? 'Click part…' : `Pick ${label}0`}
+                        </Button>
+                      </Tooltip>
+                      <InputNumber
+                        size="small"
+                        addonBefore={label}
+                        style={{ width: 104 }}
+                        step={0.1}
+                        value={originDraft[i]}
+                        onChange={(v) => {
+                          const next = [...originDraft];
+                          next[i] = v ?? 0;
+                          setOriginDraft(next);
+                        }}
+                        onBlur={() => commitAxis(i)}
+                        onPressEnter={() => commitAxis(i)}
+                      />
+                      {locked ? (
+                        <Tooltip title={`${label} is locked at this zero — click to release`}>
+                          <Tag
+                            color="green"
+                            style={{ margin: 0, cursor: 'pointer' }}
+                            onClick={() => clearAxisOrigin(i)}
+                          >
+                            locked ✕
+                          </Tag>
+                        </Tooltip>
+                      ) : (
+                        <Text type="secondary" style={{ fontSize: 11 }}>free</Text>
+                      )}
+                    </Space>
+                  );
+                })}
+              </div>
+              {datum.point && (
+                <Button size="small" type="text" style={{ marginTop: 4 }} onClick={clearDatum}>
+                  Reset all axes to native origin
+                </Button>
+              )}
+              {/* Turns the whole part 180° about Z — a rotation, not a
+                  mirror, so both X and Y reverse together — for when a
+                  program written or posted elsewhere counts X the other way
+                  along the same physical setup. */}
+              {mode === 'mill' && (
+                <Space size={4} style={{ marginTop: 6 }}>
+                  <Switch size="small" checked={datum.reverseX} onChange={toggleReverseX} />
+                  <Tooltip title="Rotate the part 180° about Z — reverses which end reads as high X (and high Y with it)">
+                    <Text style={{ color: '#94a3b8', fontSize: 12 }}>Flip X</Text>
+                  </Tooltip>
+                </Space>
+              )}
+            </div>
+          </div>
         </>
       )}
 
@@ -586,18 +739,85 @@ export default function CamPanel() {
 
           {machine.rotary.length > 0 ? (
             <div>
-              <Text style={{ color: '#94a3b8', fontSize: 11 }}>
-                Rotary index — new operations are added at this angle
-              </Text>
-              <Segmented
-                size="small"
-                block
-                value={indexAngle}
-                onChange={setIndexAngle}
-                options={[...new Set(INDEX_PRESETS.flatMap((p) => p.angles))]
-                  .sort((a, b) => a - b)
-                  .map((a) => ({ value: a, label: `A${a}` }))}
-              />
+              {/* A part is rarely modelled at the angle it will actually be
+                  chucked at — this turns the whole part about the rotary axis
+                  so a picked face reads as A0. */}
+              <div style={{ marginTop: 8 }}>
+                <Text style={{ color: '#94a3b8', fontSize: 11 }}>
+                  A0 face — which way the part faces when the table reads zero
+                </Text>
+                <div style={{ marginTop: 4 }}>
+                  <Space wrap size={6}>
+                    <Tooltip title="Click the face that should be up (facing the spindle) at A0">
+                      <Button
+                        size="small"
+                        type={datumPickMode === 'zero' ? 'primary' : 'default'}
+                        onClick={() => (datumPickMode === 'zero' ? cancelPickDatum() : startPickRotaryZero())}
+                      >
+                        {datumPickMode === 'zero' ? 'Click the part…' : 'Pick face for A0'}
+                      </Button>
+                    </Tooltip>
+                    {datum.rotaryZero && (
+                      <Button size="small" type="text" onClick={clearRotaryZero}>
+                        Reset to modelled A0
+                      </Button>
+                    )}
+                  </Space>
+                  {datum.rotaryZero && (
+                    <Text type="secondary" style={{ fontSize: 11, display: 'block', marginTop: 4 }}>
+                      Part turned {rotaryZeroAngle()?.toFixed(1)}° to bring that face to A0.
+                    </Text>
+                  )}
+                </div>
+              </div>
+
+              {/* Where the physical A-axis passes through — Y/Z only, since it
+                  runs the length of X. Same reasoning as the linear origin: a
+                  loaded .nc program's A-word only lands where it should if the
+                  simulator pivots on the same physical line the plan indexed
+                  about, which `camStore.machineOpts()` reads off this. */}
+              <div style={{ marginTop: 8 }}>
+                <Text style={{ color: '#94a3b8', fontSize: 11 }}>
+                  A-axis centre — where the rotary physically pivots
+                </Text>
+                <div style={{ marginTop: 4 }}>
+                  <Space wrap size={6}>
+                    <Tooltip title="Click a point on the part that sits on the rotary's centreline">
+                      <Button
+                        size="small"
+                        type={datumPickMode === 'rotary' ? 'primary' : 'default'}
+                        onClick={() => (datumPickMode === 'rotary' ? cancelPickDatum() : startPickRotaryCenter())}
+                      >
+                        {datumPickMode === 'rotary' ? 'Click the part…' : 'Pick A-axis centre on part'}
+                      </Button>
+                    </Tooltip>
+                    {datum.rotaryCenter && (
+                      <Button size="small" type="text" onClick={clearRotaryCenter}>
+                        Reset to frame origin
+                      </Button>
+                    )}
+                  </Space>
+                  <Space size={4} style={{ marginTop: 6 }}>
+                    {['Y', 'Z'].map((label, i) => (
+                      <InputNumber
+                        key={label}
+                        size="small"
+                        addonBefore={label}
+                        style={{ width: 96 }}
+                        step={0.1}
+                        value={rotaryDraft[i]}
+                        onChange={(v) => {
+                          const next = [...rotaryDraft];
+                          next[i] = v ?? 0;
+                          setRotaryDraft(next);
+                        }}
+                        onBlur={commitRotary}
+                        onPressEnter={commitRotary}
+                      />
+                    ))}
+                  </Space>
+                </div>
+              </div>
             </div>
           ) : (
             <Text type="secondary" style={{ fontSize: 11 }}>

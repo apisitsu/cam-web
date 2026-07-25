@@ -5,6 +5,7 @@
  * engine so the format layer stays DOM-free.
  */
 import { useCamStore } from '../stores/camStore.js';
+import { useCamPlanStore } from '../stores/camPlanStore.js';
 import { useSketchStore } from '../stores/sketchStore.js';
 import { serialize as serializeSketch } from '../engine/sketch/model.js';
 import { sketchToDxf, sketchHasGeometry } from '../engine/sketch/dxf.js';
@@ -59,6 +60,10 @@ export function currentProject() {
     // costs nothing and keeps "open" symmetric, so it goes in as-is.
     sketch: sk ? serializeSketch(sk) : null,
     settings: cam,
+    // The whole STL→plan setup: part, machine, material, origin, operations.
+    // Null when nothing is imported, so a bare sketch/program stays a v1-shaped
+    // project with no `cam` block.
+    cam: useCamPlanStore.getState().serializeSetup(),
   });
 }
 
@@ -108,7 +113,12 @@ export async function openProjectFile(file) {
   const cam = useCamStore.getState();
   // Settings first, so the parse below runs with the right machine mode.
   if (Object.keys(project.settings).length) cam.setTool(project.settings);
+  // The CAM setup — part, machine, material, origin, operations. Returns the
+  // restored process mode when the project carried a part, or null otherwise.
+  const camMode = useCamPlanStore.getState().restoreSetup(project.cam);
   if (project.sketch) useSketchStore.getState().loadSerialized(project.sketch);
   await cam.parse(project.gcode, project.fileName ?? 'project');
+  // Land on the machine page that actually shows the restored part.
+  if (camMode) await useCamStore.getState().setPage(camMode);
   return project;
 }

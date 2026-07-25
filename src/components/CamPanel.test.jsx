@@ -16,7 +16,8 @@ import { createRoot } from 'react-dom/client';
 import CamPanel from './CamPanel.jsx';
 import { useCamPlanStore } from '../stores/camPlanStore.js';
 import { DEFAULT_MILL_ID } from '../engine/cam/machines.js';
-import { box, turnedShaft } from '../engine/mesh/fixtures.js';
+import { box, turnedShaft, shaftWithFlat } from '../engine/mesh/fixtures.js';
+import { FEATURE_LIST_LIMIT } from '../engine/view/featureList.js';
 
 /** A binary-STL File-alike, the way the store receives one from a drop. */
 function stlFile(soup, name = 'part.stl') {
@@ -315,7 +316,7 @@ describe('the machine list answers "which of ours can take it"', () => {
 });
 
 describe('indexing and picking, on screen', () => {
-  it('offers rotary angles only on a machine that has a rotary', async () => {
+  it('shows the 4-axis A0 / A-axis pickers only on a machine that has a rotary', async () => {
     await planned(box(120, 30, 20));
     await act(async () => { store().setMachine('haas-vf2'); });
     await render();
@@ -323,8 +324,35 @@ describe('indexing and picking, on screen', () => {
 
     await act(async () => { store().setMachine('mazak-vcn530c-4th'); });
     await render();
-    expect(container.textContent).toMatch(/Rotary index/);
-    expect(container.textContent).toMatch(/A180/);
+    expect(container.textContent).toMatch(/A0 face/);
+    expect(container.textContent).toMatch(/A-axis centre/);
+  });
+
+  it('no longer shows the rotary-index angle selector (removed)', async () => {
+    // The "add new operations at this angle" index selector was removed; the
+    // A0 / A-axis pickers stay. Guards against it creeping back.
+    await planned(box(120, 30, 20));
+    await act(async () => { store().setMachine('mazak-vcn530c-4th'); });
+    await render();
+    expect(container.textContent).not.toMatch(/Rotary index/);
+    expect(container.textContent).not.toMatch(/new operations are added at this angle/);
+  });
+
+  it('offers per-axis origin touch-off — one axis at a time, each lockable', async () => {
+    await planned(box(60, 40, 20));
+    const el = container;
+    // A pick button per axis, not one "pick the whole origin" button.
+    expect(el.textContent).toMatch(/Pick X0/);
+    expect(el.textContent).toMatch(/Pick Y0/);
+    expect(el.textContent).toMatch(/Pick Z0/);
+    // Each axis starts free.
+    expect((el.textContent.match(/free/g) ?? []).length).toBeGreaterThanOrEqual(3);
+
+    // Touching off Z locks only Z; X and Y stay free.
+    await act(async () => { store().setAxisOrigin(2, -10); });
+    await render();
+    expect(container.textContent).toMatch(/locked/);
+    expect((container.textContent.match(/free/g) ?? []).length).toBe(2);
   });
 
   it('lists the faces and edges of the part to pick from', async () => {
@@ -352,5 +380,33 @@ describe('indexing and picking, on screen', () => {
     await act(async () => { store().addFaceStep(side.id); });
     await render();
     expect(container.textContent).toMatch(/cannot be reached along the tool axis/);
+  });
+
+  // A curvy part detects thousands of coplanar-triangle faces, and rendering a
+  // DOM row per face is what made adjusting settings stutter: every unrelated
+  // store change reconciled the whole list. The panel must cap the rows it draws
+  // (the rest stay pickable on the model), or that regression comes straight
+  // back — this is the render-decision guard for that cap.
+  it('caps the face list and points the rest at the model, on a part with hundreds of faces', async () => {
+    // A finely faceted flatted shaft, forced to mill so its wall facets are
+    // offered as pickable faces (163 of them — above the cap).
+    await store().loadStl(stlFile(shaftWithFlat(15, 40, 200, 3)));
+    await act(async () => { store().setMode('mill'); });
+    const total = store().features().faces.length;
+    expect(total).toBeGreaterThan(FEATURE_LIST_LIMIT);
+
+    const el = await render();
+    // The header still reports the true total, so nothing is hidden from the
+    // count — only from the rendered rows.
+    expect(el.textContent).toMatch(new RegExp(`Faces \\(${total}\\)`));
+
+    // Every drawn row carries a face tag (F0, F1, …); there must be no more of
+    // them than the cap, however many faces the part has.
+    const faceTags = [...el.querySelectorAll('.ant-tag')]
+      .filter((t) => /^F\d+$/.test(t.textContent.trim()));
+    expect(faceTags.length).toBeLessThanOrEqual(FEATURE_LIST_LIMIT);
+
+    // And the overflow is accounted for in words the operator can act on.
+    expect(el.textContent).toMatch(/smaller faces? — click the model/);
   });
 });

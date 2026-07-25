@@ -24,11 +24,36 @@ import {
 } from '../engine/cam/machines.js';
 import * as recipeOps from '../engine/cam/recipe.js';
 import { normalizeAngle } from '../engine/mesh/rotate.js';
+import {
+  pointToRawFrame, pointFromRawFrame, displayedPointToRawFrame,
+  originFromAxisPick, originFromAxisValue,
+} from '../engine/mesh/datum.js';
+import { encodeFloat32, decodeFloat32 } from '../engine/projectFile.js';
 import { useCamStore } from './camStore.js';
 
 /** Large mesh arrays, out of React state. */
 const _mesh = { soup: null, welded: null };
 export const getMesh = () => _mesh;
+
+/**
+ * The mesh exactly as imported, never overwritten again for the life of the
+ * part — unlike `_mesh`, which `prepare()` replaces with the laid-down and/or
+ * datum-shifted version to display and plan against.
+ *
+ * Every datum change re-derives from here rather than from whatever `_mesh`
+ * currently holds, so picking a plane, then a point, then clearing the datum
+ * always lands where it should instead of compounding transforms.
+ */
+const _raw = { soup: null, welded: null };
+
+const NO_DATUM = {
+  planeNormal: null, point: null, rotaryCenter: null, rotaryZero: null, reverseX: false,
+  // Which of X/Y/Z the operator has explicitly touched off, so the panel can
+  // show each axis locked or free independently. `point` still carries the
+  // values; this only records which axes are the operator's rather than the
+  // native origin's, for the lock UI and per-axis clearing.
+  axesSet: [false, false, false],
+};
 
 /**
  * The measured context, cached beside the mesh for the same reason.
@@ -56,6 +81,16 @@ export const useCamPlanStore = create((set, get) => ({
   partOff: true,
   diameterMode: true,
   programNumber: 1,
+
+  // ---- Where the operator says X0/Y0/Z0 (and, for a 4-axis mill, the A-axis)
+  // physically is ----
+  // Every field is in the *raw* import frame, so it survives a later
+  // orientation change unchanged — see `pickAxisOrigin`/`pickRotaryCenter`. `null`
+  // means "not set", which is the identical-to-today behaviour of just using
+  // the mesh as imported (mill: laid down automatically, indexed about its
+  // own frame origin; turn: as measured).
+  datum: NO_DATUM,
+  datumPickMode: null, // null | 'x' | 'y' | 'z' | 'rotary' | 'zero'
 
   // ---- The operator's editable plan ----
   // An ordered list of `{key, kind, toolId, enabled, target}`. Empty until a
@@ -127,6 +162,8 @@ export const useCamPlanStore = create((set, get) => ({
       const buffer = await file.arrayBuffer();
       const soup = parsePart(buffer, file.name);
       const welded = weld(soup);
+      _raw.soup = soup;
+      _raw.welded = welded;
       _mesh.soup = soup;
       _mesh.welded = welded;
       // Measurements of the previous part must not survive it. Tool choices
@@ -144,6 +181,9 @@ export const useCamPlanStore = create((set, get) => ({
         meshVer: get().meshVer + 1,
         status: 'ready',
         forceMode: 'auto',
+        // A new part has no relationship to wherever the last one's origin
+        // was picked — that point may not even exist on this geometry.
+        datum: NO_DATUM,
       });
 
       // Measure it straight away, so the operator can pick a face the moment
@@ -169,6 +209,7 @@ export const useCamPlanStore = create((set, get) => ({
 
       return analysis;
     } catch (err) {
+      _raw.soup = _raw.welded = null;
       _mesh.soup = _mesh.welded = null;
       _ctx = null;
       set({ status: 'error', error: err.message || String(err) });
@@ -191,28 +232,37 @@ export const useCamPlanStore = create((set, get) => ({
    * when the part or the process changes and never when a tool does.
    */
   prepare() {
-    if (!_mesh.welded) return null;
-    const { forceMode, partOff, machineId } = get();
-    _ctx = planContext(_mesh.soup, _mesh.welded, {
-      mode: forceMode, partOff, machineId,
+    if (!_raw.welded) return null;
+    const {
+      forceMode, partOff, machineId, datum,
+    } = get();
+    // Always measured from the pristine import, never from whatever `_mesh`
+    // currently holds — otherwise picking a plane, then a point, then
+    // clearing the datum would compound transforms instead of each landing
+    // where it should.
+    const activeDatum = (datum.planeNormal || datum.point || datum.rotaryCenter
+      || datum.rotaryZero || datum.reverseX)
+      ? datum : null;
+    _ctx = planContext(_raw.soup, _raw.welded, {
+      mode: forceMode, partOff, machineId, datum: activeDatum,
     });
 
-    // A milling plan may have laid the part down to make it reachable. Show it
-    // in that orientation, or the model on screen and the toolpath beside it
-    // would disagree about where everything is.
+    // The plan may have laid the part down and/or shifted its origin. Show it
+    // that way, or the model on screen and the toolpath beside it would
+    // disagree about where everything is. Reference equality against `_raw`
+    // is what `applyDatum`/`orientForMilling` guarantee when nothing changed.
     const laid = _ctx.orientedMesh;
-    const reoriented = Boolean(laid && _ctx.orientation?.changed);
-    if (reoriented) {
-      _mesh.soup = laid.soup;
-      _mesh.welded = laid.welded;
-    }
+    const reoriented = Boolean(laid && laid.soup !== _raw.soup);
+    const previousSoup = _mesh.soup;
+    _mesh.soup = reoriented ? laid.soup : _raw.soup;
+    _mesh.welded = reoriented ? laid.welded : _raw.welded;
 
     set({
       analysis: _ctx.analysisOriented ?? get().analysis,
-      // Only when the buffers actually changed. Bumping regardless would make
-      // every re-measure look like a new mesh and rebuild the viewport's
-      // geometry for nothing.
-      meshVer: reoriented ? get().meshVer + 1 : get().meshVer,
+      // Only when the displayed buffers actually changed. Bumping regardless
+      // would make every re-measure look like a new mesh and rebuild the
+      // viewport's geometry for nothing.
+      meshVer: _mesh.soup !== previousSoup ? get().meshVer + 1 : get().meshVer,
       machineId: machineForMode(_ctx.mode, machineId).id,
       recipe: recipeOps.reconcile(get().recipe, _ctx),
       selectedFeature: null,
@@ -409,6 +459,189 @@ export const useCamPlanStore = create((set, get) => ({
     return get().addStep('trace', { edgeId, ...opts });
   },
 
+  // ---- The datum: where X0/Y0/Z0 (and the A-axis) physically is -------------
+  //
+  // This is what lets a *separately loaded* .nc program simulate correctly
+  // against the imported part: neither the interpreter nor the simulator
+  // needs to know about work offsets (the app deliberately doesn't model a
+  // live G54 table), because once the part sits in the frame the operator
+  // picked, any program zeroed at the same physical point already lines up
+  // with it — see `engine/mesh/datum.js`. The rotary centre extends the same
+  // idea to a 4-axis mill's A word: `camStore.machineOpts()` reads
+  // `getPlanContext().rotaryCenter` so an indexed move in a loaded `.nc`
+  // pivots on the same physical line the plan itself indexes about.
+
+  /**
+   * Arm the next click on the part to set the origin of ONE axis.
+   *
+   * `axis` is 0/1/2 for X/Y/Z. This is the deliberate replacement for the old
+   * "pick a whole face" origin, which set a reference plane and re-laid the part
+   * down so every axis jumped at once — the behaviour operators kept triggering
+   * by accident. Touch-off is per axis on a real machine, and now here too.
+   */
+  startPickAxis(axis) { set({ datumPickMode: 'xyz'[axis] ?? null }); },
+
+  /** Arm the next click to set where the physical A-axis passes through instead. */
+  startPickRotaryCenter() { set({ datumPickMode: 'rotary' }); },
+
+  /** Arm the next click to say "this face reads as A0" instead. */
+  startPickRotaryZero() { set({ datumPickMode: 'zero' }); },
+
+  cancelPickDatum() { set({ datumPickMode: null }); },
+
+  /**
+   * A click on the part sets the origin of a single axis, leaving the other two
+   * where they are and never touching the part's orientation. `axis` is 0/1/2;
+   * `point` is the clicked location in the frame currently drawn. The per-axis
+   * arithmetic — and the conversion back to the raw import frame that survives a
+   * later re-lay-down — lives in `engine/mesh/datum.js`.
+   */
+  pickAxisOrigin(axis, point) {
+    if (!_ctx) return null;
+    const orientation = _ctx.mode === 'mill' ? _ctx.orientation : null;
+    const current = get().datum;
+    const rawPoint = originFromAxisPick(current.point, orientation, axis, point);
+    const axesSet = [...current.axesSet];
+    axesSet[axis] = true;
+    set({ datum: { ...current, point: rawPoint, axesSet }, datumPickMode: null });
+    get().prepare();
+    if (get().recipe.length) get().rebuild();
+    return get().datum;
+  },
+
+  /** A typed value for one axis, in the frame on screen — for the numeric fields. */
+  setAxisOrigin(axis, value) {
+    if (!_ctx) return null;
+    const orientation = _ctx.mode === 'mill' ? _ctx.orientation : null;
+    const current = get().datum;
+    const rawPoint = originFromAxisValue(current.point, orientation, axis, value ?? 0);
+    const axesSet = [...current.axesSet];
+    axesSet[axis] = true;
+    set({ datum: { ...current, point: rawPoint, axesSet } });
+    get().prepare();
+    if (get().recipe.length) get().rebuild();
+    return get().datum;
+  },
+
+  /** Unlock one axis — its origin returns to the part's native zero, the others stay. */
+  clearAxisOrigin(axis) {
+    if (!_ctx) return null;
+    const orientation = _ctx.mode === 'mill' ? _ctx.orientation : null;
+    const current = get().datum;
+    const axesSet = [...current.axesSet];
+    axesSet[axis] = false;
+    // Zero this axis in the setup frame; if nothing is set any more, drop the
+    // point entirely so the mesh passes through untouched (reference equality).
+    const zeroed = originFromAxisValue(current.point, orientation, axis, 0);
+    const point = axesSet.some(Boolean) ? zeroed : null;
+    set({ datum: { ...current, point, axesSet } });
+    get().prepare();
+    if (get().recipe.length) get().rebuild();
+    return get().datum;
+  },
+
+  /** Back to the mesh as imported (mill: automatic lay-down; turn: as measured). */
+  clearDatum() {
+    set({ datum: NO_DATUM, datumPickMode: null });
+    get().prepare();
+    if (get().recipe.length) get().rebuild();
+  },
+
+  /** The current datum point in the frame on screen, or `null` if unset — what the numeric fields show. */
+  displayedDatumPoint() {
+    const { datum } = get();
+    if (!datum.point || !_ctx) return null;
+    const orientation = _ctx.mode === 'mill' ? _ctx.orientation : null;
+    return pointFromRawFrame(datum.point, orientation);
+  },
+
+  /**
+   * A click on the part sets where the physical A-axis passes through — only
+   * its Y/Z matter (the axis runs the length of X), so unlike a linear-axis
+   * pick this never touches the origin point, whatever face was clicked.
+   */
+  pickRotaryCenter(point) {
+    if (!_ctx) return null;
+    const orientation = _ctx.mode === 'mill' ? _ctx.orientation : null;
+    const current = get().datum;
+    const rawPoint = displayedPointToRawFrame(point, orientation, current.point);
+    set({ datum: { ...current, rotaryCenter: rawPoint }, datumPickMode: null });
+    get().prepare();
+    if (get().recipe.length) get().rebuild();
+    return get().datum;
+  },
+
+  /** A typed Y/Z, in the frame currently on screen — for the numeric fields. */
+  setRotaryCenter(displayedYZ) {
+    if (!_ctx) return null;
+    const orientation = _ctx.mode === 'mill' ? _ctx.orientation : null;
+    const current = get().datum;
+    const displayedPoint = [0, displayedYZ[0], displayedYZ[1]];
+    const rawPoint = displayedPointToRawFrame(displayedPoint, orientation, current.point);
+    set({ datum: { ...current, rotaryCenter: rawPoint } });
+    get().prepare();
+    if (get().recipe.length) get().rebuild();
+    return get().datum;
+  },
+
+  /** Back to indexing about the frame's own origin. */
+  clearRotaryCenter() {
+    set({ datum: { ...get().datum, rotaryCenter: null } });
+    get().prepare();
+    if (get().recipe.length) get().rebuild();
+  },
+
+  /** The current rotary centre as `[y, z]` in the frame on screen, or `null` if unset. */
+  displayedRotaryCenter() {
+    const { datum } = get();
+    if (!datum.rotaryCenter || !_ctx) return null;
+    const orientation = _ctx.mode === 'mill' ? _ctx.orientation : null;
+    const p = pointFromRawFrame(datum.rotaryCenter, orientation);
+    return [p[1], p[2]];
+  },
+
+  /**
+   * A click on the part says which face should read as A0, independent of
+   * the reference plane — a 4-axis part is rarely modelled at the angle it
+   * will actually be chucked at, and this is the "index by eye once" fix for
+   * that. Only the normal matters (like `orientToNormal`, but as an
+   * arbitrary, continuous rotation rather than a 90°-snapped permutation),
+   * so unlike a linear-axis pick this never touches the origin point.
+   */
+  pickRotaryZero(normal) {
+    if (!_ctx || _ctx.mode !== 'mill') return null;
+    const rawNormal = pointToRawFrame(normal, _ctx.orientation);
+    set({ datum: { ...get().datum, rotaryZero: rawNormal }, datumPickMode: null });
+    get().prepare();
+    if (get().recipe.length) get().rebuild();
+    return get().datum;
+  },
+
+  /** Back to whatever face the automatic/picked plane already put at A0. */
+  clearRotaryZero() {
+    set({ datum: { ...get().datum, rotaryZero: null } });
+    get().prepare();
+    if (get().recipe.length) get().rebuild();
+  },
+
+  /** The angle (degrees) the picked A0 face was turned by, or `null` if unset. */
+  rotaryZeroAngle() {
+    if (!get().datum.rotaryZero || !_ctx || _ctx.mode !== 'mill') return null;
+    return _ctx.orientation?.angle ?? 0;
+  },
+
+  /**
+   * Turn the whole part 180° about Z — swapping which end reads as high X
+   * (and, since a mirror would flip the model into scrap, which side reads
+   * as high Y along with it) — for when a program written or posted
+   * elsewhere counts X the other way along the same physical setup.
+   */
+  toggleReverseX() {
+    set({ datum: { ...get().datum, reverseX: !get().datum.reverseX } });
+    get().prepare();
+    if (get().recipe.length) get().rebuild();
+  },
+
   /**
    * Push the generated program into the main viewport.
    *
@@ -425,6 +658,103 @@ export const useCamPlanStore = create((set, get) => ({
     await useCamStore.getState().parse(nc, `${(get().stlName || 'part').replace(/\.[^.]+$/, '')}.nc`);
   },
 
+  /**
+   * The whole CAM setup, for a saved project: the imported part plus every
+   * choice made about it — machine, material, process, origin, and the ordered
+   * operations. Returned as plain JSON-able data (the part's vertices base64'd)
+   * so a project file no longer loses everything but the G-code on reload.
+   *
+   * `null` when no part is loaded — the project is then a bare sketch or a
+   * hand-typed program, exactly the v1 case, and the file carries no `cam` block.
+   */
+  serializeSetup() {
+    if (!_raw.soup) return null;
+    const s = get();
+    return {
+      part: {
+        name: s.stlName,
+        format: s.partFormat,
+        triangleCount: _raw.soup.triangleCount,
+        positions: encodeFloat32(_raw.soup.positions),
+      },
+      settings: {
+        material: s.material,
+        forceMode: s.forceMode,
+        machineId: s.machineId,
+        partOff: s.partOff,
+        diameterMode: s.diameterMode,
+        programNumber: s.programNumber,
+        indexAngle: s.indexAngle,
+      },
+      datum: s.datum,
+      recipe: s.recipe,
+    };
+  },
+
+  /**
+   * Rebuild a CAM setup from a saved project's `cam` block: re-import the part
+   * from its stored vertices, put back the machine / material / origin /
+   * operations, and re-plan — the mirror of `serializeSetup`.
+   *
+   * A block with no part (or `null`) leaves the current state untouched, so
+   * opening a sketch-only or v1 project never wipes a part already loaded. On
+   * success it returns the restored process mode, so the caller can bring the
+   * right page forward. Missing datum fields fall back to `NO_DATUM`, so a file
+   * hand-edited or saved before a field existed cannot crash the panel.
+   */
+  restoreSetup(cam) {
+    if (!cam || !cam.part || !cam.part.positions) return null;
+    try {
+      const positions = decodeFloat32(cam.part.positions);
+      const triangleCount = cam.part.triangleCount ?? positions.length / 9;
+      const soup = {
+        positions,
+        normals: new Float32Array(triangleCount * 3),
+        triangleCount,
+        format: cam.part.format ?? 'stl',
+      };
+      const welded = weld(soup);
+      _raw.soup = soup;
+      _raw.welded = welded;
+      _mesh.soup = soup;
+      _mesh.welded = welded;
+      _ctx = null;
+
+      const analysis = analyzeMesh(soup, welded);
+      const settings = cam.settings ?? {};
+      set({
+        stlName: cam.part.name ?? null,
+        partFormat: soup.format,
+        analysis,
+        meshVer: get().meshVer + 1,
+        status: 'ready',
+        error: null,
+        material: settings.material ?? DEFAULT_MATERIAL,
+        forceMode: settings.forceMode ?? 'auto',
+        machineId: settings.machineId ?? get().machineId,
+        partOff: settings.partOff ?? true,
+        diameterMode: settings.diameterMode ?? true,
+        programNumber: settings.programNumber ?? 1,
+        indexAngle: settings.indexAngle ?? 0,
+        datum: { ...NO_DATUM, ...(cam.datum ?? {}) },
+        recipe: Array.isArray(cam.recipe) ? cam.recipe : [],
+        selectedFeature: null,
+        previewFeature: null,
+        datumPickMode: null,
+      });
+
+      // Measure against the restored settings; `prepare` reconciles the saved
+      // recipe against the freshly measured context (dropping any operation the
+      // geometry no longer supports), then the program is rebuilt from it.
+      get().prepare();
+      if (get().recipe.length) get().rebuild();
+      return _ctx?.mode ?? analysis.recommend;
+    } catch (err) {
+      set({ status: 'error', error: `Could not restore the saved part: ${err.message || String(err)}` });
+      return null;
+    }
+  },
+
   /** The compact JSON a commentary layer would consume. */
   summary() {
     const { plan } = get();
@@ -432,11 +762,13 @@ export const useCamPlanStore = create((set, get) => ({
   },
 
   clear() {
+    _raw.soup = _raw.welded = null;
     _mesh.soup = _mesh.welded = null;
     _ctx = null;
     set({
       stlName: null, partFormat: null, analysis: null, plan: null, nc: null, recipe: [],
       selectedFeature: null, previewFeature: null, indexAngle: 0,
+      datum: NO_DATUM, datumPickMode: false,
       status: 'idle', error: null, meshVer: get().meshVer + 1,
     });
   },

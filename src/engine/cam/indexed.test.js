@@ -72,6 +72,44 @@ describe('indexContext', () => {
   });
 });
 
+describe('the physical location of the A-axis (rotaryCenter)', () => {
+  const withCenter = (yz) => ctxFor({ datum: { planeNormal: null, point: null, rotaryCenter: [0, ...yz] } });
+
+  it('defaults to the frame origin — unchanged for anyone who never sets it', () => {
+    expect(ctxFor().rotaryCenter).toEqual([0, 0]);
+  });
+
+  it('is derived from a picked datum point, in the working frame', () => {
+    // Picked at the top face centre, Y15/Z0 in the raw (here: unreoriented) frame.
+    const ctx = withCenter([15, 0]);
+    expect(ctx.rotaryCenter[0]).toBeCloseTo(15, 3);
+    expect(ctx.rotaryCenter[1]).toBeCloseTo(0, 3);
+  });
+
+  it('indexing rotates about the picked centre, not the frame origin', () => {
+    // Rolling the bar 90° changes its *shape as measured* the same way either
+    // way — depth and footprint only care about relative dimensions — but
+    // *where* the result ends up depends entirely on the pivot.
+    const at90Origin = indexContext(ctxFor(), 90);
+    const at90Center = indexContext(withCenter([15, 0]), 90);
+    expect(at90Center.depth).toBeCloseTo(at90Origin.depth, 3);
+    expect(at90Center.footprint).toBeCloseTo(at90Origin.footprint, 3);
+    // Rotating about a point 15mm off-axis shifts the whole result away from
+    // where it would land pivoting on the origin.
+    expect(at90Center.part.top).not.toBeCloseTo(at90Origin.part.top, 1);
+    expect(at90Origin.part.top).toBeCloseTo(15, 2);
+    expect(at90Origin.part.bottom).toBeCloseTo(-15, 2);
+    expect(at90Center.part.top).toBeCloseTo(30, 2);
+    expect(at90Center.part.bottom).toBeCloseTo(0, 2);
+  });
+
+  it('carries the same centre onto every derived index', () => {
+    const ctx = withCenter([15, 0]);
+    expect(indexContext(ctx, 90).rotaryCenter).toEqual(ctx.rotaryCenter);
+    expect(indexContext(ctx, 270).rotaryCenter).toEqual(ctx.rotaryCenter);
+  });
+});
+
 describe('building an indexed step', () => {
   it('tags the operation with the angle the table must be at', () => {
     const ctx = ctxFor();

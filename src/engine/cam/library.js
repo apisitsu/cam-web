@@ -27,10 +27,21 @@
  */
 export const MATERIALS = [
   { id: 'aluminium', label: 'Aluminium (6061 / 7075)', vcMill: 400, vcTurn: 500, fzBase: 0.06, fnTurn: 0.15, apFactor: 1.0, aeFactor: 0.45 },
+  // T7351 is overaged/stress-relieved for stress-corrosion resistance, which
+  // also leaves it a touch softer and less gummy than 7075's peak-strength
+  // T6 temper — still tougher than 6061, so a notch below the generic
+  // aluminium entry rather than sharing its numbers.
+  { id: 'al-7075-t7351', label: 'Aluminium 7075-T7351', vcMill: 350, vcTurn: 450, fzBase: 0.055, fnTurn: 0.14, apFactor: 0.9, aeFactor: 0.4 },
   { id: 'brass', label: 'Brass / Bronze', vcMill: 250, vcTurn: 300, fzBase: 0.05, fnTurn: 0.12, apFactor: 0.8, aeFactor: 0.45 },
   { id: 'mild-steel', label: 'Mild steel (S45C / 1045)', vcMill: 150, vcTurn: 200, fzBase: 0.04, fnTurn: 0.12, apFactor: 0.5, aeFactor: 0.35 },
   { id: 'alloy-steel', label: 'Alloy steel (SCM440 / 4140)', vcMill: 110, vcTurn: 160, fzBase: 0.035, fnTurn: 0.10, apFactor: 0.4, aeFactor: 0.30 },
   { id: 'stainless', label: 'Stainless (SUS304 / 316)', vcMill: 90, vcTurn: 120, fzBase: 0.03, fnTurn: 0.10, apFactor: 0.35, aeFactor: 0.25 },
+  // Precipitation-hardening stainless — gummy and work-hardens fast like 304,
+  // but the aged (H900-class) condition most shops actually cut runs harder,
+  // so it sits below plain stainless and alongside tool steel rather than
+  // sharing 304/316's numbers.
+  { id: '17-4ph', label: '17-4PH stainless (H900, UNS S17400)', vcMill: 55, vcTurn: 75, fzBase: 0.025, fnTurn: 0.09, apFactor: 0.3, aeFactor: 0.22 },
+  { id: '15-5ph', label: '15-5PH stainless (H900, UNS S15500)', vcMill: 55, vcTurn: 78, fzBase: 0.025, fnTurn: 0.09, apFactor: 0.3, aeFactor: 0.22 },
   { id: 'tool-steel', label: 'Tool steel (SKD11, hardened)', vcMill: 60, vcTurn: 80, fzBase: 0.025, fnTurn: 0.08, apFactor: 0.25, aeFactor: 0.20 },
   { id: 'titanium', label: 'Titanium (Ti-6Al-4V)', vcMill: 50, vcTurn: 60, fzBase: 0.03, fnTurn: 0.10, apFactor: 0.3, aeFactor: 0.20 },
   { id: 'plastic', label: 'Plastic (POM / nylon / ABS)', vcMill: 500, vcTurn: 400, fzBase: 0.08, fnTurn: 0.20, apFactor: 1.5, aeFactor: 0.50 },

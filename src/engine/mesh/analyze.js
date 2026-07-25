@@ -293,10 +293,31 @@ export function detectRotationAxis(mesh, opts = {}) {
  * should see before trusting a generated toolpath; an empty array is the only
  * clean result.
  *
+ * Cached against the (soup, welded) pair. The measurement is a pure function of
+ * the two meshes, and both are immutable once built — every transform upstream
+ * (`weld`, `reorient`, `applyDatum`) returns new arrays rather than writing
+ * through an existing one. The store re-runs this on every machine, process and
+ * datum change, always on the *same* raw and laid-down meshes (now that
+ * `reorient` returns the identical object for an identical lay-down), so without
+ * a cache each of those settings changes re-measured shell soundness, volume and
+ * rotational symmetry — walking every triangle several times — for an answer
+ * that had not changed. The soup is checked too, not just the welded key, so a
+ * welded mesh paired with a different soup can never collide.
+ *
  * @param {{positions: Float32Array, triangleCount: number}} soup  from `parseSTL`
  * @param {{positions: Float32Array, indices: Uint32Array}} welded from `weld`
  */
+const _analysisCache = new WeakMap();
 export function analyzeMesh(soup, welded) {
+  const hit = _analysisCache.get(welded);
+  if (hit && hit.soup === soup) return hit.result;
+
+  const result = analyzeMeshUncached(soup, welded);
+  _analysisCache.set(welded, { soup, result });
+  return result;
+}
+
+function analyzeMeshUncached(soup, welded) {
   const bounds = boundsOf(soup);
   const shell = shellReport(welded);
   const signedVolume = meshVolume(welded);

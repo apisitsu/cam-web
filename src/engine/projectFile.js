@@ -9,10 +9,14 @@
  */
 
 export const PROJECT_KIND = 'cam-web.project';
-/** Bump when the shape changes incompatibly; `parseProject` refuses newer files. */
-export const PROJECT_VERSION = 1;
+/**
+ * Bump when the shape changes incompatibly; `parseProject` refuses newer files.
+ * v2 added the `cam` block — the whole STL→plan setup (part, machine, material,
+ * origin, operations). A v1 file still opens: the `cam` block is simply absent.
+ */
+export const PROJECT_VERSION = 2;
 
-/** Settings worth carrying with a project (everything else is derived). */
+/** camStore settings worth carrying (everything else is derived). */
 const SETTING_KEYS = [
   'mode', 'rapidRate', 'diameterMode',
   'toolRadius', 'toolType', 'toolOverrides',
@@ -22,11 +26,43 @@ const SETTING_KEYS = [
 ];
 
 /**
+ * Base64 for the imported part's vertex buffer.
+ *
+ * A saved project has to carry the STL itself, or reopening it restores a
+ * machine, a material and an origin with no part for any of them to mean
+ * anything against. The positions are a `Float32Array`; base64 of its raw bytes
+ * is ~3× smaller than a JSON number array and round-trips the float32 values
+ * exactly. `btoa`/`atob` are standard in both the browser and the Node test
+ * runner — no `node:*` import, which the bundle forbids. The binary string is
+ * built in chunks so a large buffer never overflows `String.fromCharCode`.
+ */
+const B64_CHUNK = 0x8000;
+export function encodeFloat32(arr) {
+  const bytes = new Uint8Array(arr.buffer, arr.byteOffset, arr.byteLength);
+  let bin = '';
+  for (let i = 0; i < bytes.length; i += B64_CHUNK) {
+    bin += String.fromCharCode.apply(null, bytes.subarray(i, i + B64_CHUNK));
+  }
+  return btoa(bin);
+}
+
+export function decodeFloat32(b64) {
+  const bin = atob(b64);
+  const bytes = new Uint8Array(bin.length);
+  for (let i = 0; i < bin.length; i += 1) bytes[i] = bin.charCodeAt(i);
+  return new Float32Array(bytes.buffer);
+}
+
+/**
  * Assemble a project document. `sketch` is the sketchStore's serialized form (or
  * null); `settings` is filtered to the keys above so unrelated UI state — the
- * playhead, worker status — never lands in a saved file.
+ * playhead, worker status — never lands in a saved file. `cam` is the CAM-plan
+ * setup (see `camPlanStore.serializeSetup`), or null for a project that has no
+ * imported part — a pure sketch or a hand-typed program.
  */
-export function buildProject({ gcode = '', fileName = null, sketch = null, settings = {} } = {}) {
+export function buildProject({
+  gcode = '', fileName = null, sketch = null, settings = {}, cam = null,
+} = {}) {
   const kept = {};
   for (const k of SETTING_KEYS) if (settings[k] !== undefined) kept[k] = settings[k];
   return {
@@ -37,6 +73,7 @@ export function buildProject({ gcode = '', fileName = null, sketch = null, setti
     gcode,
     sketch,
     settings: kept,
+    cam,
   };
 }
 
@@ -80,6 +117,10 @@ export function parseProject(text) {
     // The sketch is handed to sketchStore's deserialize, which validates it.
     sketch: doc.sketch ?? null,
     settings,
+    // The CAM setup, if this project has one. Handed to
+    // `camPlanStore.restoreSetup`, which validates and rebuilds from it; here we
+    // only confirm it is an object so a malformed field can't crash the parse.
+    cam: doc.cam && typeof doc.cam === 'object' && !Array.isArray(doc.cam) ? doc.cam : null,
     savedAt: typeof doc.savedAt === 'string' ? doc.savedAt : null,
   };
 }

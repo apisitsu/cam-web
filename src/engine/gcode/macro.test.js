@@ -126,6 +126,41 @@ describe('interpreter — 4th axis and reference return', () => {
     expect(s.a4).toBe(90);
   });
 
+  it('rotates about a picked rotaryCenter instead of the frame origin', () => {
+    // A point sitting exactly on the physical rotary axis must not move at
+    // all when the table indexes — that is the whole point of a centre.
+    const { segments } = interpret(
+      'G90 G0 A90.\nG1 X0 Y3 Z7 F100',
+      { rotaryCenter: [3, 7] },
+    );
+    const s = segments[segments.length - 1];
+    expect(near(s.b[1], 3)).toBe(true);
+    expect(near(s.b[2], 7)).toBe(true);
+  });
+
+  it('a point off the rotaryCenter still swings correctly around it', () => {
+    // Same A90 index, offset centre at Y3,Z7: a point 10mm further out along
+    // the machine Z axis lands 10mm further along the part's +Y from centre.
+    const { segments } = interpret(
+      'G90 G0 A90.\nG1 X0 Y3 Z17 F100',
+      { rotaryCenter: [3, 7] },
+    );
+    const s = segments[segments.length - 1];
+    expect(near(s.b[1], 13)).toBe(true);
+    expect(near(s.b[2], 7)).toBe(true);
+  });
+
+  it('defaults to the frame origin, unchanged from before rotaryCenter existed', () => {
+    const withDefault = interpret('G90 G0 A90.\nG1 X0 Y0 Z10 F100').segments;
+    const explicitZero = interpret(
+      'G90 G0 A90.\nG1 X0 Y0 Z10 F100',
+      { rotaryCenter: [0, 0] },
+    ).segments;
+    expect(withDefault[withDefault.length - 1].b).toEqual(
+      explicitZero[explicitZero.length - 1].b,
+    );
+  });
+
   it('collects the distinct rotary indices', () => {
     const { stats } = interpret('G90 G0 A90.\nG1 X1 F100\nG0 A270.\nG1 X2');
     expect(stats.aIndices).toEqual([0, 90, 270]);

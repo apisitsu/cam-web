@@ -121,6 +121,29 @@ describe('planJob — milling', () => {
     expect(q.warnings[0]).toMatch(/^Setup:/);
   });
 
+  it('honours a picked datum plane instead of the automatic lay-down', () => {
+    // Automatic orientation would put Y (17mm) on Z, same as the test above.
+    // Picking the long face as the datum plane must win instead — no silent
+    // re-orientation back to the heuristic's own choice.
+    const standing = box(18, 17, 67);
+    const q = plan(standing, {
+      material: 'stainless',
+      datum: { planeNormal: [0, 0, 1], point: null },
+    });
+    expect(q.orientation.changed).toBe(false);
+    expect(q.part.top - q.part.bottom).toBeCloseTo(67, 3);
+  });
+
+  it('shifts the program origin to a picked point', () => {
+    const q = plan(box(60, 40, 15), {
+      material: 'aluminium',
+      datum: { planeNormal: null, point: [30, 20, 7.5] }, // the box's own top-corner-ish centre
+    });
+    // The picked point becomes (0,0,0); the part's top face sits at Z0.
+    expect(q.part.top).toBeCloseTo(0, 3);
+    expect(q.part.bottom).toBeCloseTo(-15, 3);
+  });
+
   it('roughs with a big cutter even when a narrow slot needs a small one', () => {
     // The two are different constraints. Requiring one tool to satisfy both is
     // what made a real part come back unmachinable.

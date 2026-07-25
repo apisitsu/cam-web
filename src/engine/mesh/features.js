@@ -64,23 +64,60 @@ function triPlane(mesh, t) {
   return { n, d: n[0] * ax + n[1] * ay + n[2] * az, area: len / 2 };
 }
 
-/** Undirected edge key. Vertex ids, smaller first. */
-const edgeKey = (a, b) => (a < b ? `${a}_${b}` : `${b}_${a}`);
+/**
+ * Stride for packing an undirected edge's two vertex ids into one number.
+ *
+ * Keys are numbers rather than `"a_b"` strings because an edge map is built over
+ * *three times* the triangle count — 45 000 keys on a 15 000-triangle part — and
+ * the string building alone was a large share of feature detection. Vertex ids
+ * stay well inside the 2^53 exact-integer range at this stride.
+ */
+const EDGE_STRIDE = 33554432; // 2^25 — supports meshes up to 33.5 M vertices
 
-/** Every edge of the mesh, with the triangles that use it. */
+const packEdge = (a, b) => (a < b ? a * EDGE_STRIDE + b : b * EDGE_STRIDE + a);
+const unpackEdge = (k) => [Math.floor(k / EDGE_STRIDE), k % EDGE_STRIDE];
+
+/**
+ * Every edge of the mesh, with the triangles that use it.
+ *
+ * Insertion order is triangle order, and both detectors below depend on it: it
+ * decides the order sharp edges are chained in, and so where a traced edge
+ * starts. Keys changed from strings to packed numbers, which preserves that
+ * order exactly.
+ */
 function edgeMap(mesh) {
   const edges = new Map();
   const n = triangleCount(mesh);
   for (let t = 0; t < n; t++) {
     const [a, b, c] = triVerts(mesh, t);
     for (const [u, v] of [[a, b], [b, c], [c, a]]) {
-      const k = edgeKey(u, v);
+      const k = packEdge(u, v);
       const hit = edges.get(k);
       if (hit) hit.push(t);
       else edges.set(k, [t]);
     }
   }
   return edges;
+}
+
+/**
+ * The per-triangle planes and the edge map, computed once and shared.
+ *
+ * `detectPlanarFaces` and `detectSharpEdges` each need both, and running them
+ * back to back through `detectFeatures` used to build both twice over. Keyed
+ * weakly on the mesh, which is sound for the same reason the slice index's cache
+ * is: meshes here are never written through once built.
+ */
+const _topologyCache = new WeakMap();
+function topology(mesh) {
+  let hit = _topologyCache.get(mesh);
+  if (hit) return hit;
+  const count = triangleCount(mesh);
+  const planes = new Array(count);
+  for (let t = 0; t < count; t++) planes[t] = triPlane(mesh, t);
+  hit = { planes, edges: edgeMap(mesh), count };
+  _topologyCache.set(mesh, hit);
+  return hit;
 }
 
 /** Union-find, the standard flavour. */
@@ -116,12 +153,10 @@ function makeUnionFind(n) {
 export function detectPlanarFaces(mesh, opts = {}) {
   const { angleTol = 1, distTol = 0.01, minArea = 0.5 } = opts;
   const cosTol = Math.cos((angleTol * Math.PI) / 180);
-  const count = triangleCount(mesh);
-  const planes = new Array(count);
-  for (let t = 0; t < count; t++) planes[t] = triPlane(mesh, t);
+  const { planes, edges, count } = topology(mesh);
 
   const uf = makeUnionFind(count);
-  for (const tris of edgeMap(mesh).values()) {
+  for (const tris of edges.values()) {
     // A manifold edge has two triangles. More than two is non-manifold junk;
     // comparing every pair there would merge across a self-intersection.
     if (tris.length !== 2) continue;
@@ -145,6 +180,9 @@ export function detectPlanarFaces(mesh, opts = {}) {
   const faces = [];
   for (const tris of groups.values()) {
     const face = summariseFace(mesh, tris, planes);
+    // Checked before anything reads `face.loops`, so a sliver never pays to
+    // have its outline chained. On a finely tessellated organic model most
+    // groups are slivers, which made this the bulk of the work thrown away.
     if (face.area < minArea) continue;
     face.id = `F${faces.length}`;
     face.index = faces.length;
@@ -195,18 +233,35 @@ function summariseFace(mesh, tris, planes) {
   const normal = [nx / nlen, ny / nlen, nz / nlen];
   const centroid = area > 0 ? [cx / area, cy / area, cz / area] : [0, 0, 0];
 
-  return {
+  const face = {
     triangles: tris,
     area: Number(area.toFixed(4)),
     normal,
     centroid,
     bounds: { min, max, size: [max[0] - min[0], max[1] - min[1], max[2] - min[2]] },
     plane: normal[0] * centroid[0] + normal[1] * centroid[1] + normal[2] * centroid[2],
-    loops: faceLoops(mesh, tris),
     // Which way it faces, in words the operator uses. `up` is the only one a
     // 3-axis cutter can machine without the part being re-clamped or indexed.
     facing: facingOf(normal),
   };
+
+  // The outline is chained on first read, not on detection.
+  //
+  // Only `toolpath/feature.js` ever wants it, and only for the one face the
+  // operator selected — but detection produces thousands of faces on a curved
+  // model, and building every one of their outlines up front was the single
+  // largest cost in the pipeline. Defined as a value on first access so it is
+  // still a plain property afterwards.
+  let loops = null;
+  Object.defineProperty(face, 'loops', {
+    enumerable: true,
+    configurable: true,
+    get() {
+      if (!loops) loops = faceLoops(mesh, tris);
+      return loops;
+    },
+  });
+  return face;
 }
 
 /** Cardinal direction of a normal, or 'angled' when it is off-axis. */
@@ -238,7 +293,7 @@ export function faceLoops(mesh, tris) {
   for (const t of tris) {
     const [a, b, c] = triVerts(mesh, t);
     for (const [u, v] of [[a, b], [b, c], [c, a]]) {
-      const k = edgeKey(u, v);
+      const k = packEdge(u, v);
       const hit = used.get(k);
       if (hit) hit.count++;
       else used.set(k, { a: u, b: v, count: 1 });
@@ -301,9 +356,7 @@ export function faceLoops(mesh, tris) {
 export function detectSharpEdges(mesh, opts = {}) {
   const { angleTol = 30, minLength = 1 } = opts;
   const cosTol = Math.cos((angleTol * Math.PI) / 180);
-  const count = triangleCount(mesh);
-  const planes = new Array(count);
-  for (let t = 0; t < count; t++) planes[t] = triPlane(mesh, t);
+  const { planes, edges } = topology(mesh);
 
   const sharp = [];
   const adjacency = new Map();
@@ -312,7 +365,7 @@ export function detectSharpEdges(mesh, opts = {}) {
     adjacency.get(v).push(i);
   };
 
-  for (const [k, tris] of edgeMap(mesh)) {
+  for (const [k, tris] of edges) {
     let isSharp = false;
     if (tris.length === 1) {
       isSharp = true;                    // an open boundary is always an edge
@@ -323,7 +376,7 @@ export function detectSharpEdges(mesh, opts = {}) {
       isSharp = dot < cosTol;
     }
     if (!isSharp) continue;
-    const [a, b] = k.split('_').map(Number);
+    const [a, b] = unpackEdge(k);
     const i = sharp.length;
     sharp.push({ a, b });
     push(a, i);
@@ -402,13 +455,31 @@ function boundsOfPoints(points) {
 /**
  * Everything pointable about a mesh, in one pass.
  *
- * Expensive — it walks every edge twice — so callers cache it against the mesh
- * rather than calling it per interaction.
+ * Expensive — it walks every edge twice — so the result is cached against the
+ * mesh itself, not merely against whatever context asked for it.
+ *
+ * That distinction is the whole point. `camPlanStore.prepare()` builds a *new*
+ * plan context every time the operator changes machine, process or datum, and
+ * the context's lazy `features` getter died with the old one — so every one of
+ * those settings changes paid full re-detection on the next render, on a mesh
+ * that had not changed at all. Keying the cache on the mesh means only a
+ * genuinely new mesh (a re-import, a lay-down, a datum shift) pays again.
+ *
+ * Only the default options are cached: a caller passing custom tolerances is
+ * asking a different question and gets it computed.
  */
+const _featureCache = new WeakMap();
 export function detectFeatures(mesh, opts = {}) {
+  const cacheable = !opts.faces && !opts.edges;
+  if (cacheable) {
+    const hit = _featureCache.get(mesh);
+    if (hit) return hit;
+  }
   const { faces, triangleFace } = detectPlanarFaces(mesh, opts.faces);
   const edges = detectSharpEdges(mesh, opts.edges);
-  return { faces, triangleFace, edges };
+  const result = { faces, triangleFace, edges };
+  if (cacheable) _featureCache.set(mesh, result);
+  return result;
 }
 
 /** Which merged face a picked triangle belongs to, or null. */

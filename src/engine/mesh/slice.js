@@ -32,6 +32,156 @@ function eachTriangle(mesh, fn) {
 }
 
 /**
+ * How many bins a triangle may span before it is parked in the overflow list
+ * instead of being written into every one of them. A tall side wall spans the
+ * whole part, and registering it per bin is what turns the index's memory from
+ * O(triangles) into O(triangles × bins).
+ */
+const MAX_SPAN_BINS = 8;
+
+/**
+ * Triangles bucketed by the range they occupy along one axis, so sectioning a
+ * plane only visits the triangles that can actually straddle it.
+ *
+ * `slicePlane` is called in **batches**, not once: contour finishing sections
+ * every Z level down the wall, and hole probing sections up to forty times per
+ * hole. Scanning all 15 000 triangles for each of those made the cost of a plan
+ * O(levels × triangles) when the geometry only ever changes once — that was
+ * ~62 ms of the ~70 ms every settings change spent rebuilding the program.
+ *
+ * Triangles are emitted in **ascending triangle order**, exactly as a full scan
+ * would, because the order segments arrive in decides where `chainSegments`
+ * starts each loop, and that in turn decides where the cutter enters it. A
+ * faster slice that silently moved the entry point would be a different
+ * toolpath, not an optimisation.
+ *
+ * Pure: derived entirely from the mesh, and memoised per (mesh, axis) by
+ * `sliceIndexFor`, which is sound only because meshes here are immutable —
+ * every transform (`weld`, `rotateAboutX`, `applyDatum`) returns new arrays
+ * rather than writing through an existing one.
+ */
+export function sliceIndex(mesh, axis) {
+  const p = mesh.positions;
+  const count = mesh.indices ? mesh.indices.length / 3 : (mesh.triangleCount ?? 0);
+
+  // Corner offsets resolved once, so the hot loop never branches on soup vs
+  // indexed.
+  const corners = new Int32Array(count * 3);
+  if (mesh.indices) {
+    for (let t = 0; t < count; t++) {
+      corners[t * 3] = mesh.indices[t * 3] * 3;
+      corners[t * 3 + 1] = mesh.indices[t * 3 + 1] * 3;
+      corners[t * 3 + 2] = mesh.indices[t * 3 + 2] * 3;
+    }
+  } else {
+    for (let t = 0; t < count; t++) {
+      corners[t * 3] = t * 9;
+      corners[t * 3 + 1] = t * 9 + 3;
+      corners[t * 3 + 2] = t * 9 + 6;
+    }
+  }
+
+  const lo = new Float64Array(count);
+  const hi = new Float64Array(count);
+  let gMin = Infinity;
+  let gMax = -Infinity;
+  for (let t = 0; t < count; t++) {
+    const a = p[corners[t * 3] + axis];
+    const b = p[corners[t * 3 + 1] + axis];
+    const c = p[corners[t * 3 + 2] + axis];
+    const mn = a < b ? (a < c ? a : c) : (b < c ? b : c);
+    const mx = a > b ? (a > c ? a : c) : (b > c ? b : c);
+    lo[t] = mn; hi[t] = mx;
+    if (mn < gMin) gMin = mn;
+    if (mx > gMax) gMax = mx;
+  }
+
+  const span = gMax - gMin;
+  // Roughly √n bins keeps both the per-bin list and the bin count small; a mesh
+  // with no extent along this axis degenerates to a single bin, which is the
+  // full scan and still correct.
+  const bins = (count > 0 && span > 0)
+    ? Math.max(1, Math.min(2048, Math.round(Math.sqrt(count))))
+    : 1;
+  const invBin = bins > 0 && span > 0 ? bins / span : 0;
+  // One bin either side of the triangle's true range, so a value landing exactly
+  // on a bin boundary can never be missed to a rounding error.
+  const binOf = (v) => {
+    const b = Math.floor((v - gMin) * invBin);
+    return b < 0 ? 0 : (b >= bins ? bins - 1 : b);
+  };
+  const first = new Int32Array(count);
+  const last = new Int32Array(count);
+  const overflow = [];
+  const counts = new Int32Array(bins + 1);
+  for (let t = 0; t < count; t++) {
+    const b0 = Math.max(0, binOf(lo[t]) - 1);
+    const b1 = Math.min(bins - 1, binOf(hi[t]) + 1);
+    if (b1 - b0 + 1 > MAX_SPAN_BINS) {
+      first[t] = -1;
+      overflow.push(t);
+      continue;
+    }
+    first[t] = b0; last[t] = b1;
+    for (let b = b0; b <= b1; b++) counts[b]++;
+  }
+
+  // CSR: prefix-sum the per-bin counts, then fill in ascending triangle order so
+  // each bin's list comes out sorted for free.
+  const start = new Int32Array(bins + 1);
+  for (let b = 0; b < bins; b++) start[b + 1] = start[b] + counts[b];
+  const fill = start.slice(0, bins);
+  const tris = new Int32Array(start[bins]);
+  for (let t = 0; t < count; t++) {
+    if (first[t] < 0) continue;
+    for (let b = first[t]; b <= last[t]; b++) tris[fill[b]++] = t;
+  }
+
+  return {
+    corners, count, bins, gMin, invBin, start, tris,
+    overflow: Int32Array.from(overflow),
+  };
+}
+
+/**
+ * Visit the triangles that may straddle `coord`, in ascending triangle order.
+ *
+ * The bin list and the overflow list are each sorted, so they are merged rather
+ * than concatenated — concatenating would reorder the segments and move every
+ * loop's start point.
+ */
+function eachCandidate(index, coord, fn) {
+  const { corners, bins, gMin, invBin, start, tris, overflow } = index;
+  let b = Math.floor((coord - gMin) * invBin);
+  if (b < 0) b = 0; else if (b >= bins) b = bins - 1;
+  let i = start[b];
+  const iEnd = start[b + 1];
+  let j = 0;
+  const emit = (t) => fn(corners[t * 3], corners[t * 3 + 1], corners[t * 3 + 2]);
+  while (i < iEnd && j < overflow.length) {
+    const ti = tris[i];
+    const tj = overflow[j];
+    if (ti < tj) { emit(ti); i++; } else { emit(tj); j++; }
+  }
+  while (i < iEnd) emit(tris[i++]);
+  while (j < overflow.length) emit(overflow[j++]);
+}
+
+/**
+ * The index for this mesh and axis, built on first use and kept.
+ *
+ * Keyed weakly on the mesh object, so an index dies with the mesh it describes
+ * and a re-imported or re-oriented part never sees a stale one.
+ */
+const _sliceIndexCache = new WeakMap();
+export function sliceIndexFor(mesh, axis) {
+  let perAxis = _sliceIndexCache.get(mesh);
+  if (!perAxis) _sliceIndexCache.set(mesh, perAxis = [null, null, null]);
+  if (!perAxis[axis]) perAxis[axis] = sliceIndex(mesh, axis);
+  return perAxis[axis];
+}
+
+/**
  * Intersect a mesh with the plane `axis = coord`.
  *
  * Returns flat segments `[u0, v0, u1, v1, ...]` in the two axes the plane spans,
@@ -57,8 +207,17 @@ function eachTriangle(mesh, fn) {
 export function slicePlane(mesh, axis, coord, eps = 1e-7) {
   const [u, v] = [0, 1, 2].filter((k) => k !== axis);
   const out = [];
+  const p = mesh.positions;
 
-  eachTriangle(mesh, (a, b, c, p) => {
+  // Below this the index costs more to build than the scan it saves, and a
+  // fixture-sized mesh is sliced once rather than in a batch.
+  const INDEX_MIN_TRIANGLES = 512;
+  const count = mesh.indices ? mesh.indices.length / 3 : (mesh.triangleCount ?? 0);
+  const visit = count >= INDEX_MIN_TRIANGLES
+    ? (fn) => eachCandidate(sliceIndexFor(mesh, axis), coord, fn)
+    : (fn) => eachTriangle(mesh, fn);
+
+  visit((a, b, c) => {
     const o = [a, b, c];
     const d = o.map((i) => {
       const dist = p[i + axis] - coord;
@@ -127,14 +286,21 @@ export function chainSegments(segments, tol = 1e-4) {
   if (count === 0) return { closed: [], open: [] };
 
   const inv = 1 / tol;
+  // Grid cells are held as a Map of column -> Map of row -> endpoints, rather
+  // than one Map keyed on `"gx,gy"`. Same cells, same probe order, but the
+  // 3×3 neighbourhood scan no longer builds nine strings per endpoint — that
+  // string churn, not the geometry, was most of the cost of chaining a slice,
+  // and a contour pass chains one per Z level.
   const buckets = new Map();
-  const keyOf = (x, y) => `${Math.round(x * inv)},${Math.round(y * inv)}`;
   /** endpoints: for each segment end, the list of (segment, end) sharing a point */
   const add = (x, y, ref) => {
+    const gx = Math.round(x * inv);
+    const gy = Math.round(y * inv);
     for (let di = -1; di <= 1; di++) {
+      const col = buckets.get(gx + di);
+      if (!col) continue;
       for (let dj = -1; dj <= 1; dj++) {
-        const k = `${Math.round(x * inv) + di},${Math.round(y * inv) + dj}`;
-        const b = buckets.get(k);
+        const b = col.get(gy + dj);
         if (!b) continue;
         for (const r of b) {
           if (Math.abs(r.x - x) <= tol && Math.abs(r.y - y) <= tol) { r.refs.push(ref); return r; }
@@ -142,9 +308,10 @@ export function chainSegments(segments, tol = 1e-4) {
       }
     }
     const rec = { x, y, refs: [ref] };
-    const k = keyOf(x, y);
-    let b = buckets.get(k);
-    if (!b) buckets.set(k, b = []);
+    let col = buckets.get(gx);
+    if (!col) buckets.set(gx, col = new Map());
+    let b = col.get(gy);
+    if (!b) col.set(gy, b = []);
     b.push(rec);
     return rec;
   };

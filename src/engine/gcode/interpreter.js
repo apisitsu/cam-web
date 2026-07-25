@@ -85,19 +85,28 @@ function zAtRadius(profile, level) {
  * the stationary machine frame, so undoing the table rotation is what puts every
  * face of a 4-/5-axis program back where it belongs on the workpiece.
  *
+ * `aCenter` is the Y/Z the *physical* A-axis passes through, in the same
+ * already-oriented-and-shifted frame the imported part sits in — see
+ * `engine/mesh/datum.js`/`ctx.rotaryCenter`. Defaulting to `[0,0]` reproduces
+ * exactly what this always assumed before that existed: the rotary axis runs
+ * through the part frame's own origin. There is no equivalent for B — nothing
+ * in this app sets a B-axis origin, so it still always turns about the origin.
+ *
  * The undo is applied A-then-B (net Ry(-B)·Rx(-A)); the tool marker in the
  * viewport composes its orientation the same way so it stands normal to the
  * face being cut.
  */
-function toPartFrame(p, aDeg, bDeg) {
+function toPartFrame(p, aDeg, bDeg, aCenter) {
   let [x, y, z] = p;
   if (aDeg) {
+    const [cy, cz] = aCenter ?? [0, 0];
     const t = -aDeg * (Math.PI / 180);
     const c = Math.cos(t);
     const s = Math.sin(t);
-    const ny = y * c - z * s;
-    const nz = y * s + z * c;
-    y = ny; z = nz;
+    const oy = y - cy;
+    const oz = z - cz;
+    y = oy * c - oz * s + cy;
+    z = oy * s + oz * c + cz;
   }
   if (bDeg) {
     const t = -bDeg * (Math.PI / 180);
@@ -113,15 +122,19 @@ function toPartFrame(p, aDeg, bDeg) {
 /**
  * @param {string} text raw G-code program
  * @param {{mode?:'mill'|'turn', rapidRate?:number, diameterMode?:boolean,
- *          rotaryFrame?:'part'|'machine'}} opts
+ *          rotaryFrame?:'part'|'machine', rotaryCenter?:[number,number]}} opts
  *   rapidRate — machine traverse speed in mm/min, used to time G0 moves.
  *   diameterMode — turn mode only: treat the X word as a diameter.
  *   rotaryFrame — 'part' orients each A index onto the workpiece (what you want
  *     to look at); 'machine' leaves coordinates as programmed, with the tool
  *     always along +Z (what the height-field simulator needs).
+ *   rotaryCenter — Y/Z the A-axis physically passes through; see `toPartFrame`.
  */
 export function interpret(text, opts = {}) {
-  const { mode = 'mill', rapidRate = 5000, diameterMode = true, rotaryFrame = 'part' } = opts;
+  const {
+    mode = 'mill', rapidRate = 5000, diameterMode = true, rotaryFrame = 'part',
+    rotaryCenter,
+  } = opts;
   const turning = mode === 'turn';
   const partFrame = rotaryFrame !== 'machine';
 
@@ -242,8 +255,8 @@ export function interpret(text, opts = {}) {
     // Time and distance are the same in either frame — rotation is rigid — so
     // measure before the transform and reuse it.
     const d = dist(a, b);
-    const a2 = partFrame ? toPartFrame(a, state.aAxis, state.bAxis) : a.slice();
-    const b2 = partFrame ? toPartFrame(b, state.aAxis, state.bAxis) : b.slice();
+    const a2 = partFrame ? toPartFrame(a, state.aAxis, state.bAxis, rotaryCenter) : a.slice();
+    const b2 = partFrame ? toPartFrame(b, state.aAxis, state.bAxis, rotaryCenter) : b.slice();
     const isFeed = type !== 'rapid';
     grow(a2, isFeed);
     grow(b2, isFeed);

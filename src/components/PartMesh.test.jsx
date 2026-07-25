@@ -1,9 +1,9 @@
 // @vitest-environment jsdom
 import { describe, it, expect, beforeEach } from 'vitest';
 import ReactThreeTestRenderer from '@react-three/test-renderer';
-import PartMesh, { FeatureHighlight } from './PartMesh.jsx';
+import PartMesh, { FeatureHighlight, OriginMarker, RotaryAxisLine } from './PartMesh.jsx';
 import { useCamPlanStore, getMesh } from '../stores/camPlanStore.js';
-import { box, cylinder } from '../engine/mesh/fixtures.js';
+import { box, cylinder, turnedShaft } from '../engine/mesh/fixtures.js';
 
 /** A binary-STL File-alike, the way the store receives one from a drop. */
 function stlFile(soup, name = 'part.stl') {
@@ -137,5 +137,150 @@ describe('picking a face off the model', () => {
     });
     expect(store().selectedFeature).toBeTruthy();
     expect(store().selectedFeature.triangles).toContain(0);
+  });
+});
+
+describe('picking the datum off the model', () => {
+  const fakePoint = (arr) => ({ toArray: () => arr });
+
+  it('a click while picking one axis sets only that axis, and does not select a feature', async () => {
+    await store().loadStl(stlFile(box(60, 40, 20)));
+    await store().makePlan();
+    store().startPickAxis(2); // arm Z
+
+    const r = await ReactThreeTestRenderer.create(<PartMesh meshVer={store().meshVer} />);
+    const part = r.scene.findAllByType('Mesh')[0];
+    await ReactThreeTestRenderer.act(async () => {
+      part.props.onClick({
+        faceIndex: 0,
+        point: fakePoint([7, 3, 10]), // only the Z (10) should be taken
+        face: { normal: fakePoint([0, 0, 1]) },
+        stopPropagation() {},
+      });
+    });
+
+    expect(store().datumPickMode).toBeNull();
+    expect(store().selectedFeature).toBeNull();
+    // X and Y untouched (0), only Z zeroed at the clicked point.
+    expect(store().displayedDatumPoint()).toEqual([0, 0, 10]);
+    expect(store().datum.axesSet).toEqual([false, false, true]);
+  });
+
+  it('checks datum-pick mode before the turn-mode "no faces" bail-out', async () => {
+    // `features()` returns no faces at all for a lathe part — a datum pick
+    // must not be swallowed by the same early return that guards feature
+    // selection, or a turned part could never get an origin set on it.
+    await store().loadStl(stlFile(turnedShaft(), 'shaft.stl'));
+    await store().makePlan();
+    store().startPickAxis(2); // arm Z (the spindle axis)
+
+    const r = await ReactThreeTestRenderer.create(<PartMesh meshVer={store().meshVer} />);
+    const part = r.scene.findAllByType('Mesh')[0];
+    await ReactThreeTestRenderer.act(async () => {
+      part.props.onClick({
+        faceIndex: 0,
+        point: fakePoint([0, 0, 5]),
+        face: { normal: fakePoint([1, 0, 0]) },
+        stopPropagation() {},
+      });
+    });
+
+    expect(store().displayedDatumPoint()).toEqual([0, 0, 5]);
+  });
+
+  it('a click while picking the rotary centre sets it, without touching the plane/point', async () => {
+    await store().loadStl(stlFile(box(60, 40, 20)));
+    await store().makePlan();
+    store().startPickRotaryCenter();
+
+    const r = await ReactThreeTestRenderer.create(<PartMesh meshVer={store().meshVer} />);
+    const part = r.scene.findAllByType('Mesh')[0];
+    await ReactThreeTestRenderer.act(async () => {
+      part.props.onClick({
+        faceIndex: 0,
+        point: fakePoint([0, 5, 10]),
+        face: { normal: fakePoint([0, 0, 1]) },
+        stopPropagation() {},
+      });
+    });
+
+    expect(store().datumPickMode).toBeNull();
+    expect(store().selectedFeature).toBeNull();
+    expect(store().displayedRotaryCenter()).toEqual([5, 10]);
+    expect(store().displayedDatumPoint()).toBeNull();
+  });
+
+  it('a click while picking A0 rotates that face onto +Z, without touching the origin', async () => {
+    await store().loadStl(stlFile(box(120, 30, 20)));
+    await store().makePlan();
+    store().startPickRotaryZero();
+
+    const r = await ReactThreeTestRenderer.create(<PartMesh meshVer={store().meshVer} />);
+    const part = r.scene.findAllByType('Mesh')[0];
+    await ReactThreeTestRenderer.act(async () => {
+      part.props.onClick({
+        faceIndex: 0,
+        point: fakePoint([0, 15, 0]),
+        face: { normal: fakePoint([0, 1, 0]) }, // the +Y side, not the current top
+        stopPropagation() {},
+      });
+    });
+
+    expect(store().datumPickMode).toBeNull();
+    expect(store().selectedFeature).toBeNull();
+    expect(store().rotaryZeroAngle()).toBeCloseTo(270, 3);
+    expect(store().displayedDatumPoint()).toBeNull();
+  });
+});
+
+describe('OriginMarker', () => {
+  it('draws nothing until a datum is set', async () => {
+    await store().loadStl(stlFile(box(60, 40, 20)));
+    const r = await ReactThreeTestRenderer.create(<OriginMarker meshVer={store().meshVer} />);
+    expect(r.scene.findAllByType('Line')).toHaveLength(0);
+  });
+
+  it('draws a three-axis triad at the origin once a point is picked', async () => {
+    await store().loadStl(stlFile(box(60, 40, 20)));
+    await store().makePlan();
+    store().pickAxisOrigin(2, [0, 0, 10]);
+
+    const r = await ReactThreeTestRenderer.create(<OriginMarker meshVer={store().meshVer} />);
+    const lines = r.scene.findAllByType('Line');
+    expect(lines).toHaveLength(3);
+    // Every leg starts at the origin, since the picked point is baked into
+    // the mesh's own coordinates rather than tracked separately.
+    for (const line of lines) {
+      const pos = line.instance.geometry.getAttribute('position');
+      expect(pos.getX(0)).toBe(0);
+      expect(pos.getY(0)).toBe(0);
+      expect(pos.getZ(0)).toBe(0);
+    }
+  });
+});
+
+describe('RotaryAxisLine', () => {
+  it('draws nothing until a rotary centre is set', async () => {
+    await store().loadStl(stlFile(box(120, 30, 20)));
+    const r = await ReactThreeTestRenderer.create(<RotaryAxisLine meshVer={store().meshVer} />);
+    expect(r.scene.findAllByType('Line')).toHaveLength(0);
+  });
+
+  it('draws a line through the picked centre, running along X', async () => {
+    await store().loadStl(stlFile(box(120, 30, 20)));
+    await store().makePlan();
+    store().pickRotaryCenter([0, 15, 0]);
+
+    const r = await ReactThreeTestRenderer.create(<RotaryAxisLine meshVer={store().meshVer} />);
+    const lines = r.scene.findAllByType('Line');
+    expect(lines).toHaveLength(1);
+    const pos = lines[0].instance.geometry.getAttribute('position');
+    // Both endpoints sit at the picked Y/Z; only X differs, and it spans past
+    // the 120mm part.
+    expect(pos.getY(0)).toBeCloseTo(15, 3);
+    expect(pos.getZ(0)).toBeCloseTo(0, 3);
+    expect(pos.getY(1)).toBeCloseTo(15, 3);
+    expect(pos.getZ(1)).toBeCloseTo(0, 3);
+    expect(pos.getX(1) - pos.getX(0)).toBeGreaterThan(120);
   });
 });

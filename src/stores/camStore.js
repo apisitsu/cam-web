@@ -83,6 +83,11 @@ export const useCamStore = create((set, get) => ({
   totalFeeds: 0,
   cutFollowsPlayback: true, // watch the stock carve as playback runs, by default
   showStock: true,
+  // The arbor is the widest thing on the tool marker, so it is what hides the cut
+  // being made — worth being able to drop without losing the cutter itself.
+  // Deliberately not a saved setting (see projectFile's SETTING_KEYS): it is how
+  // you are looking at the job right now, not part of the job.
+  showArbor: true,
   _carving: false,
   // The feed-move target `carveToPlayhead` last actually carved to. Scrubbing
   // ticks every 40ms regardless of whether the playhead crossed a new feed
@@ -97,6 +102,7 @@ export const useCamStore = create((set, get) => ({
   setGcode: (gcode) => set({ gcode }),
   setTool: (patch) => set(patch),
   toggleStock: () => set((s) => ({ showStock: !s.showStock })),
+  toggleArbor: () => set((s) => ({ showArbor: !s.showArbor })),
   setCutFollows: (v) => {
     set({ cutFollowsPlayback: v });
     if (v) get().carveToPlayhead();

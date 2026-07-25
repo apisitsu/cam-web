@@ -24,12 +24,15 @@ import { saveProject, saveGcode, openProjectFile } from './lib/projectIO.js';
 import { fitBoundsFor, fitBoundsForPart, chuckFromBounds } from './engine/view/setup.js';
 import { unionBounds } from './engine/view/camera.js';
 import { SPEEDS, PLAY_BASE_SECONDS, perTick } from './engine/view/playback.js';
+import { sidebarSections } from './engine/view/sidebar.js';
+import { offerArborToggle } from './engine/view/millTool.js';
 import { sketchBounds } from './engine/sketch/edit.js';
 import { lineAt, timeAt, rotaryAt, toolAt, segmentAtTime, toolPointAt } from './engine/gcode/path.js';
 import { STANDARD_TURN_TOOLS } from './engine/sim/turning.js';
 import { SAMPLE_GCODE, SAMPLE_TURNING } from './SAMPLE_GCODE.js';
 import Viewport from './components/Viewport.jsx';
 import GcodePanel from './components/GcodePanel.jsx';
+import PositionReadout from './components/PositionReadout.jsx';
 import SketchToolbar from './components/SketchToolbar.jsx';
 import { invalidate } from '@react-three/fiber';
 import { getBuf } from './engine/bufferCache.js';
@@ -229,6 +232,7 @@ export default function App() {
   const stockBase = useCamStore((s) => s.stockBase);
   const stockMargin = useCamStore((s) => s.stockMargin);
   const showStock = useCamStore((s) => s.showStock);
+  const showArbor = useCamStore((s) => s.showArbor);
   const cutFollowsPlayback = useCamStore((s) => s.cutFollowsPlayback);
   const simReady  = useCamStore((s) => s.simReady);
   const aIndex    = useCamStore((s) => s.aIndex);
@@ -245,6 +249,7 @@ export default function App() {
   const clearToolOverride = useCamStore((s) => s.clearToolOverride);
   const setTool     = useCamStore((s) => s.setTool);
   const toggleStock = useCamStore((s) => s.toggleStock);
+  const toggleArbor = useCamStore((s) => s.toggleArbor);
   const setCutFollows = useCamStore((s) => s.setCutFollows);
   const setMode     = useCamStore((s) => s.setMode);
   const setPage     = useCamStore((s) => s.setPage);
@@ -261,6 +266,12 @@ export default function App() {
   const [dragActive, setDragActive] = useState(false);
   const sketching = page === 'sketch';
   const turning = page === 'turn';
+
+  // Running a program collapses the sidebar to the program listing — the setup
+  // controls are dead weight mid-run and push the live panel out of sight. The
+  // decision lives in engine/view/sidebar.js so it is tested, not buried in JSX.
+  const show = sidebarSections({ playing });
+  const arborToggle = offerArborToggle({ mode, sketching });
 
   // Open on a blank page — no sample program is loaded. The user brings their
   // own via drag-and-drop, Open file, or the (optional) Load sample button.
@@ -493,6 +504,7 @@ export default function App() {
           {!sketching && (
           <Sider width={430} style={{ background: '#111827', padding: 16, overflow: 'auto' }}>
             <Space direction="vertical" size="middle" style={{ width: '100%' }}>
+              {show.files && (
               <Space wrap>
                 <Button
                   type="primary"
@@ -516,10 +528,12 @@ export default function App() {
                   Sample
                 </Button>
               </Space>
+              )}
 
               {/* Saving. A project keeps the program, the machine setup and the
                   sketch in one file — the sketch had no way to survive a reload
                   before. Saving G-code alone is for handing the program on. */}
+              {show.project && <>
               <Space wrap>
                 <Tooltip title="Save the program, machine setup and sketch as one .camweb.json project">
                   <Button icon={<SaveOutlined />} onClick={onSaveProject}>Save project</Button>
@@ -543,19 +557,30 @@ export default function App() {
               </Text>
 
               {saveMsg && <Alert type="success" showIcon message={saveMsg} />}
+              </>}
 
               {/* CAM from a model. Sits above the program panel because it is
                   what *produces* a program — the G-code below is its output. */}
-              <CamPanel />
+              {show.cam && <CamPanel />}
 
               <Divider style={{ margin: '4px 0' }} />
-              <Title level={5} style={{ color: '#e2e8f0', margin: 0 }}>Program</Title>
+              <Space align="center" size="small" style={{ justifyContent: 'space-between', width: '100%' }}>
+                <Title level={5} style={{ color: '#e2e8f0', margin: 0 }}>Program</Title>
+                {/* Say why the rest of the panel went away — a sidebar that loses
+                    most of its contents on its own reads as a bug. */}
+                {playing && (
+                  <Tag color="processing" style={{ marginInlineEnd: 0 }}>
+                    running — pause to edit the setup
+                  </Tag>
+                )}
+              </Space>
 
               <GcodePanel gcode={gcode} activeLine={activeLine} onChange={setGcode} />
 
               {error && <Alert type="error" showIcon message="Parse failed" description={error} />}
 
               {/* ---- Machine ---- */}
+              {show.machine && (
               <Space align="center" wrap size="small">
                 <Tooltip title="Traverse speed used to time G0 moves">
                   <span style={{ color: '#94a3b8' }}>Rapid</span>
@@ -581,8 +606,9 @@ export default function App() {
                   </Tooltip>
                 )}
               </Space>
+              )}
 
-              {stats && (
+              {show.stats && stats && (
                 <Space size="large" wrap>
                   <Tooltip title={
                     `feed ${formatDuration(stats.feedTime)} · rapid ${formatDuration(stats.rapidTime)}`
@@ -600,7 +626,7 @@ export default function App() {
                 </Space>
               )}
 
-              {warnings.length > 0 && (
+              {show.warnings && warnings.length > 0 && (
                 <Alert
                   type="warning"
                   showIcon
@@ -613,7 +639,7 @@ export default function App() {
                 />
               )}
 
-              {detectedTools.length > 0 && (
+              {show.tools && detectedTools.length > 0 && (
                 <>
                   <Divider style={{ margin: '4px 0', borderColor: '#334155' }}>
                     <Text style={{ color: '#64748b' }}>
@@ -728,6 +754,7 @@ export default function App() {
                   next to the view selector — not here in the sidebar. */}
 
               {/* ---- Phase 1: material removal ---- */}
+              {show.removal && <>
               <Divider style={{ margin: '4px 0', borderColor: '#334155' }}>
                 <Text style={{ color: '#64748b' }}>Material removal</Text>
               </Divider>
@@ -946,6 +973,7 @@ export default function App() {
                   )}
                 </>
               )}
+              </>}
             </Space>
           </Sider>
           )}
@@ -964,6 +992,22 @@ export default function App() {
                 Drop a G-code program or an .stl / .obj / .ply model
               </div>
             )}
+
+            {/* The control's position page, top-right — reads out where the tool
+                is in work coordinates as the simulation runs. `mode` (not `page`)
+                because that is what the interpreter used, so a lathe X stored as
+                a radius is posted back as the diameter it was programmed as. */}
+            <PositionReadout
+              point={toolPos}
+              mode={mode}
+              diameterMode={diameterMode}
+              rotary={toolRotary}
+              aIndices={rotaryIndices}
+              toolNumber={currentToolNum}
+              line={activeLine}
+              sketching={sketching}
+              count={count}
+            />
 
             {/* Bottom toolbar: view/plan selector and playback controls in one row. */}
             <div style={{
@@ -984,6 +1028,17 @@ export default function App() {
                   <Space size={4}>
                     <Switch size="small" checked={showPart} onChange={setShowPart} />
                     <Text style={{ color: '#94a3b8', fontSize: 12 }}>Part</Text>
+                  </Space>
+                </Tooltip>
+              )}
+              {/* The arbor is the widest part of the marker, so it is what hides
+                  the cut. Milling only — the lathe holder is drawn a different
+                  way and has nothing to drop. */}
+              {arborToggle && (
+                <Tooltip title="Show the collet / arbor above the cutter — turn it off to see the cut it covers">
+                  <Space size={4}>
+                    <Switch size="small" checked={showArbor} onChange={toggleArbor} />
+                    <Text style={{ color: '#94a3b8', fontSize: 12 }}>Arbor</Text>
                   </Space>
                 </Tooltip>
               )}
@@ -1039,6 +1094,7 @@ export default function App() {
               playhead={playhead}
               mode={sketching ? 'mill' : mode}
               sketching={sketching}
+              showArbor={showArbor}
               view={view}
               viewNonce={viewNonce}
             />

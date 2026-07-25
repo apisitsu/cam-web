@@ -18,6 +18,7 @@ import { getBuf, setView } from '../engine/bufferCache.js';
 import { sliceUpTo } from '../engine/gcode/path.js';
 import { useSketchStore } from '../stores/sketchStore.js';
 import { framing, unionBounds } from '../engine/view/camera.js';
+import { endMillGeometry } from '../engine/view/millTool.js';
 
 /**
  * Eye directions for each preset, in machine coordinates (X right, Y away,
@@ -93,43 +94,41 @@ function CameraRig({ bounds, sketchFit, view, viewNonce, controlsRef, mode }) {
  * the collet face, so the stick-out is shown to scale; otherwise a sensible
  * default is used.
  */
-function EndMill({ radius = 3, type = 'flat', length = 0 }) {
-  const noseOffset = type === 'ball' ? radius : 0; // ball nose occupies 0..radius
-  const flute = Math.max(8, radius * 4);
-  const arborR = Math.max(radius * 1.8, radius + 4);
-  const colletLen = 26;
-  // Distance from tip to the collet face. Below the flute length there is no
-  // room for a shank, so clamp.
-  const gauge = Math.max(length > 0 ? length : flute + radius * 3, flute + 1);
-  const fluteLen = Math.min(flute, gauge - noseOffset);
-  const shankR = Math.max(radius * 0.9, radius - 0.5);
-  const shankBot = noseOffset + fluteLen;
-  const shankLen = Math.max(0.01, gauge - shankBot);
+function EndMill({ radius = 3, type = 'flat', length = 0, arbor = true }) {
+  // All the stacking arithmetic lives in engine/view/millTool.js, where it is
+  // tested — a wrong offset here draws a tool floating off its own tip.
+  const { nose, flutes, shank, arbor: holder } = endMillGeometry({
+    radius, type, length, arbor,
+  });
 
   return (
     <>
+      {/* Named so the scene-graph tests can tell the parts apart — a tapered
+          cylinder is not a reliable way to find the arbor. */}
       {/* Ball nose (full sphere; upper half is hidden inside the cutter). */}
-      {type === 'ball' && (
-        <mesh position={[0, 0, radius]}>
-          <sphereGeometry args={[radius, 24, 16]} />
+      {nose && (
+        <mesh name="tool-nose" position={[0, 0, nose.z]}>
+          <sphereGeometry args={[nose.radius, 24, 16]} />
           <meshStandardMaterial color="#e2e8f0" metalness={0.6} roughness={0.3} />
         </mesh>
       )}
       {/* Cutter / flutes. */}
-      <mesh position={[0, 0, noseOffset + fluteLen / 2]} rotation={[Math.PI / 2, 0, 0]}>
-        <cylinderGeometry args={[radius, radius, fluteLen, 32]} />
+      <mesh name="tool-flutes" position={[0, 0, flutes.z]} rotation={[Math.PI / 2, 0, 0]}>
+        <cylinderGeometry args={[flutes.radius, flutes.radius, flutes.length, 32]} />
         <meshStandardMaterial color="#cbd5e1" metalness={0.7} roughness={0.3} />
       </mesh>
       {/* Shank up to the collet face. */}
-      <mesh position={[0, 0, shankBot + shankLen / 2]} rotation={[Math.PI / 2, 0, 0]}>
-        <cylinderGeometry args={[shankR, shankR, shankLen, 24]} />
+      <mesh name="tool-shank" position={[0, 0, shank.z]} rotation={[Math.PI / 2, 0, 0]}>
+        <cylinderGeometry args={[shank.radius, shank.radius, shank.length, 24]} />
         <meshStandardMaterial color="#94a3b8" metalness={0.6} roughness={0.35} />
       </mesh>
-      {/* Collet / holder above the gauge line. */}
-      <mesh position={[0, 0, gauge + colletLen / 2]} rotation={[Math.PI / 2, 0, 0]}>
-        <cylinderGeometry args={[arborR, arborR * 0.7, colletLen, 32]} />
-        <meshStandardMaterial color="#eab308" metalness={0.75} roughness={0.25} />
-      </mesh>
+      {/* Collet / arbor above the gauge line — hidden when it is in the way. */}
+      {holder && (
+        <mesh name="tool-arbor" position={[0, 0, holder.z]} rotation={[Math.PI / 2, 0, 0]}>
+          <cylinderGeometry args={[holder.rBottom, holder.rTop, holder.length, 32]} />
+          <meshStandardMaterial color="#eab308" metalness={0.75} roughness={0.25} />
+        </mesh>
+      )}
     </>
   );
 }
@@ -349,7 +348,7 @@ const DEG = Math.PI / 180;
  * toPartFrame(). The tip stays pinned at `pos` because every rotation is about
  * the group origin.
  */
-function Tool({ pos, rotary, radius, type, length, insert, mode }) {
+function Tool({ pos, rotary, radius, type, length, insert, mode, showArbor = true }) {
   if (!pos) return null;
   const thetaA = -(rotary?.a || 0) * DEG;
   const thetaB = -(rotary?.b || 0) * DEG;
@@ -358,7 +357,7 @@ function Tool({ pos, rotary, radius, type, length, insert, mode }) {
       <group rotation={[thetaA, 0, 0]}>
         {mode === 'turn'
           ? <LatheTool radius={Math.min(radius, 1.6)} shape={insert} />
-          : <EndMill radius={radius} type={type} length={length} />}
+          : <EndMill radius={radius} type={type} length={length} arbor={showArbor} />}
       </group>
     </group>
   );
@@ -416,7 +415,7 @@ function SpindleAxis({ bounds }) {
 export function SceneContents({
   bounds, turnChuck, showStock, toolPos, toolRotary, toolRadius, toolType,
   toolLength, turnInsert, bufVer, drawVer, partVer, showPart = true,
-  mode = 'mill', sketching = false,
+  mode = 'mill', sketching = false, showArbor = true,
 }) {
   return (
     <>
@@ -453,6 +452,7 @@ export function SceneContents({
             length={toolLength}
             insert={turnInsert}
             mode={mode}
+            showArbor={showArbor}
           />
         </>
       )}
@@ -463,7 +463,7 @@ export function SceneContents({
 export default function Viewport({
   bounds, fitBounds, sketchFit, turnChuck, showStock, toolPos, toolRotary, toolRadius, toolType,
   toolLength, turnInsert, bufVer, playhead, partVer, showPart = true,
-  mode = 'mill', sketching = false, view = 'iso', viewNonce = 0,
+  mode = 'mill', sketching = false, view = 'iso', viewNonce = 0, showArbor = true,
 }) {
   const controlsRef = useRef();
   // Disable orbit while dragging a sketch point so the drag moves the point,
@@ -491,7 +491,9 @@ export default function Viewport({
   // Re-render the demand-mode canvas whenever inputs change.
   useEffect(() => {
     invalidate();
-  }, [drawVer, showStock, toolPos, toolRotary, toolRadius, toolType, toolLength, turnInsert, mode, partVer, showPart]);
+  // `showArbor` belongs here: the canvas is frameloop="demand", so dropping the
+  // holder would not appear on screen until some other input happened to change.
+  }, [drawVer, showStock, toolPos, toolRotary, toolRadius, toolType, toolLength, turnInsert, mode, partVer, showPart, showArbor]);
 
   return (
     <Canvas
@@ -516,6 +518,7 @@ export default function Viewport({
         showPart={showPart}
         mode={mode}
         sketching={sketching}
+        showArbor={showArbor}
       />
 
       <CameraRig

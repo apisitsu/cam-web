@@ -79,23 +79,54 @@ export function absoluteValue(label, point, { mode = 'mill', diameterMode = true
 }
 
 /**
+ * DISTANCE TO GO for one axis: what is left of the move in progress, signed the
+ * way the axis is travelling — the control's own convention, so a negative number
+ * means the axis is still heading negative.
+ *
+ * Both ends go through `absoluteValue`, so the lathe's radius→diameter doubling
+ * applies to the remaining distance too. That is right, not a leftover: on a
+ * diameter-programmed lathe an X move from ⌀60 to ⌀40 has 20 to go on the
+ * ABSOLUTE page, and posting the 10 mm the slide actually travels beside a
+ * diameter position would be a second factor-of-two to catch.
+ *
+ * `target` is `blockTargetAt` — where the block in progress ends. Null (parked,
+ * or no program) reads 0, the same as a control with nothing commanded.
+ */
+export function distToGo(label, point, target, opts = {}) {
+  if (!target) return 0;
+  return absoluteValue(label, target, opts) - absoluteValue(label, point, opts);
+}
+
+/**
  * The whole readout as rows the view maps straight onto JSX.
  *
  * @param {number[]|null} point tool tip in program coordinates, or null
  * @param {{mode?:'mill'|'turn', diameterMode?:boolean,
- *   rotary?:{a:number,b:number}|null, aIndices?:number[]}} opts
- * @returns {{label:string, value:number, text:string, unit:string}[]}
+ *   rotary?:{a:number,b:number}|null, aIndices?:number[],
+ *   target?:number[]|null}} opts
+ * @returns {{label:string, value:number, text:string, unit:string,
+ *   dtg:number, dtgText:string}[]}
  */
 export function droRows(point, opts = {}) {
-  const { mode = 'mill', diameterMode = true, rotary = null, aIndices = null } = opts;
+  const {
+    mode = 'mill', diameterMode = true, rotary = null, aIndices = null,
+    target = null,
+  } = opts;
   const labels = droAxisLabels({ mode, rotary: usesRotary(aIndices) });
   return labels.map((label) => {
-    const value = absoluteValue(label, point, { mode, diameterMode, rotary });
+    const at = { mode, diameterMode, rotary };
+    const value = absoluteValue(label, point, at);
+    // A/B fall out as 0: the rotary index is carried in `opts`, not in the two
+    // XYZ points, so both ends of the subtraction read the same index. An indexer
+    // is where it was told to be — there is no distance to go on it.
+    const dtg = distToGo(label, point, target, at);
     return {
       label,
       value,
       text: formatCoord(value),
       unit: label === 'A' || label === 'B' ? 'deg' : 'mm',
+      dtg,
+      dtgText: formatCoord(dtg),
     };
   });
 }

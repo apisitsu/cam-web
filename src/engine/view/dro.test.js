@@ -1,6 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import {
-  usesRotary, droAxisLabels, formatCoord, absoluteValue, droRows, showDro, droXNote,
+  usesRotary, droAxisLabels, formatCoord, absoluteValue, distToGo, droRows,
+  showDro, droXNote,
 } from './dro.js';
 
 describe('usesRotary', () => {
@@ -95,6 +96,36 @@ describe('absoluteValue', () => {
   });
 });
 
+describe('distToGo', () => {
+  it('is what is left of the move, signed the way the axis travels', () => {
+    // Half way from X0 to X50: 25 to go, positive because X is going positive.
+    expect(distToGo('X', [25, 0, 0], [50, 0, 0], { mode: 'mill' })).toBe(25);
+    // Plunging Z0 → Z-2 with 0.5 cut: still 1.5 to go, negative direction.
+    expect(distToGo('Z', [0, 0, -0.5], [0, 0, -2], { mode: 'mill' })).toBe(-1.5);
+  });
+
+  it('reads zero on an axis the block does not move', () => {
+    expect(distToGo('Y', [10, 7, 0], [50, 7, 0], { mode: 'mill' })).toBe(0);
+  });
+
+  it('reaches zero exactly at the end point', () => {
+    expect(distToGo('X', [50, 0, 0], [50, 0, 0], { mode: 'mill' })).toBe(0);
+  });
+
+  it('reads zero with nothing commanded — parked, or no program', () => {
+    expect(distToGo('X', null, null, { mode: 'mill' })).toBe(0);
+    expect(distToGo('X', [10, 0, 0], null, { mode: 'mill' })).toBe(0);
+  });
+
+  it('counts down in diameter on a diameter lathe, like the position beside it', () => {
+    // Stored radii: 30 → 20. The slide travels 10 mm; the page says 20 to go,
+    // matching an ABSOLUTE column that counts ⌀60 → ⌀40.
+    const opts = { mode: 'turn', diameterMode: true };
+    expect(distToGo('X', [30, 0, 0], [20, 0, 0], opts)).toBe(-20);
+    expect(distToGo('X', [30, 0, 0], [20, 0, 0], { ...opts, diameterMode: false })).toBe(-10);
+  });
+});
+
 describe('droRows', () => {
   it('gives a mill three rows in mm', () => {
     const rows = droRows([1, 2, 3], { mode: 'mill' });
@@ -125,6 +156,31 @@ describe('droRows', () => {
   it('carries the numeric value alongside the text, for the view to style on', () => {
     const rows = droRows([-1.5, 0, 0], { mode: 'mill' });
     expect(rows[0].value).toBe(-1.5);
+  });
+
+  it('carries a distance to go per row, counting down to the block end', () => {
+    const rows = droRows([25, 0, -2], { mode: 'mill', target: [50, 0, -2] });
+    expect(rows.map((r) => r.dtgText)).toEqual(['25.000', '0.000', '0.000']);
+    expect(rows[0].dtg).toBe(25);
+  });
+
+  it('posts a zero distance to go when no block is running', () => {
+    const rows = droRows(null, { mode: 'mill' });
+    expect(rows.map((r) => r.dtgText)).toEqual(['0.000', '0.000', '0.000']);
+  });
+
+  it('has nothing to go on the rotary row — an indexer is where it was sent', () => {
+    const rows = droRows([1, 2, 3], {
+      aIndices: [0, 90], rotary: { a: 90, b: 0 }, target: [9, 9, 9],
+    });
+    expect(rows.find((r) => r.label === 'A').dtgText).toBe('0.000');
+  });
+
+  it('never posts a signed-zero distance to go', () => {
+    // Floating point lands a hair past the end point all the time; -0.000 on a
+    // position page reads as a fault.
+    const rows = droRows([50.0000001, 0, 0], { mode: 'mill', target: [50, 0, 0] });
+    expect(rows[0].dtgText).toBe('0.000');
   });
 });
 

@@ -17,6 +17,11 @@
  *     rotary index, so `feedsBeforeAt` (called once per playback tick) is a
  *     lookup instead of a rescan — see that function.
  *   lines: lines[i] = 1-based source line number that produced segment i
+ *   blockEnd: blockEnd[i] = index of the last segment of the *block* segment i
+ *     belongs to — a block being one source line, which an arc or a helix
+ *     tessellates into thousands of segments. Precomputed for the same reason
+ *     `feedPrefixAt` is: single-block stepping and the distance-to-go readout
+ *     both ask for it once per tick, and a scan would be O(block length).
  *   timePrefix: timePrefix[i] = seconds elapsed once segment i has run
  *   rotary: rotary[i] = A-axis index (degrees) segment i was machined at
  *   rotaryB: rotaryB[i] = B-axis index (degrees) segment i was machined at
@@ -51,9 +56,70 @@ export function buildPath(segments) {
   return {
     positions, types, feedPrefix, lines, timePrefix, rotary, rotaryB, tools,
     feedPrefixAt: feedPrefixByIndex(types, rotary, n),
+    blockEnd: blockEnds(lines, n),
     totalTime: elapsed,
     count: n,
   };
+}
+
+/**
+ * Last segment index of each segment's block, walked backwards so every segment
+ * of a block inherits the same end in one pass.
+ *
+ * A block is a maximal run of segments carrying the same source line. That is
+ * what a control means by a block: `G2 X50 Y20 R25` is one block however many
+ * chords `interpret()` broke the arc into.
+ */
+function blockEnds(lines, n) {
+  const end = new Uint32Array(n);
+  for (let i = n - 1; i >= 0; i--) {
+    end[i] = i + 1 < n && lines[i + 1] === lines[i] ? end[i + 1] : i;
+  }
+  return end;
+}
+
+/**
+ * Last segment index of the block containing segment `i`.
+ *
+ * Falls back to a scan for a path built before `blockEnd` existed (or hand-made
+ * in a test), so nothing here depends on the array being present.
+ */
+function blockEndIndex(path, i) {
+  if (path.blockEnd) return path.blockEnd[i];
+  let j = i;
+  while (j + 1 < path.count && path.lines[j + 1] === path.lines[i]) j++;
+  return j;
+}
+
+/**
+ * The playhead one block on from `k` — SINGLE BLOCK on a control: finish the
+ * block in progress and stop.
+ *
+ * `k` counts segments *executed*, so segment `k` is the one about to run. Parked
+ * on a block boundary that is the whole of the next block; parked part-way
+ * through a move (where a time-paced playhead usually sits) it is the remainder
+ * of the move being made. Both are what "one more block" means from there.
+ */
+export function nextBlockEnd(path, k) {
+  if (!path || path.count === 0) return 0;
+  const kk = Math.max(0, Math.min(k, path.count));
+  if (kk >= path.count) return path.count;
+  return blockEndIndex(path, kk) + 1;
+}
+
+/**
+ * The playhead one block back from `k`: the start of the block that just ran, so
+ * pressing it re-runs that block.
+ */
+export function prevBlockStart(path, k) {
+  if (!path || path.count === 0) return 0;
+  const kk = Math.max(0, Math.min(k, path.count));
+  if (kk <= 0) return 0;
+  let i = kk - 1;
+  // Part-way through a block, rewind to its start; already at a block start,
+  // step over into the block before it.
+  while (i > 0 && path.lines[i - 1] === path.lines[i]) i--;
+  return i;
 }
 
 /**
@@ -152,24 +218,14 @@ export function segmentAtTime(path, seconds) {
 }
 
 /**
- * Tool-tip position at an exact machine time, interpolated *within* the segment
- * that is executing then. Segment-boundary positions make a program of few, long
- * moves (a lathe pass can run 13 s) jump and stutter; lerping by time lets the
- * marker glide smoothly along each cut.
+ * Index of the segment executing at an exact machine time (-1 before the program
+ * starts). Unlike `segmentAtTime`, which counts segments *entered*, this is the
+ * one move in progress — what the readouts and the marker are looking at.
  */
-export function toolPointAt(path, seconds) {
-  if (!path || path.count === 0 || seconds <= 0) return null;
+export function segmentIndexAt(path, seconds) {
+  if (!path || path.count === 0 || seconds <= 0) return -1;
   const tp = path.timePrefix;
-  const total = tp[path.count - 1];
-  const posAt = (i, f) => {
-    const o = i * 6;
-    return [
-      path.positions[o] + (path.positions[o + 3] - path.positions[o]) * f,
-      path.positions[o + 1] + (path.positions[o + 4] - path.positions[o + 1]) * f,
-      path.positions[o + 2] + (path.positions[o + 5] - path.positions[o + 2]) * f,
-    ];
-  };
-  if (seconds >= total) return posAt(path.count - 1, 1);
+  if (seconds >= tp[path.count - 1]) return path.count - 1;
   // Smallest i with tp[i] > seconds — the segment in progress.
   let lo = 0;
   let hi = path.count - 1;
@@ -177,9 +233,52 @@ export function toolPointAt(path, seconds) {
     const mid = (lo + hi) >> 1;
     if (tp[mid] > seconds) hi = mid; else lo = mid + 1;
   }
-  const t0 = lo > 0 ? tp[lo - 1] : 0;
-  const t1 = tp[lo];
-  return posAt(lo, t1 > t0 ? (seconds - t0) / (t1 - t0) : 1);
+  return lo;
+}
+
+/** A point `f` of the way along segment `i` (f = 1 is its end point). */
+function posAt(path, i, f) {
+  const o = i * 6;
+  return [
+    path.positions[o] + (path.positions[o + 3] - path.positions[o]) * f,
+    path.positions[o + 1] + (path.positions[o + 4] - path.positions[o + 1]) * f,
+    path.positions[o + 2] + (path.positions[o + 5] - path.positions[o + 2]) * f,
+  ];
+}
+
+/**
+ * Tool-tip position at an exact machine time, interpolated *within* the segment
+ * that is executing then. Segment-boundary positions make a program of few, long
+ * moves (a lathe pass can run 13 s) jump and stutter; lerping by time lets the
+ * marker glide smoothly along each cut.
+ */
+export function toolPointAt(path, seconds) {
+  const i = segmentIndexAt(path, seconds);
+  if (i < 0) return null;
+  const tp = path.timePrefix;
+  if (seconds >= tp[path.count - 1]) return posAt(path, i, 1);
+  const t0 = i > 0 ? tp[i - 1] : 0;
+  const t1 = tp[i];
+  return posAt(path, i, t1 > t0 ? (seconds - t0) / (t1 - t0) : 1);
+}
+
+/**
+ * Where the block in progress at `seconds` ends up — the end point of its last
+ * segment, which is the position the block was programmed to reach.
+ *
+ * This is the target the DISTANCE TO GO readout counts down to, and it is the
+ * *block's* end rather than the segment's on purpose: mid-arc, the segment end is
+ * a chord away (a few microns) and would read as 0.000 for the whole move, while
+ * the number an operator wants is how far this G2 still has to run.
+ *
+ * Stopped exactly on a block boundary, the segment "in progress" is the first of
+ * the block about to run, so the readout posts the move that is queued up — what
+ * the next cycle start will do.
+ */
+export function blockTargetAt(path, seconds) {
+  const i = segmentIndexAt(path, seconds);
+  if (i < 0) return null;
+  return posAt(path, blockEndIndex(path, i), 1);
 }
 
 /**

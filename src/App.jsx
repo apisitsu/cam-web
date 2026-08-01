@@ -13,6 +13,7 @@ import {
 import {
   ThunderboltOutlined, ReloadOutlined, ExperimentOutlined,
   PlayCircleFilled, PauseCircleFilled, UploadOutlined, StepBackwardOutlined,
+  StepForwardOutlined, FastBackwardOutlined,
   ExpandOutlined, SaveOutlined, FolderOpenOutlined, DownloadOutlined,
 } from '@ant-design/icons';
 import { useCamStore } from './stores/camStore.js';
@@ -27,7 +28,9 @@ import { SPEEDS, PLAY_BASE_SECONDS, perTick } from './engine/view/playback.js';
 import { sidebarSections } from './engine/view/sidebar.js';
 import { offerArborToggle } from './engine/view/millTool.js';
 import { sketchBounds } from './engine/sketch/edit.js';
-import { lineAt, timeAt, rotaryAt, toolAt, segmentAtTime, toolPointAt } from './engine/gcode/path.js';
+import {
+  lineAt, timeAt, rotaryAt, toolAt, segmentAtTime, toolPointAt, blockTargetAt,
+} from './engine/gcode/path.js';
 import { STANDARD_TURN_TOOLS } from './engine/sim/turning.js';
 import { SAMPLE_GCODE, SAMPLE_TURNING } from './SAMPLE_GCODE.js';
 import Viewport from './components/Viewport.jsx';
@@ -242,6 +245,7 @@ export default function App() {
   const loadFile = useCamStore((s) => s.loadFile);
   const setPlayhead = useCamStore((s) => s.setPlayhead);
   const togglePlay  = useCamStore((s) => s.togglePlay);
+  const stepBlock   = useCamStore((s) => s.stepBlock);
   const simulate    = useCamStore((s) => s.simulate);
   const simulateVoxel = useCamStore((s) => s.simulateVoxel);
   const setTurnTool = useCamStore((s) => s.setTurnTool);
@@ -457,6 +461,16 @@ export default function App() {
     // long moves; paused/scrubbing, sit at the playhead's segment boundary.
     const t = playing ? playT : timeAt(path, playhead);
     return toolPointAt(path, t);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [path, playhead, playT, playing, count, bufVer]);
+
+  // Where the block in progress is headed, for the readout's DIST TO GO column.
+  // The same clock as toolPos above, so the two numbers are always a matched
+  // pair — a position and the distance left on the very move it is making.
+  const toolTarget = useMemo(() => {
+    if (!path || playhead <= 0) return null;
+    const t = playing ? playT : timeAt(path, playhead);
+    return blockTargetAt(path, t);
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [path, playhead, playT, playing, count, bufVer]);
 
@@ -999,6 +1013,7 @@ export default function App() {
                 a radius is posted back as the diameter it was programmed as. */}
             <PositionReadout
               point={toolPos}
+              target={toolTarget}
               mode={mode}
               diameterMode={diameterMode}
               rotary={toolRotary}
@@ -1047,9 +1062,20 @@ export default function App() {
               <Tooltip title="Restart">
                 <Button
                   size="small" shape="circle"
-                  icon={<StepBackwardOutlined />}
+                  icon={<FastBackwardOutlined />}
                   onClick={() => setPlayhead(0)}
                   disabled={count === 0}
+                />
+              </Tooltip>
+              {/* Single block, either way: one source line per press, so an arc
+                  steps as the one move it was written as and not as the hundreds
+                  of chords it tessellates into. */}
+              <Tooltip title="Single block back — replay the block that just ran">
+                <Button
+                  size="small" shape="circle"
+                  icon={<StepBackwardOutlined />}
+                  onClick={() => stepBlock(-1)}
+                  disabled={count === 0 || playhead === 0}
                 />
               </Tooltip>
               <Button
@@ -1058,6 +1084,14 @@ export default function App() {
                 onClick={togglePlay}
                 disabled={count === 0}
               />
+              <Tooltip title="Single block — run one block and stop">
+                <Button
+                  size="small" shape="circle"
+                  icon={<StepForwardOutlined />}
+                  onClick={() => stepBlock(1)}
+                  disabled={count === 0}
+                />
+              </Tooltip>
               <Segmented size="small" value={speed} onChange={setSpeed} options={SPEEDS} />
               <Slider
                 style={{ flex: 1, minWidth: 120, margin: 0 }}

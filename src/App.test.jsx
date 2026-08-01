@@ -22,6 +22,9 @@ vi.mock('./components/Viewport.jsx', () => ({
 
 const { default: App } = await import('./App.jsx');
 const { useCamStore } = await import('./stores/camStore.js');
+const { interpret } = await import('./engine/gcode/interpreter.js');
+const { buildPath, nextBlockEnd } = await import('./engine/gcode/path.js');
+const { setBuffers, clearBuffers } = await import('./engine/bufferCache.js');
 
 let container;
 let root;
@@ -46,6 +49,10 @@ function siderButtons() {
   if (!el) return [];
   return [...el.querySelectorAll('button')].map((b) => b.textContent.trim()).filter(Boolean);
 }
+
+// jsdom has no layout, so it has no scrollIntoView; GcodePanel calls it to keep
+// the executing line in view whenever the playhead moves.
+Element.prototype.scrollIntoView = () => {};
 
 beforeEach(async () => {
   container = document.createElement('div');
@@ -174,5 +181,75 @@ describe('the Arbor switch', () => {
     await setStore({ page: 'turn', mode: 'turn' });
     await mount();
     expect(arborSwitch()).toBeNull();
+  });
+});
+
+describe('the single-block controls', () => {
+  // Three plainly separate blocks, so a step lands somewhere identifiable.
+  const PROGRAM = ['G0 X0 Y0 Z5', 'G1 Z-1 F200', 'G1 X20 F400'].join('\n');
+
+  /** A toolbar button, found by the icon it carries. */
+  const iconBtn = (name) =>
+    container.querySelector(`[aria-label="${name}"]`)?.closest('button') ?? null;
+
+  /** The distance-to-go cell of an axis row in the position readout. */
+  const dtg = (label) =>
+    container.querySelector(`[data-dtg="${label}"]`)?.textContent ?? null;
+
+  /** Put a real parsed path in the buffer cache, the way parse() does. */
+  async function loadProgram() {
+    const { segments } = interpret(PROGRAM, { mode: 'mill' });
+    const path = buildPath(segments);
+    setBuffers({ path });
+    await setStore({ gcode: PROGRAM, bufVer: 1, playhead: 0, playT: 0, playing: false });
+    return path;
+  }
+
+  afterEach(() => clearBuffers());
+
+  it('sits either side of Play', async () => {
+    await mount();
+    await loadProgram();
+    expect(iconBtn('step-forward')).not.toBeNull();
+    expect(iconBtn('step-backward')).not.toBeNull();
+    // Restart is still there, and is no longer wearing the step icon.
+    expect(iconBtn('fast-backward')).not.toBeNull();
+  });
+
+  it('advances exactly one block per press', async () => {
+    await mount();
+    const path = await loadProgram();
+    await act(async () => { iconBtn('step-forward').click(); });
+    const first = useCamStore.getState().playhead;
+    expect(first).toBe(nextBlockEnd(path, 0));
+    expect(first).toBeGreaterThan(0);
+
+    await act(async () => { iconBtn('step-forward').click(); });
+    expect(useCamStore.getState().playhead).toBe(nextBlockEnd(path, first));
+  });
+
+  it('stops a run in progress, like a cycle stop', async () => {
+    await mount();
+    await loadProgram();
+    await setStore({ playing: true });
+    await act(async () => { iconBtn('step-forward').click(); });
+    expect(useCamStore.getState().playing).toBe(false);
+  });
+
+  it('steps back off the start of the program without moving', async () => {
+    await mount();
+    await loadProgram();
+    // Disabled at the start — there is no block behind the playhead to replay.
+    expect(iconBtn('step-backward').disabled).toBe(true);
+    expect(useCamStore.getState().playhead).toBe(0);
+  });
+
+  it('posts the queued block on the dist-to-go column after a step', async () => {
+    // Stopped at the end of `G0 Z5`, what is queued is `G1 Z-1`: 6 mm of Z.
+    await mount();
+    await loadProgram();
+    await act(async () => { iconBtn('step-forward').click(); });
+    expect(dtg('Z')).toBe('-6.000');
+    expect(dtg('X')).toBe('0.000');
   });
 });

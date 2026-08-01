@@ -8,7 +8,9 @@
  */
 import { create } from 'zustand';
 import * as Comlink from 'comlink';
-import { feedsBeforeAt, feedsBefore } from '../engine/gcode/path.js';
+import {
+  feedsBeforeAt, feedsBefore, nextBlockEnd, prevBlockStart, timeAt,
+} from '../engine/gcode/path.js';
 import { setBuffers, clearBuffers, getBuf } from '../engine/bufferCache.js';
 import { getPlanContext } from './camPlanStore.js';
 
@@ -239,6 +241,30 @@ export const useCamStore = create((set, get) => ({
   pause: () => set({ playing: false }),
   togglePlay() {
     get().playing ? get().pause() : get().play();
+  },
+
+  /**
+   * SINGLE BLOCK — run one block and stop, the way the switch on a control does.
+   *
+   * A block is one source line, so a tessellated arc steps as the single move it
+   * was written as rather than a thousand chords. `dir = -1` steps back to the
+   * start of the block that just ran, so it can be watched again.
+   *
+   * Stepping always drops out of playback: the two are the same cycle-start, and
+   * leaving the timer running would carry the playhead straight past the stop.
+   */
+  stepBlock(dir = 1) {
+    const path = getBuf().path;
+    if (!path || path.count === 0) return;
+    // A parsed program parks the playhead at the end (the whole backplot drawn),
+    // so stepping forward from there means "start it again" — the same restart
+    // play() does, rather than a dead button on a program just loaded.
+    const at = dir > 0 && get().playhead >= path.count ? 0 : get().playhead;
+    const next = dir < 0 ? prevBlockStart(path, at) : nextBlockEnd(path, at);
+    // playT is the continuous clock the tool marker rides; park it on the block
+    // boundary too, or resuming would rewind to wherever the timer left off.
+    set({ playing: false, playT: timeAt(path, next) });
+    get().setPlayhead(next);
   },
 
   /** Advance the playhead by n segments (used by the animation loop). */

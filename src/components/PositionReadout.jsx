@@ -1,5 +1,7 @@
 /**
- * POSITION (ABSOLUTE) — the control's position page, floated over the viewport.
+ * POSITION — the control's position page, floated over the viewport: the
+ * absolute work position per axis, and beside it the DISTANCE TO GO on the block
+ * in progress, the pair a control posts together.
  *
  * Thin by design: every decision it renders (which axes, what number, whether to
  * appear at all) comes from `engine/view/dro.js`, which is tested. This file only
@@ -7,15 +9,19 @@
  */
 import { droRows, showDro, droXNote } from '../engine/view/dro.js';
 
+/** Width of the distance-to-go column, wide enough for -1234.567. */
+const DTG_W = 74;
+
 const PANEL = {
   position: 'absolute', top: 12, right: 12, zIndex: 5,
   background: 'rgba(15,23,42,0.82)', border: '1px solid #334155',
   borderRadius: 8, padding: '8px 12px 6px',
-  minWidth: 188, pointerEvents: 'none',
+  minWidth: 262, pointerEvents: 'none',
   fontFamily: 'ui-monospace, SFMono-Regular, Menlo, Consolas, monospace',
 };
 
 const HEADING = {
+  display: 'flex', alignItems: 'baseline', gap: 8,
   color: '#64748b', fontSize: 10, letterSpacing: 0.8,
   textTransform: 'uppercase', marginBottom: 6, whiteSpace: 'nowrap',
 };
@@ -28,9 +34,16 @@ const ROW = {
 const LABEL = { color: '#38bdf8', fontSize: 13, fontWeight: 700, width: 22 };
 
 const VALUE = {
-  color: '#e2e8f0', fontSize: 16, marginLeft: 'auto',
+  color: '#e2e8f0', fontSize: 16, flex: 1, textAlign: 'right',
   // A live readout whose digits are different widths visibly shimmers as it
   // counts; tabular figures keep the columns still.
+  fontVariantNumeric: 'tabular-nums',
+};
+
+// Dimmer and a size down: the absolute position is what the eye should land on
+// first, with the countdown beside it as support.
+const DTG = {
+  color: '#94a3b8', fontSize: 14, width: DTG_W, textAlign: 'right',
   fontVariantNumeric: 'tabular-nums',
 };
 
@@ -44,6 +57,7 @@ const FOOTER = {
 /**
  * @param {object} props
  * @param {number[]|null} props.point tool tip in program coordinates
+ * @param {number[]|null} props.target end point of the block in progress
  * @param {'mill'|'turn'} props.mode
  * @param {boolean} props.diameterMode lathe: the X word is a diameter
  * @param {{a:number,b:number}|null} props.rotary index at the playhead
@@ -54,17 +68,23 @@ const FOOTER = {
  * @param {number} props.count segments in the program
  */
 export default function PositionReadout({
-  point = null, mode = 'mill', diameterMode = true, rotary = null,
+  point = null, target = null, mode = 'mill', diameterMode = true, rotary = null,
   aIndices = null, toolNumber = 0, line = 0, sketching = false, count = 0,
 }) {
   if (!showDro({ sketching, count })) return null;
 
-  const rows = droRows(point, { mode, diameterMode, rotary, aIndices });
+  const rows = droRows(point, { mode, diameterMode, rotary, aIndices, target });
   const xNote = droXNote({ mode, diameterMode });
 
   return (
     <div style={PANEL} data-testid="position-readout">
-      <div style={HEADING}>Position (Absolute)</div>
+      {/* Column captions live in the heading rather than a row of their own, so
+          the panel still reads as one page and not two stacked tables. */}
+      <div style={HEADING}>
+        <span style={{ flex: 1 }}>Position (Absolute)</span>
+        <span style={{ width: DTG_W, textAlign: 'right' }}>Dist to go</span>
+        <span style={{ width: 22 }} />
+      </div>
       {rows.map((r) => (
         <div key={r.label} style={ROW}>
           <span style={LABEL}>
@@ -74,6 +94,7 @@ export default function PositionReadout({
             ) : null}
           </span>
           <span style={VALUE}>{r.text}</span>
+          <span style={DTG} data-dtg={r.label}>{r.dtgText}</span>
           <span style={UNIT}>{r.unit}</span>
         </div>
       ))}

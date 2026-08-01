@@ -110,6 +110,53 @@ describe('PositionReadout — the rows it posts', () => {
   });
 });
 
+describe('PositionReadout — distance to go', () => {
+  /** The dist-to-go cell of an axis row. */
+  const dtgText = (label) =>
+    container.querySelector(`[data-dtg="${label}"]`)?.textContent ?? null;
+
+  it('posts what is left of the move beside the position', async () => {
+    // Half way along a G1 X0 → X50 at Z-2.
+    await render({ count: 500, point: [25, 0, -2], target: [50, 0, -2] });
+    expect(dtgText('X')).toBe('25.000');
+    expect(dtgText('Y')).toBe('0.000');
+    expect(dtgText('Z')).toBe('0.000');
+  });
+
+  it('names the column, so the second number is not mistaken for a position', async () => {
+    await render({ count: 500, point: [25, 0, 0], target: [50, 0, 0] });
+    expect(container.textContent).toMatch(/dist to go/i);
+  });
+
+  it('reads zero on every axis while parked, with no block running', async () => {
+    await render({ count: 500, point: null, target: null });
+    expect(dtgText('X')).toBe('0.000');
+    expect(dtgText('Z')).toBe('0.000');
+  });
+
+  it('counts down in diameter on a diameter lathe', async () => {
+    // Stored radii 30 → 20: the page posts ⌀60 with 20 to go, not 10.
+    await render({
+      count: 500, mode: 'turn', diameterMode: true,
+      point: [30, 0, -10], target: [20, 0, -10],
+    });
+    expect(axisText('X')).toBe('60.000');
+    expect(dtgText('X')).toBe('-20.000');
+  });
+
+  it('keeps the position column as the one the eye lands on', async () => {
+    await render({ count: 500, point: [25, 0, 0], target: [50, 0, 0] });
+    const row = [...container.querySelectorAll('[data-testid="position-readout"] > div')]
+      .find((r) => r.firstChild?.textContent?.startsWith('X'));
+    const abs = row.children[1];
+    const dtg = row.children[2];
+    expect(Number.parseInt(dtg.style.fontSize, 10))
+      .toBeLessThan(Number.parseInt(abs.style.fontSize, 10));
+    // Both columns still need still digits — the countdown moves fastest of all.
+    expect(dtg.style.fontVariantNumeric).toBe('tabular-nums');
+  });
+});
+
 describe('PositionReadout — where it sits', () => {
   /** The panel element itself. */
   const panel = () => container.querySelector('[data-testid="position-readout"]');

@@ -2,6 +2,9 @@ import { describe, it, expect, beforeEach } from 'vitest';
 import { useCamStore } from './camStore.js';
 import { useCamPlanStore } from './camPlanStore.js';
 import { box } from '../engine/mesh/fixtures.js';
+import { interpret } from '../engine/gcode/interpreter.js';
+import { buildPath, timeAt, lineAt } from '../engine/gcode/path.js';
+import { setBuffers, clearBuffers } from '../engine/bufferCache.js';
 
 /** A binary-STL File-alike, the way camPlanStore receives one from a drop. */
 function stlFile(soup, name = 'part.stl') {
@@ -44,5 +47,95 @@ describe('camStore.machineOpts — reading the rotary centre off the loaded part
     useCamStore.setState({ mode: 'turn' });
 
     expect(useCamStore.getState().machineOpts().rotaryCenter).toBeUndefined();
+  });
+});
+
+describe('camStore.stepBlock — single block', () => {
+  // The arc is the point of the fixture: G2 tessellates into many segments that
+  // are all one block, so a step that landed on a segment would stop inside it.
+  const PROGRAM = [
+    'G21 G90 G17',
+    'G0 X0 Y0 Z5',
+    'G1 Z-1 F200',
+    'G1 X20 F400',
+    'G2 X40 Y20 R20',
+    'G0 Z5',
+  ].join('\n');
+
+  /** Load a real parsed path into the buffer cache, the way parse() does. */
+  function load() {
+    const { segments } = interpret(PROGRAM, { mode: 'mill' });
+    const path = buildPath(segments);
+    setBuffers({ path });
+    useCamStore.setState({ playhead: 0, playT: 0, playing: false });
+    return path;
+  }
+
+  beforeEach(() => {
+    clearBuffers();
+    useCamStore.setState({ playhead: 0, playT: 0, playing: false, simReady: false });
+  });
+
+  it('advances a whole block, not a segment, through a tessellated arc', () => {
+    const path = load();
+    const seen = [];
+    for (let i = 0; i < 50 && useCamStore.getState().playhead < path.count; i++) {
+      useCamStore.getState().stepBlock();
+      seen.push(lineAt(path, useCamStore.getState().playhead));
+    }
+    // One stop per source line that produced motion — an arc of dozens of
+    // chords must not show up as dozens of stops.
+    expect(seen.length).toBe(new Set(seen).size);
+    expect(seen.length).toBeLessThan(10);
+    expect(useCamStore.getState().playhead).toBe(path.count);
+  });
+
+  it('stops the run — stepping and playing are the same cycle start', () => {
+    load();
+    useCamStore.setState({ playing: true });
+    useCamStore.getState().stepBlock();
+    expect(useCamStore.getState().playing).toBe(false);
+  });
+
+  it('parks the marker clock on the block boundary it stopped at', () => {
+    const path = load();
+    useCamStore.getState().stepBlock();
+    const { playhead, playT } = useCamStore.getState();
+    expect(playT).toBe(timeAt(path, playhead));
+  });
+
+  it('steps back to the start of the block that just ran', () => {
+    const path = load();
+    useCamStore.getState().stepBlock();
+    const after = useCamStore.getState().playhead;
+    useCamStore.getState().stepBlock();
+    useCamStore.getState().stepBlock(-1);
+    // Back at the block boundary it had stepped to, ready to re-run that block.
+    expect(useCamStore.getState().playhead).toBe(after);
+    expect(useCamStore.getState().playhead).toBeLessThan(path.count);
+  });
+
+  it('starts the program again from the end, the way play() does', () => {
+    // A parse parks the playhead at the end so the whole backplot is drawn; a
+    // step from there has to mean the first block, or the button is dead on
+    // every program the moment it loads.
+    const path = load();
+    useCamStore.setState({ playhead: path.count });
+    useCamStore.getState().stepBlock();
+    expect(useCamStore.getState().playhead).toBeGreaterThan(0);
+    expect(useCamStore.getState().playhead).toBeLessThan(path.count);
+  });
+
+  it('holds at the start when stepping back off the beginning', () => {
+    load();
+    useCamStore.getState().stepBlock(-1);
+    expect(useCamStore.getState().playhead).toBe(0);
+  });
+
+  it('does nothing with no program loaded', () => {
+    clearBuffers();
+    useCamStore.setState({ playhead: 0 });
+    expect(() => useCamStore.getState().stepBlock()).not.toThrow();
+    expect(useCamStore.getState().playhead).toBe(0);
   });
 });

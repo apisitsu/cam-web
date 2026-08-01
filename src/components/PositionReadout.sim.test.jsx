@@ -22,7 +22,8 @@ import { createRoot } from 'react-dom/client';
 import PositionReadout from './PositionReadout.jsx';
 import { interpret } from '../engine/gcode/interpreter.js';
 import {
-  buildPath, toolPointAt, timeAt, segmentAtTime, rotaryAt, toolAt, lineAt,
+  buildPath, toolPointAt, blockTargetAt, timeAt, segmentAtTime, rotaryAt,
+  toolAt, lineAt,
 } from '../engine/gcode/path.js';
 import { perTick } from '../engine/view/playback.js';
 
@@ -51,6 +52,7 @@ function readoutProps(path, stats, playT, playing, view = {}) {
   const t = playing ? playT : timeAt(path, playhead);
   return {
     point: playhead > 0 ? toolPointAt(path, t) : null,
+    target: playhead > 0 ? blockTargetAt(path, t) : null,
     rotary: playhead > 0 ? rotaryAt(path, playhead) : null,
     aIndices: stats?.aIndices ?? [0],
     toolNumber: toolAt(path, playhead),
@@ -73,6 +75,12 @@ function axisText(label) {
   return row ? row.children[1].textContent : null;
 }
 
+/** The distance-to-go cell of an axis row, as a number. */
+function dtg(label) {
+  const cell = container.querySelector(`[data-dtg="${label}"]`);
+  return cell ? Number(cell.textContent) : null;
+}
+
 /**
  * Play the program from zero to the end at the real tick rate, sampling the
  * rendered readout each tick. Returns every frame's readout, so a test can ask
@@ -92,6 +100,8 @@ async function play(path, stats, view = {}, speed = 100) {
       t,
       playing,
       X: axisText('X'), Y: axisText('Y'), Z: axisText('Z'), A: axisText('A'),
+      line: lineAt(path, segmentAtTime(path, t)),
+      dX: dtg('X'), dY: dtg('Y'), dZ: dtg('Z'),
       text: container.textContent,
     });
     if (!playing) break;
@@ -189,6 +199,49 @@ describe('PositionReadout during a real milling run', () => {
     const { path, stats } = load(MILL);
     const frames = await play(path, stats);
     expect(frames[frames.length - 1].text).toContain('T3');
+  });
+
+  it('counts the distance to go down, never up, within a block', async () => {
+    // The property that makes the column trustworthy: inside one source line the
+    // remaining distance only shrinks. It would climb if the readout were
+    // targeting the *segment* end, or the tessellated end of the wrong block.
+    const { path, stats } = load(MILL);
+    const frames = await play(path, stats);
+    for (let i = 1; i < frames.length; i++) {
+      if (frames[i].line !== frames[i - 1].line) continue; // a new block resets it
+      for (const axis of ['dX', 'dY', 'dZ']) {
+        // A micron of slack: both ends are rounded to three places.
+        expect(Math.abs(frames[i][axis])).toBeLessThanOrEqual(Math.abs(frames[i - 1][axis]) + 0.001);
+      }
+    }
+  });
+
+  it('reaches zero on the axis that was moving, as its block lands', async () => {
+    const { path, stats } = load(MILL);
+    const frames = await play(path, stats);
+    // G1 X50 is a block that moves X alone: somewhere in the run X must be
+    // counting down through a real distance...
+    expect(frames.some((f) => Math.abs(f.dX) > 5)).toBe(true);
+    // ...and the program must finish with nothing left to go on any axis.
+    const last = frames[frames.length - 1];
+    expect(last.dX).toBe(0);
+    expect(last.dY).toBe(0);
+    expect(last.dZ).toBe(0);
+  });
+
+  it('agrees with the block end the path reports, at every tick', async () => {
+    const { path, stats } = load(MILL);
+    const total = path.totalTime || 1;
+    let t = 0;
+    for (let i = 0; i < 40; i++) {
+      t += perTick(total, 100);
+      if (segmentAtTime(path, t) >= path.count) break;
+      await render(readoutProps(path, stats, t, true));
+      const here = toolPointAt(path, t);
+      const to = blockTargetAt(path, t);
+      expect(dtg('X')).toBeCloseTo(to[0] - here[0], 3);
+      expect(dtg('Z')).toBeCloseTo(to[2] - here[2], 3);
+    }
   });
 
   it('grows no A row for a 3-axis program, start to finish', async () => {

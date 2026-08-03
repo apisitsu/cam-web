@@ -17,6 +17,8 @@
 import { interpret } from '../gcode/interpreter.js';
 import { stockFromBounds, resetStock, cutSegment } from './dexel.js';
 import { heightmapToSolidMesh } from './mesh.js';
+import { cutterGeometry } from '../cam/cutters.js';
+import { cuttingBounds } from './removal.js';
 
 /**
  * Build a per-segment cutter resolver from the tool table.
@@ -120,7 +122,10 @@ export function feedTopZ(segments, fallback) {
 }
 
 export function createSession(text, opts = {}) {
-  const { radius = 3, toolType = 'flat', cellSize = 0.5, margin = 5, top, base } = opts;
+  const {
+    radius = 3, toolType = 'flat', cellSize = 0.5, margin = 5, top, base,
+    stockSize, stockOrigin,
+  } = opts;
   // Machine frame: the tool is along +Z, which is what the height field assumes.
   // opts also carries the machine mode / diameter flag; interpret ignores the
   // tool + stock keys it doesn't recognise.
@@ -131,20 +136,40 @@ export function createSession(text, opts = {}) {
   const feeds = atIndex.filter((s) => s.type !== 'rapid'); // cutting moves, in order
 
   // Size the billet to this index's moves only — the other faces are machined
-  // in a different orientation and would inflate the grid to no purpose.
+  // in a different orientation and would inflate the grid to no purpose. A
+  // billet the operator actually stated overrides that per axis: this is the
+  // path the Simulate button drives (store → worker `init` → here), so a stock
+  // box ignored at this line is a stock box ignored everywhere it can be seen.
   const bounds = boundsOf(atIndex);
+  // Fitted and centred on the CUTTING, never on the rapids: a clearance move
+  // out to X200 would otherwise drag the blank off the part it belongs to.
+  const fit = cuttingBounds(feeds) ?? bounds;
   const autoTop = top ?? feedTopZ(feeds, bounds.max[2]);
-  const stock = stockFromBounds(bounds, { margin, cellSize, top: autoTop, base });
+  const stock = stockFromBounds(fit, {
+    margin, cellSize, top: autoTop, base, size: stockSize, origin: stockOrigin,
+  });
   return {
     stock,
     feeds,
     // Each feed carves with its own cutter — user tool-table edits win over
     // detection; the UI slider is the fallback for tools never described.
-    tool: toolResolver(stats.tools, { radius, type: toolType }, opts.toolOverrides),
+    // A chosen cutter TYPE wins over the bare flat/ball for anything the
+    // program never described — see `cam/cutters.js`.
+    tool: toolResolver(stats.tools, opts.cutter
+      ? cutterGeometry({ cutter: opts.cutter, diameter: radius * 2, angle: opts.angle })
+      : { radius, type: toolType }, opts.toolOverrides),
     cursor: 0, // number of feed moves already carved
     removed: 0,
     totalFeeds: feeds.length,
     bounds,
+    // Where the tool actually cuts, so "why did nothing come off?" can be
+    // answered against the blank rather than guessed at — see `removal.js`.
+    cutBounds: cuttingBounds(feeds),
+    box: {
+      xMin: stock.xMin, xMax: stock.xMax,
+      yMin: stock.yMin, yMax: stock.yMax,
+      base: stock.base, top: stock.top,
+    },
     aIndex,
   };
 }

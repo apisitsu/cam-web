@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { endMillGeometry, offerArborToggle, ARBOR_LENGTH } from './millTool.js';
+import { endMillGeometry, offerArborToggle, ARBOR_LENGTH, parkedTip } from './millTool.js';
 
 /** Bottom and top of a part along the tool axis, from its centre and length. */
 const span = (p) => [p.z - p.length / 2, p.z + p.length / 2];
@@ -129,5 +129,54 @@ describe('offerArborToggle', () => {
 
   it('is withheld on the sketch page, where there is no tool', () => {
     expect(offerArborToggle({ mode: 'mill', sketching: true })).toBe(false);
+  });
+});
+
+describe('parkedTip — the tool is visible when nothing is running', () => {
+  it('parks over the middle of the stock, clear of its top', () => {
+    const solid = { center: [10, 20, -14], size: [50, 50, 28] };
+    const [x, y, z] = parkedTip({ solid, radius: 3 });
+    expect(x).toBe(10);
+    expect(y).toBe(20);
+    expect(z).toBeGreaterThan(0);          // above the blank's top face (Z0)
+    expect(z).toBeCloseTo(0 + 10);         // top + the 10 mm floor clearance
+  });
+
+  it('scales the clearance with the cutter', () => {
+    // A Ø63 face mill must not park with its flutes buried in the billet.
+    const solid = { center: [0, 0, -10], size: [100, 100, 20] };
+    const small = parkedTip({ solid, radius: 3 })[2];
+    const big = parkedTip({ solid, radius: 31.5 })[2];
+    expect(big).toBeGreaterThan(small);
+  });
+
+  it('falls back to the toolpath when no blank is defined', () => {
+    const bounds = { min: [0, 0, -8], max: [60, 40, 5] };
+    const [x, y, z] = parkedTip({ bounds, radius: 3 });
+    expect(x).toBe(30);
+    expect(y).toBe(20);
+    expect(z).toBeCloseTo(15);
+  });
+
+  it('prefers the blank over the toolpath when both exist', () => {
+    const solid = { center: [0, 0, -10], size: [20, 20, 20] };
+    const bounds = { min: [500, 500, 500], max: [600, 600, 600] };
+    expect(parkedTip({ solid, bounds })[0]).toBe(0);
+  });
+
+  it('parks at the work origin with neither', () => {
+    expect(parkedTip({})).toEqual([0, 0, 10]);
+    expect(parkedTip()).toEqual([0, 0, 10]);
+  });
+
+  it('ignores the degenerate bounds an unparsed viewport holds', () => {
+    const empty = { min: [Infinity, Infinity, Infinity], max: [-Infinity, -Infinity, -Infinity] };
+    expect(parkedTip({ bounds: empty })).toEqual([0, 0, 10]);
+  });
+
+  it('always returns finite coordinates', () => {
+    for (const opts of [{}, { bounds: null }, { solid: null }, { radius: 0 }]) {
+      expect(parkedTip(opts).every(Number.isFinite)).toBe(true);
+    }
   });
 });

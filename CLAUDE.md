@@ -39,9 +39,37 @@ test: put the maths in `src/engine/view/` (or `engine/sketch/`) and keep it.
 - `engine/view/setup.js` — fit box and chuck derived from bounds
 - `engine/view/playback.js` — pacing, speeds
 - `engine/view/latheTool.js` — tool-marker geometry
+- `engine/view/rotaryFrame.js` — 4th axis: part frame vs machine frame, work
+  rotation, tool tilt
 - `engine/sketch/annotations.js` — dimension lines and labels
 
 Components then only map that data onto JSX.
+
+## Toolbar buttons are symbols
+
+Following SolidWorks: a toolbar button is a **glyph**, and hovering it gives the
+command's name plus a line of description. Never add a labelled `<Button>` to a
+toolbar — add a catalogue entry and render `CommandButton`:
+
+```jsx
+<CommandButton id="autoPlan" icon={<AutoPlanIcon />} onClick={makePlan} />
+```
+
+- `src/engine/view/commands.js` — every command's `label` + `hint`. Pure data;
+  `commands.test.js` holds each entry to having a name, a hint that says
+  something the name did not, and no duplicate name inside a rail.
+- `src/components/CommandButton.jsx` — renders `label` as **both** the
+  `aria-label` and the tooltip title, and stamps `data-cmd={id}`. It takes no
+  children, so a label cannot drift back onto a glyph button.
+- `src/components/glyph.jsx` — the shared `glyph()` SVG helper and the symbols.
+
+Text is kept only where it is **not a command name**: the axis letter on
+`Pick X0/Y0/Z0`, playback speeds, a settings switch's label, and menu items
+inside a `Dropdown`/`Popover` (SolidWorks labels those too). A toolbar command
+that wants its words back needs a `keepsText` reason in the catalogue, and
+`commands.test.js` caps how many may have one.
+
+**Find buttons by `data-cmd`, never by text** — `container.querySelector('button[data-cmd="autoPlan"]')`.
 
 ## Component tests
 

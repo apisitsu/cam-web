@@ -12,6 +12,11 @@ import {
   feedsBeforeAt, feedsBefore, nextBlockEnd, prevBlockStart, timeAt,
 } from '../engine/gcode/path.js';
 import { setBuffers, clearBuffers, getBuf } from '../engine/bufferCache.js';
+import { removalDiagnosis } from '../engine/sim/removal.js';
+import { rotaryFrameFor } from '../engine/view/rotaryFrame.js';
+import {
+  cutterById, simTypeOf, clampFlutes, defaultFlutes, DEFAULT_CUTTER,
+} from '../engine/cam/cutters.js';
 import { getPlanContext } from './camPlanStore.js';
 
 // Lazily create the workers so tests / SSR don't spin them up on import.
@@ -54,6 +59,18 @@ export const useCamStore = create((set, get) => ({
   page: 'sketch',      // mill | turn | sketch — start on the Sketch design page
   diameterMode: true,  // turn only: the X word is a diameter
   rapidRate: 5000,     // mm/min — times G0 moves for the cycle-time estimate
+  // Which frame the 4th axis is drawn in — see `engine/view/rotaryFrame.js`.
+  // 'part' keeps the workpiece still and tilts the tool onto each face;
+  // 'machine' leaves the program's coordinates alone, so the tool stays upright
+  // and the WORK turns, the way a rotary table actually behaves. Picking a
+  // 4-axis machine switches this to 'machine' on its own (`applyMachine`); the
+  // toggle in the viewport pins it either way until the machine changes again.
+  rotaryFrame: 'part',
+  // The A angle the carved stock buffer is already expressed at. The height
+  // field carves one index in the machine frame, so its stock arrives
+  // pre-rotated and must only be turned the rest of the way; the voxel sim
+  // works in the part frame and leaves this at 0.
+  simFrameA: 0,
 
   // ---- Camera ----
   view: 'iso',      // iso | top | front | back | left | right
@@ -66,6 +83,12 @@ export const useCamStore = create((set, get) => ({
 
   // ---- Phase 1: material removal simulation ----
   toolRadius: 3,
+  // The cutter TYPE (see `engine/cam/cutters.js`) — endmill / shoulder / face /
+  // slot / ball / chamfer. `toolType` is the flat|ball the older carving code
+  // speaks and is kept in step by `setCutter`, never set by hand.
+  toolCutter: DEFAULT_CUTTER,
+  toolFlutes: defaultFlutes(DEFAULT_CUTTER),
+  toolAngle: 90,       // chamfer/spot mills: included angle
   toolType: 'flat',
   cellSize: 0.5,
   voxelSize: 1,        // voxel sim resolution (mm) — coarser than the dexel cell
@@ -77,11 +100,32 @@ export const useCamStore = create((set, get) => ({
   // { [n]: { diameter?, simType?, length? } } — override the auto-detected values
   // so the simulated cutter matches the program's real tooling (milling).
   toolOverrides: {},
+  // The billet the operator has in the vice: X × Y × Z in mm, and the corner it
+  // sits on in work coordinates (its X−/Y−/Z− face). `null` on an axis means
+  // "work it out from the toolpath" — a blank Z origin still defaults the top
+  // to Z0, which is now a default rather than a rule. See `engine/sim/billet.js`.
+  stockSize: { x: null, y: null, z: null },
+  stockOrigin: { x: null, y: null, z: null },
+  // Whether the stated billet is used at all. Off hands the blank back to the
+  // automatic fit around the toolpath — which is what this always did — and
+  // takes the live preview out of the viewport with it. On is the default
+  // because, with every dimension still null, "on" IS the automatic fit; the
+  // only difference is that you can now see the block it picked.
+  stockEnabled: true,
+  // Legacy T/B/M. `stockMargin` is still the XY fallback for an axis the
+  // operator has not sized; top/base are no longer surfaced (the top is Z0 by
+  // definition now) but stay readable so a project saved before this still
+  // restores rather than throwing.
   stockTop: null,
   stockBase: null,
   stockMargin: 5,
   simStatus: 'idle',
   simReady: false,
+  // One sentence saying why the last simulation took nothing off, or null when
+  // it took something off. A block that looks uncut is otherwise indistinguishable
+  // from a simulator that never ran — see `engine/sim/removal.js`.
+  removalNote: null,
+  removedVolume: 0,
   totalFeeds: 0,
   cutFollowsPlayback: true, // watch the stock carve as playback runs, by default
   showStock: true,
@@ -103,7 +147,102 @@ export const useCamStore = create((set, get) => ({
 
   setGcode: (gcode) => set({ gcode }),
   setTool: (patch) => set(patch),
+
+  /**
+   * Pick the cutter type for the sim's fallback tool.
+   *
+   * Resets the flute count to the type's own default rather than carrying the
+   * old one across: 6 flutes is right for a face mill and not a thing on a slot
+   * drill, and flutes multiply the feed rate directly — so a stale count is a
+   * cycle time quietly several times wrong. `toolType` is derived here so the
+   * flat/ball the carvers already speak can never drift from the type on screen.
+   */
+  setCutter(id) {
+    const c = cutterById(id);
+    set({
+      toolCutter: c.id,
+      toolType: simTypeOf(c.id),
+      toolFlutes: defaultFlutes(c.id),
+      ...(c.angle ? { toolAngle: c.angle } : {}),
+    });
+  },
+
+  /** Flute count, clamped to what the chosen type is actually made in. */
+  setFlutes(n) {
+    set((s) => ({ toolFlutes: clampFlutes(s.toolCutter, n) }));
+  },
   toggleStock: () => set((s) => ({ showStock: !s.showStock })),
+
+  /**
+   * Use the stated billet, or hand the blank back to the automatic fit.
+   *
+   * Does NOT drop the carved block: the toggle changes which blank the *next*
+   * simulation starts from, and throwing away a result the operator is looking
+   * at to make that point would be picking a fight with them. The preview
+   * appearing (or vanishing) is the feedback.
+   */
+  toggleStockEnabled() {
+    set((s) => ({ stockEnabled: !s.stockEnabled }));
+  },
+
+  /**
+   * Resize the billet on one axis (or several). `null` hands that axis back to
+   * the automatic fit.
+   */
+  setStockSize(patch) {
+    set((s) => ({ stockSize: { ...s.stockSize, ...patch } }));
+    get()._dropCarvedStock();
+  },
+
+  /**
+   * Move the billet: its minimum corner (X−, Y−, Z−) in work coordinates.
+   * `null` on an axis hands it back to the default — centred on the cutting in
+   * X/Y, top on Z0 in Z.
+   */
+  setStockOrigin(patch) {
+    set((s) => ({ stockOrigin: { ...s.stockOrigin, ...patch } }));
+    get()._dropCarvedStock();
+  },
+
+  /**
+   * The billet as the carver wants it — or nothing at all when the toggle is
+   * off. One place, so the two sim paths cannot disagree about whether the
+   * operator's blank counts.
+   */
+  billetOpts() {
+    const { stockEnabled, stockSize, stockOrigin } = get();
+    return stockEnabled ? { stockSize, stockOrigin } : {};
+  },
+
+  /** Fill both at once, from `suggestBillet`. */
+  setBillet({ size, origin }) {
+    set((s) => ({
+      stockSize: { ...s.stockSize, ...(size ?? {}) },
+      stockOrigin: { ...s.stockOrigin, ...(origin ?? {}) },
+    }));
+    get()._dropCarvedStock();
+  },
+
+  /**
+   * Throw away a carved block whose blank has just changed under it.
+   *
+   * Not merely stale: a block cut out of a different-sized or differently-placed
+   * blank is not a rough version of the right answer, it is the wrong shape
+   * sitting where the right one should be — and it would go on being drawn as
+   * if it meant something. Clearing it makes the operator press Simulate again,
+   * which is the honest state.
+   */
+  _dropCarvedStock() {
+    if (!getBuf().sim) return;
+    setBuffers({ sim: null });
+    set({
+      bufVer: get().bufVer + 1,
+      simStatus: 'idle',
+      simReady: false,
+      totalFeeds: 0,
+      _lastCarveTarget: null,
+    });
+  },
   toggleArbor: () => set((s) => ({ showArbor: !s.showArbor })),
   setCutFollows: (v) => {
     set({ cutFollowsPlayback: v });
@@ -166,10 +305,38 @@ export const useCamStore = create((set, get) => ({
    * concept here.
    */
   machineOpts() {
-    const { mode, rapidRate, diameterMode } = get();
+    const { mode, rapidRate, diameterMode, rotaryFrame } = get();
     const ctx = getPlanContext();
     const rotaryCenter = mode === 'mill' && ctx?.mode === 'mill' ? ctx.rotaryCenter : undefined;
-    return { mode, rapidRate, diameterMode, ...(rotaryCenter ? { rotaryCenter } : {}) };
+    return {
+      mode, rapidRate, diameterMode, rotaryFrame,
+      ...(rotaryCenter ? { rotaryCenter } : {}),
+    };
+  },
+
+  /**
+   * Draw the 4th axis in the part's frame or the machine's.
+   *
+   * The interpreter is what actually changes frame (`rotaryFrame` in its opts),
+   * so this has to re-parse: the backplot, the bounds and every tool position
+   * are different numbers in the two frames. The carved stock is *not* thrown
+   * away — rotation is rigid, so the same segments cut the same material and
+   * only where it is drawn changes.
+   */
+  setRotaryFrame(frame) {
+    if (frame === get().rotaryFrame) return;
+    set({ rotaryFrame: frame });
+    if (get().gcode) get().parse();
+  },
+
+  /**
+   * Follow the selected machine: a 4-axis mill turns the work, so show it
+   * turning. Called by `camPlanStore.setMachine` rather than watched from here,
+   * because camStore must not import the plan store back (it already imports
+   * this one).
+   */
+  applyMachine(machine) {
+    get().setRotaryFrame(rotaryFrameFor(machine));
   },
 
   setRapidRate(rapidRate) {
@@ -290,7 +457,12 @@ export const useCamStore = create((set, get) => ({
     const idx = getBuf().stats?.aIndices ?? [0];
     if (idx.length > 1) return get().simulateVoxel(text);
     const source = text ?? get().gcode;
-    const { toolRadius, toolType, cellSize, stockTop, stockBase, stockMargin } = get();
+    const {
+      toolRadius, toolType, cellSize, stockTop, stockBase, stockMargin,
+    } = get();
+    // Off → no size, no origin, and the carver fits the blank to the toolpath
+    // exactly as it did before any of this existed.
+    const { stockSize, stockOrigin } = get().billetOpts();
     // A brand new session's targets start over; a stale value here could
     // coincidentally match the new session's and wrongly skip its first carve.
     set({ simStatus: 'running', error: null, _lastCarveTarget: null });
@@ -299,22 +471,45 @@ export const useCamStore = create((set, get) => ({
       const init = await api.init(source, {
         ...get().machineOpts(),
         radius: toolRadius, toolType, cellSize,
+        cutter: get().toolCutter, flutes: get().toolFlutes, angle: get().toolAngle,
         margin: stockMargin,
         top: stockTop ?? undefined,
         base: stockBase ?? undefined,
+        stockSize,
+        stockOrigin,
         aIndex: get().aIndex ?? undefined,
         toolOverrides: get().toolOverrides,
       });
       const full = await api.carve(init.totalFeeds);
       // Store sim geometry outside React state.
       setBuffers({ sim: full });
+      // Pressing Simulate means "run the program through the material", so the
+      // playhead moves to the end to match what is now on screen. Without this
+      // the full carve was immediately undone by `carveToPlayhead` whenever the
+      // playhead sat at 0 — handing back an uncut block that read as a
+      // simulator that had not run.
+      const path = getBuf().path;
+      if (path && get().playhead <= 0) set({ playhead: path.count, playT: 0 });
       set({
         bufVer: get().bufVer + 1,
         simStatus: 'done',
         showStock: true,
         simReady: true,
+        removedVolume: full.removedVolume ?? 0,
+        removalNote: removalDiagnosis({
+          hasProgram: Boolean(source && source.trim()),
+          feeds: init.totalFeeds,
+          removedVolume: full.removedVolume ?? 0,
+          cutBounds: init.cutBounds,
+          box: init.box,
+          followsPlayback: get().cutFollowsPlayback,
+          playhead: get().playhead,
+        }),
         totalFeeds: init.totalFeeds,
         aIndex: init.aIndex, // the engine's pick, if we didn't make one
+        // The height field carves in the machine frame at exactly this index,
+        // so the stock it returns is already turned that far.
+        simFrameA: init.aIndex ?? 0,
       });
       set({ simMethod: 'height' });
       if (get().cutFollowsPlayback) get().carveToPlayhead();
@@ -331,14 +526,19 @@ export const useCamStore = create((set, get) => ({
   async simulateVoxel(text) {
     if (get().mode !== 'mill') return;
     const source = text ?? get().gcode;
-    const { toolRadius, toolType, voxelSize, stockMargin } = get();
+    const {
+      toolRadius, toolType, voxelSize, stockMargin,
+    } = get();
+    const { stockSize, stockOrigin } = get().billetOpts();
     set({ simStatus: 'running', error: null, cutFollowsPlayback: false });
     try {
       const api = getSimWorker();
       const result = await api.runVoxel(source, {
         ...get().machineOpts(),
         radius: toolRadius, toolType,
+        cutter: get().toolCutter, flutes: get().toolFlutes, angle: get().toolAngle,
         voxelSize, margin: stockMargin,
+        stockSize, stockOrigin,
         toolOverrides: get().toolOverrides,
       });
       setBuffers({ sim: result });
@@ -349,6 +549,9 @@ export const useCamStore = create((set, get) => ({
         simReady: false, // voxel is not a scrub-able session
         totalFeeds: 0,
         simMethod: 'voxel',
+        // The voxel sim assembles every face onto the part in the part frame,
+        // so its block turns with the model from zero.
+        simFrameA: 0,
       });
     } catch (err) {
       set({ simStatus: 'error', error: err.message || String(err) });

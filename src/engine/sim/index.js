@@ -4,6 +4,9 @@
  */
 import { interpret } from '../gcode/interpreter.js';
 import { stockFromBounds, simulate } from './dexel.js';
+import { billetBox } from './billet.js';
+import { cuttingBounds } from './removal.js';
+import { cutterGeometry } from '../cam/cutters.js';
 import { heightmapToSolidMesh } from './mesh.js';
 import { dominantIndex, boundsOf, feedTopZ, toolResolver } from './session.js';
 import { createVoxelStock, carveVoxels, voxelSurfaceMesh } from './voxel.js';
@@ -15,6 +18,7 @@ import {
 export { createStock, stockFromBounds, resetStock, stamp, cutSegment, simulate } from './dexel.js';
 export { heightmapToMesh, heightmapToSolidMesh } from './mesh.js';
 export { createSession, carveTo, dominantIndex, boundsOf, feedTopZ, toolResolver } from './session.js';
+export { removalDiagnosis, cuttingBounds } from './removal.js';
 export { createVoxelStock, carveVoxels, voxelSurfaceMesh, toolAxisFor } from './voxel.js';
 export {
   createTurningStock, carveTurning, turningMesh, resetTurningStock,
@@ -27,18 +31,33 @@ export {
  */
 
 export function runSimulation(text, opts = {}) {
-  const { radius = 3, toolType = 'flat', cellSize = 0.5, margin = 5, top, base } = opts;
+  const {
+    radius = 3, toolType = 'flat', cellSize = 0.5, margin = 5, top, base,
+    stockSize, stockOrigin,
+  } = opts;
   // The height field assumes the tool points along +Z, which is only true in the
   // machine frame and only for one rotary index at a time.
   const { segments: all, stats } = interpret(text, { ...opts, rotaryFrame: 'machine' });
   const aIndex = opts.aIndex ?? dominantIndex(all);
   const segments = all.filter((s) => s.a4 === aIndex);
   const bounds = boundsOf(segments);
+  // Centred on the cutting, not on a clearance rapid — see `billet.js`.
+  const fit = cuttingBounds(segments) ?? bounds;
   const autoTop = top ?? feedTopZ(segments, bounds.max[2]);
-  const stock = stockFromBounds(bounds, { margin, cellSize, top: autoTop, base });
+  // A stated billet — size, and the corner it sits on — wins per axis; anything
+  // left blank still falls back to wrapping the toolpath. See `billet.js`.
+  const stock = stockFromBounds(fit, {
+    margin, cellSize, top: autoTop, base, size: stockSize, origin: stockOrigin,
+  });
   // Carve each move with its cutter — user tool-table edits win over detection,
   // UI slider as the last fallback.
-  const resolve = toolResolver(stats.tools, { radius, type: toolType }, opts.toolOverrides);
+  // The fallback cutter, for moves whose tool the program never described. A
+  // chosen TYPE wins over the bare flat/ball, so a chamfer mill carves its cone
+  // instead of a flat floor — see `cam/cutters.js`.
+  const fallbackTool = opts.cutter
+    ? cutterGeometry({ cutter: opts.cutter, diameter: radius * 2, angle: opts.angle })
+    : { radius, type: toolType };
+  const resolve = toolResolver(stats.tools, fallbackTool, opts.toolOverrides);
   const { removedVolume } = simulate(stock, segments, resolve);
   const mesh = heightmapToSolidMesh(stock);
   return {
@@ -62,15 +81,30 @@ export function runSimulation(text, opts = {}) {
  *   removedVolume:number, cells:number}}
  */
 export function runVoxelSimulation(text, opts = {}) {
-  const { voxelSize = 1, margin = 3, radius = 3, toolType = 'flat' } = opts;
+  const {
+    voxelSize = 1, margin = 3, radius = 3, toolType = 'flat', stockSize, stockOrigin,
+  } = opts;
   // Part frame (default): every face is assembled onto the workpiece and each
   // segment keeps its A/B index so the swept tool is oriented correctly.
   const { segments, bounds, stats } = interpret(text, { ...opts, rotaryFrame: 'part' });
   const fit = bounds.feedMin && Number.isFinite(bounds.feedMin[0])
     ? { min: bounds.feedMin, max: bounds.feedMax }
     : bounds;
-  const vox = createVoxelStock(fit, { margin, cellSize: voxelSize });
-  const resolve = toolResolver(stats.tools, { radius, type: toolType }, opts.toolOverrides);
+  // The stated billet, where there is one. `margin` is dropped to zero for a
+  // sized axis: the operator gave the blank's real dimensions and padding them
+  // would quietly hand back a block bigger than the material they have.
+  const box = billetBox(fit, stockSize ?? {}, { margin, origin: stockOrigin ?? {} });
+  const vox = createVoxelStock(
+    { min: [box.xMin, box.yMin, box.base], max: [box.xMax, box.yMax, box.top] },
+    { margin: 0, cellSize: voxelSize },
+  );
+  // The fallback cutter, for moves whose tool the program never described. A
+  // chosen TYPE wins over the bare flat/ball, so a chamfer mill carves its cone
+  // instead of a flat floor — see `cam/cutters.js`.
+  const fallbackTool = opts.cutter
+    ? cutterGeometry({ cutter: opts.cutter, diameter: radius * 2, angle: opts.angle })
+    : { radius, type: toolType };
+  const resolve = toolResolver(stats.tools, fallbackTool, opts.toolOverrides);
   const { removedVolume } = carveVoxels(vox, segments, resolve);
   const mesh = voxelSurfaceMesh(vox);
   return {

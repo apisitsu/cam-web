@@ -11,11 +11,20 @@ import {
   InputNumber, Segmented, Switch, Divider, Slider, Upload, Tag, Tooltip,
 } from 'antd';
 import {
-  ThunderboltOutlined, ReloadOutlined, ExperimentOutlined,
+  ThunderboltOutlined, BulbOutlined,
   PlayCircleFilled, PauseCircleFilled, UploadOutlined, StepBackwardOutlined,
-  StepForwardOutlined, FastBackwardOutlined,
+  StepForwardOutlined, FastBackwardOutlined, RollbackOutlined,
   ExpandOutlined, SaveOutlined, FolderOpenOutlined, DownloadOutlined,
+  PlusOutlined, ColumnWidthOutlined,
 } from '@ant-design/icons';
+import CommandButton from './components/CommandButton.jsx';
+import {
+  PartIcon, StockCutIcon, VoxelIcon, TurningIcon, ArborIcon, RotateWorkIcon,
+  CUTTER_ICONS,
+} from './components/glyph.jsx';
+import {
+  CUTTERS, cutterById, cutterWarning,
+} from './engine/cam/cutters.js';
 import { useCamStore } from './stores/camStore.js';
 import { useCamPlanStore } from './stores/camPlanStore.js';
 import { PART_FORMATS } from './engine/mesh/import.js';
@@ -26,12 +35,16 @@ import { fitBoundsFor, fitBoundsForPart, chuckFromBounds } from './engine/view/s
 import { unionBounds } from './engine/view/camera.js';
 import { SPEEDS, PLAY_BASE_SECONDS, perTick } from './engine/view/playback.js';
 import { sidebarSections } from './engine/view/sidebar.js';
-import { offerArborToggle } from './engine/view/millTool.js';
+import { offerArborToggle, parkedTip } from './engine/view/millTool.js';
+import { sweptFitBox } from './engine/view/rotaryFrame.js';
 import { sketchBounds } from './engine/sketch/edit.js';
 import {
   lineAt, timeAt, rotaryAt, toolAt, segmentAtTime, toolPointAt, blockTargetAt,
 } from './engine/gcode/path.js';
 import { STANDARD_TURN_TOOLS } from './engine/sim/turning.js';
+import {
+  billetBox, billetWarnings, billetExtents, previewSolid, suggestBillet,
+} from './engine/sim/billet.js';
 import { SAMPLE_GCODE, SAMPLE_TURNING } from './SAMPLE_GCODE.js';
 import Viewport from './components/Viewport.jsx';
 import GcodePanel from './components/GcodePanel.jsx';
@@ -205,6 +218,196 @@ function TurnInsertPicker({ value, onChange }) {
   );
 }
 
+/**
+ * The cutter the sim falls back to when the program never named one.
+ *
+ * Always collapsed to a single `+` until asked for. The first cut at this
+ * opened it automatically whenever the program declared no tools — which was
+ * exactly the common case, so the `+` was never seen and the row looked as
+ * permanent as before. A control that is sometimes a button and sometimes a
+ * form is worse than either; this is a button, and pressing it gives the form.
+ */
+function ToolFallback({
+  open, onOpen, detected, diameter, cutter, flutes, angle,
+  onDiameter, onCutter, onFlutes, onAngle, addonStyle,
+}) {
+  const spec = cutterById(cutter);
+  if (!open) {
+    return (
+      <Space size={6} align="center">
+        <CommandButton id="toolFallback" size="small" icon={<PlusOutlined />} onClick={onOpen} />
+        <Text style={{ color: '#475569', fontSize: 11 }}>
+          {detected > 0
+            ? `Cutter from the program (${detected} ${detected === 1 ? 'tool' : 'tools'})`
+            : `Cutter — the program names none, using ⌀${diameter} ${spec.label.toLowerCase()}`}
+        </Text>
+      </Space>
+    );
+  }
+  const [loF, hiF] = spec.fluteRange;
+  const advice = cutterWarning({ cutter, diameter });
+  return (
+    <Space direction="vertical" size={4} style={{ width: '100%' }}>
+      {/* The TYPE first: it decides what the other two fields mean. Icon-only,
+          per the toolbar convention — the tooltip names each and says what it
+          is for. See `engine/cam/cutters.js`. */}
+      <Space size={2} wrap>
+        {CUTTERS.map((c) => {
+          const Icon = CUTTER_ICONS[c.id];
+          return (
+            <Tooltip key={c.id} title={<span><b>{c.label}</b><span style={{ display: 'block', opacity: 0.82, fontSize: 12, marginTop: 2 }}>{c.note}</span></span>}>
+              <Button
+                size="small"
+                aria-label={c.label}
+                data-cutter={c.id}
+                type={cutter === c.id ? 'primary' : 'text'}
+                icon={<Icon />}
+                onClick={() => onCutter(c.id)}
+                style={{ width: 32, height: 32, padding: 0, color: cutter === c.id ? undefined : '#cbd5e1' }}
+              />
+            </Tooltip>
+          );
+        })}
+      </Space>
+      <Space wrap align="center" size="small">
+        <Tooltip title="Cutting diameter">
+          <Space.Compact>
+            <span className="ant-input-group-addon" style={addonStyle('left')}>⌀</span>
+            <InputNumber controls={false}
+              min={0.1} step={0.5} value={diameter} onChange={onDiameter}
+              style={{ width: 74 }}
+            />
+            <span className="ant-input-group-addon" style={addonStyle('right')}>mm</span>
+          </Space.Compact>
+        </Tooltip>
+        {/* Flutes are not decoration: feed = rpm x flutes x chip load, so this
+            number is a term in the cycle time. Clamped to what the type is
+            actually made in. */}
+        <Tooltip title={`Flutes / inserts — feed is rpm x flutes x chip load, so this changes the cycle time (${loF}-${hiF} for a ${spec.label.toLowerCase()})`}>
+          <Space.Compact>
+            <span className="ant-input-group-addon" style={addonStyle('left')}>Z</span>
+            <InputNumber controls={false}
+              min={loF} max={hiF} step={1} value={flutes} onChange={onFlutes}
+              style={{ width: 56 }}
+            />
+          </Space.Compact>
+        </Tooltip>
+        {spec.angleAdjustable && (
+          <Tooltip title="Included angle — the chamfer this cutter leaves. 90° gives a 45° chamfer.">
+            <Space.Compact>
+              <span className="ant-input-group-addon" style={addonStyle('left')}>∠</span>
+              <InputNumber controls={false}
+                min={15} max={175} step={5} value={angle} onChange={onAngle}
+                style={{ width: 62 }}
+              />
+              <span className="ant-input-group-addon" style={addonStyle('right')}>°</span>
+            </Space.Compact>
+          </Tooltip>
+        )}
+      </Space>
+      {advice && (
+        <Text style={{ color: '#a16207', fontSize: 11 }}>{advice}</Text>
+      )}
+    </Space>
+  );
+}
+
+/**
+ * The billet: how big it is, and where it sits.
+ *
+ * Every number here is computed in `engine/sim/billet.js` — the box, the
+ * extents, whether the program fits inside, and the blank to offer. This places
+ * the fields and reports what the engine said.
+ *
+ * The extents line under the fields is not decoration. "Origin" is ambiguous on
+ * its own — a corner, a centre, the middle of the top face are all plausible
+ * readings, and no label settles it as well as printing the resulting range.
+ * With `X −10.0 … 70.0` on screen there is nothing left to guess at.
+ */
+function BilletBox({
+  size, origin, extents, suggestion, warnings, onSize, onOrigin, onFit,
+  enabled, onToggle, addonStyle,
+}) {
+  const field = (k, value, onChange, placeholder, allowNegative) => (
+    <Space.Compact key={k}>
+      <span className="ant-input-group-addon" style={addonStyle('left')}>{k.toUpperCase()}</span>
+      <InputNumber controls={false}
+        disabled={!enabled}
+        {...(allowNegative ? {} : { min: 0 })}
+        placeholder={placeholder}
+        value={value[k]}
+        onChange={(v) => onChange({
+          // A size of 0 is not a billet; an origin of 0 is a perfectly good
+          // place to put one, so only sizes treat zero as "unset".
+          [k]: allowNegative
+            ? (Number.isFinite(v) ? v : null)
+            : (v && v > 0 ? v : null),
+        })}
+        style={{ width: 76 }}
+      />
+    </Space.Compact>
+  );
+  const range = ([lo, hi]) => `${lo.toFixed(1)} … ${hi.toFixed(1)}`;
+
+  return (
+    <Space direction="vertical" size={4} style={{ width: '100%' }}>
+      <Space align="center" wrap size="small">
+        {/* On/off for the whole billet. Off hands the blank back to the
+            automatic fit around the toolpath and takes the preview with it. */}
+        <CommandButton
+          id="stockEnabled"
+          size="small"
+          type={enabled ? 'primary' : 'default'}
+          icon={<StockCutIcon />}
+          onClick={onToggle}
+        />
+        <Tooltip title="The blank in the vice, in mm. Leave an axis blank to wrap the toolpath instead.">
+          <span style={{ color: enabled ? '#94a3b8' : '#475569' }}>Stock</span>
+        </Tooltip>
+        {['x', 'y', 'z'].map((k) => field(k, size, onSize, 'auto', false))}
+        <span style={{ color: '#475569', fontSize: 12 }}>mm</span>
+        {suggestion && enabled && (
+          <CommandButton
+            id="fitStock"
+            size="small"
+            type="text"
+            icon={<ColumnWidthOutlined />}
+            onClick={onFit}
+          />
+        )}
+      </Space>
+      <Space align="center" wrap size="small">
+        <span style={{ width: 24, display: 'inline-block' }} />
+        <Tooltip title="Where the blank's X−/Y−/Z− corner sits in work coordinates. Blank centres it on the cutting in X and Y, and puts the top face on Z0 — which is now only a default, not a rule.">
+          <span style={{ color: enabled ? '#94a3b8' : '#475569' }}>Origin</span>
+        </Tooltip>
+        {['x', 'y', 'z'].map((k) => field(k, origin, onOrigin, 'auto', true))}
+        <span style={{ color: '#475569', fontSize: 12 }}>mm</span>
+      </Space>
+      {enabled && extents && (
+        <Text style={{ color: '#475569', fontSize: 11, fontFamily: 'monospace' }}>
+          X {range(extents.x)} · Y {range(extents.y)} · Z {range(extents.z)}
+        </Text>
+      )}
+      {!enabled && (
+        <Text style={{ color: '#475569', fontSize: 11 }}>
+          Stock off — the sim fits a blank around the toolpath.
+        </Text>
+      )}
+      {enabled && warnings.length > 0 && (
+        <Alert
+          type="warning"
+          showIcon
+          message="The program cuts outside the blank"
+          description={<ul style={{ margin: 0, paddingLeft: 18 }}>
+            {warnings.map((w) => <li key={w}>{w}</li>)}
+          </ul>}
+        />
+      )}
+    </Space>
+  );
+}
+
 export default function App() {
   const { token } = theme.useToken();
   // Small scalar state from Zustand — large buffers live in bufferCache.
@@ -225,20 +428,27 @@ export default function App() {
   const viewNonce = useCamStore((s) => s.viewNonce);
   const toolRadius = useCamStore((s) => s.toolRadius);
   const toolType  = useCamStore((s) => s.toolType);
+  const toolCutter = useCamStore((s) => s.toolCutter);
+  const toolFlutes = useCamStore((s) => s.toolFlutes);
+  const toolAngle  = useCamStore((s) => s.toolAngle);
   const cellSize  = useCamStore((s) => s.cellSize);
   const voxelSize = useCamStore((s) => s.voxelSize);
   const simMethod = useCamStore((s) => s.simMethod);
   const turnTool  = useCamStore((s) => s.turnTool);
   const stockOversize = useCamStore((s) => s.stockOversize);
   const toolOverrides = useCamStore((s) => s.toolOverrides);
-  const stockTop  = useCamStore((s) => s.stockTop);
-  const stockBase = useCamStore((s) => s.stockBase);
   const stockMargin = useCamStore((s) => s.stockMargin);
+  const stockSize = useCamStore((s) => s.stockSize);
+  const stockOrigin = useCamStore((s) => s.stockOrigin);
+  const stockEnabled = useCamStore((s) => s.stockEnabled);
   const showStock = useCamStore((s) => s.showStock);
   const showArbor = useCamStore((s) => s.showArbor);
   const cutFollowsPlayback = useCamStore((s) => s.cutFollowsPlayback);
   const simReady  = useCamStore((s) => s.simReady);
+  const removalNote = useCamStore((s) => s.removalNote);
   const aIndex    = useCamStore((s) => s.aIndex);
+  const rotaryFrame = useCamStore((s) => s.rotaryFrame);
+  const simFrameA   = useCamStore((s) => s.simFrameA);
   // Actions are stable references defined once in the store.
   const setGcode = useCamStore((s) => s.setGcode);
   const parse    = useCamStore((s) => s.parse);
@@ -252,7 +462,13 @@ export default function App() {
   const setToolOverride = useCamStore((s) => s.setToolOverride);
   const clearToolOverride = useCamStore((s) => s.clearToolOverride);
   const setTool     = useCamStore((s) => s.setTool);
+  const setCutter   = useCamStore((s) => s.setCutter);
+  const setFlutes   = useCamStore((s) => s.setFlutes);
   const toggleStock = useCamStore((s) => s.toggleStock);
+  const setStockSize = useCamStore((s) => s.setStockSize);
+  const setStockOrigin = useCamStore((s) => s.setStockOrigin);
+  const setBillet = useCamStore((s) => s.setBillet);
+  const toggleStockEnabled = useCamStore((s) => s.toggleStockEnabled);
   const toggleArbor = useCamStore((s) => s.toggleArbor);
   const setCutFollows = useCamStore((s) => s.setCutFollows);
   const setMode     = useCamStore((s) => s.setMode);
@@ -261,10 +477,17 @@ export default function App() {
   const setRapidRate = useCamStore((s) => s.setRapidRate);
   const setDiameterMode = useCamStore((s) => s.setDiameterMode);
   const setAIndex   = useCamStore((s) => s.setAIndex);
+  const setRotaryFrame = useCamStore((s) => s.setRotaryFrame);
   const loadPart      = useCamPlanStore((s) => s.loadPart);
   const partAnalysis  = useCamPlanStore((s) => s.analysis);
   const partVer       = useCamPlanStore((s) => s.meshVer);
+  // Where the physical A axis runs, so the work turns about the line it was
+  // touched off on rather than the part's own zero. Subscribe to the function,
+  // not its result — it builds a fresh array every call.
+  const displayedRotaryCenter = useCamPlanStore((s) => s.displayedRotaryCenter);
   const [showPart, setShowPart] = useState(true);
+  // The sim's fallback cutter is collapsed until asked for — see `ToolFallback`.
+  const [toolFallbackOpen, setToolFallbackOpen] = useState(false);
 
   const [speed, setSpeed] = useState(1);
   const [dragActive, setDragActive] = useState(false);
@@ -382,19 +605,84 @@ export default function App() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
     [sketchSk, sketchVersion],
   );
+  // The A-axis centre for the viewport's work rotation. `[0,0]` — the frame's
+  // own origin — is what indexing assumed before an operator could pick one,
+  // and stays the answer when they haven't.
+  const picked = displayedRotaryCenter();
+  const rotaryCenter = useMemo(
+    () => picked ?? [0, 0],
+    [picked?.[0], picked?.[1]], // eslint-disable-line react-hooks/exhaustive-deps
+  );
+  // The frame toggle is only meaningful where there is a 4th axis to draw: a
+  // milling program that actually indexes. Everything else has one honest view.
+  const canRotateWork = !turning && rotaryIndices.length > 1;
+
+  // The billet, measured against the program. All of it comes from
+  // `engine/sim/billet.js` — the same function the carver builds its block
+  // with — so what the panel reports and what gets cut cannot disagree.
+  const billetSuggestion = useMemo(
+    () => (bounds ? suggestBillet(bounds, { margin: stockMargin }) : null),
+    [bounds, stockMargin],
+  );
+  // Deliberately NOT gated on a parsed program: the material is in the vice
+  // before the .nc exists, and a blank you cannot describe until one is loaded
+  // is a blank you cannot set up against. `previewSolid` owns the whole rule,
+  // including when there is nothing worth drawing.
+  const billetOpts = useMemo(
+    () => ({ margin: stockMargin, origin: stockOrigin }),
+    [stockMargin, stockOrigin],
+  );
+  const billetNow = useMemo(
+    () => (turning || !stockEnabled ? null : billetBox(bounds, stockSize, billetOpts)),
+    [bounds, stockSize, billetOpts, turning, stockEnabled],
+  );
+  // The blank as a drawable box, straight to the viewport. No worker, no carve —
+  // so it follows the number being typed rather than the last press of Simulate.
+  // Yielded to the carved block the moment there is one to show.
+  const stockSolid = useMemo(
+    () => (sim || turning || !stockEnabled ? null : previewSolid(bounds, stockSize, billetOpts)),
+    [bounds, stockSize, billetOpts, sim, turning, stockEnabled],
+  );
+  // The readout describes what is actually on screen. With neither a program
+  // nor a stated size there is no blank, and printing the ±margin box round the
+  // origin would be reporting a billet that does not exist.
+  const billetExtentsNow = useMemo(
+    () => (stockSolid || sim ? billetExtents(billetNow) : null),
+    [billetNow, stockSolid, sim],
+  );
+  const billetProblems = useMemo(
+    // Only measurable against a program. With none loaded there is nothing the
+    // blank could be too small for yet.
+    () => (billetNow && bounds ? billetWarnings(billetNow, bounds) : []),
+    [billetNow, bounds],
+  );
+  // The blank as a fit target, in the same shape the camera framing wants.
+  const billetFit = useMemo(() => (stockSolid && billetNow ? {
+    min: [billetNow.xMin, billetNow.yMin, billetNow.base],
+    max: [billetNow.xMax, billetNow.yMax, billetNow.top],
+  } : null), [stockSolid, billetNow]);
+
   // Frame the camera to the cutting geometry (the part), not the rapid retracts.
   // Deliberately NOT keyed on bufVer: the values don't change as the sim carves,
   // and refitting on every playback tick was resetting the user's zoom.
   // An imported model is framed too, and unioned with the program's bounds when
   // both exist — after "Verify in viewport" the toolpath and the part it came
   // from should be on screen together, not one of them off the edge.
-  const fitBounds = useMemo(
-    () => unionBounds(
-      fitBoundsFor(turning ? 'turn' : 'mill', bounds),
+  const fitBounds = useMemo(() => {
+    // Machine frame: the cutting moves all sit above the A axis, so their bounds
+    // are a plane and fitting to them frames a sliver. What is on screen over
+    // the run is that path swept around the axis — see `sweptFitBox`.
+    const cut = fitBoundsFor(turning ? 'turn' : 'mill', bounds);
+    return unionBounds(
+      unionBounds(
+        rotaryFrame === 'machine' ? sweptFitBox(cut, rotaryCenter) : cut,
+        // The blank is framed too. Without it, sizing stock on an empty
+        // viewport draws a 50 mm block the camera is nowhere near.
+        billetFit,
+      ),
       fitBoundsForPart(turning ? 'turn' : 'mill', partAnalysis?.bounds ?? null),
-    ),
-    [bounds, turning, partAnalysis],
-  );
+    );
+  }, [bounds, turning, partAnalysis, rotaryFrame, rotaryCenter, billetFit]);
 
   // Chuck placement uses the *real* cutting bounds (not the padded fit), so the
   // 5 mm clearance to the deepest cut is preserved regardless of framing. The
@@ -416,6 +704,10 @@ export default function App() {
     ? currentOverride.diameter / 2
     : currentTool?.radius) ?? toolRadius;
   const markerType = currentOverride.simType ?? currentTool?.simType ?? toolType;
+  // The cutter TYPE only drives the marker where it is the tool actually being
+  // used — i.e. where the program named no tool for this move. A detected Ø50
+  // face mill must not be redrawn as whatever the fallback picker last showed.
+  const markerCutter = currentTool || currentOverride.simType ? undefined : toolCutter;
   // Gauge length (tip to collet) drives how far the milling marker sticks out.
   const markerLength = currentOverride.length ?? currentTool?.length ?? 0;
   // The turning toolholder for the marker — chosen per-tool in the Tool table.
@@ -476,6 +768,18 @@ export default function App() {
 
   // Rotary index (A/B degrees) at the playhead, so the tool marker can stand
   // normal to the face being cut instead of always pointing straight up +Z.
+  // Where to draw the tool when the machine is not running. Without this the
+  // marker simply did not exist until the playhead moved, so picking a cutter
+  // type changed nothing on screen and read as a picker that does not work.
+  // Kept separate from `toolPos`: the position readout must go on showing
+  // nothing, because the machine is not actually anywhere.
+  // Memoised: a fresh array every render would retrigger the demand-mode
+  // canvas's invalidate() on every keystroke anywhere in the app.
+  const markerPos = useMemo(
+    () => toolPos ?? parkedTip({ solid: stockSolid, bounds, radius: markerRadius }),
+    [toolPos, stockSolid, bounds, markerRadius],
+  );
+
   const toolRotary = useMemo(() => {
     if (!path || playhead <= 0) return null;
     return rotaryAt(path, playhead);
@@ -518,29 +822,30 @@ export default function App() {
           {!sketching && (
           <Sider width={430} style={{ background: '#111827', padding: 16, overflow: 'auto' }}>
             <Space direction="vertical" size="middle" style={{ width: '100%' }}>
+              {/* Icon-only, like every other rail in the app: the names and the
+                  descriptions come from the command catalogue and appear on
+                  hover. See `engine/view/commands.js`. */}
               {show.files && (
               <Space wrap>
-                <Button
+                <CommandButton
+                  id="parse"
                   type="primary"
                   icon={<ThunderboltOutlined />}
                   loading={status === 'parsing'}
                   onClick={() => parse()}
-                >
-                  Parse
-                </Button>
+                />
                 <Upload
                   accept=".nc,.gcode,.gc,.tap,.cnc,.ngc,.txt,.mpf"
                   showUploadList={false}
                   beforeUpload={(file) => { loadFile(file); return false; }}
                 >
-                  <Button icon={<UploadOutlined />}>Open file</Button>
+                  <CommandButton id="openProgram" icon={<UploadOutlined />} />
                 </Upload>
-                <Button
-                  icon={<ReloadOutlined />}
+                <CommandButton
+                  id="sample"
+                  icon={<BulbOutlined />}
                   onClick={() => parse(turning ? SAMPLE_TURNING : SAMPLE_GCODE)}
-                >
-                  Sample
-                </Button>
+                />
               </Space>
               )}
 
@@ -549,21 +854,20 @@ export default function App() {
                   before. Saving G-code alone is for handing the program on. */}
               {show.project && <>
               <Space wrap>
-                <Tooltip title="Save the program, machine setup and sketch as one .camweb.json project">
-                  <Button icon={<SaveOutlined />} onClick={onSaveProject}>Save project</Button>
-                </Tooltip>
+                <CommandButton id="saveProject" icon={<SaveOutlined />} onClick={onSaveProject} />
                 <Upload
                   accept=".json,.camweb.json"
                   showUploadList={false}
                   beforeUpload={(file) => { onOpenProject(file); return false; }}
                 >
-                  <Button icon={<FolderOpenOutlined />}>Open project</Button>
+                  <CommandButton id="openProject" icon={<FolderOpenOutlined />} />
                 </Upload>
-                <Tooltip title="Save just the G-code text">
-                  <Button icon={<DownloadOutlined />} disabled={!gcode} onClick={onSaveGcode}>
-                    Save G-code
-                  </Button>
-                </Tooltip>
+                <CommandButton
+                  id="saveGcode"
+                  icon={<DownloadOutlined />}
+                  disabled={!gcode}
+                  onClick={onSaveGcode}
+                />
               </Space>
 
               <Text style={{ color: '#475569', fontSize: 12 }}>
@@ -748,14 +1052,14 @@ export default function App() {
                             {t.cutLength > 0 ? `${t.cutLength.toFixed(0)} mm` : 'unused'}
                           </span>
                           {edited && (
-                            <Button
+                            <CommandButton
+                              id="resetTool"
                               size="small"
                               type="text"
+                              icon={<RollbackOutlined />}
                               onClick={() => clearToolOverride(t.n)}
                               style={{ color: '#64748b', padding: '0 4px' }}
-                            >
-                              reset
-                            </Button>
+                            />
                           )}
                         </div>
                       );
@@ -794,17 +1098,14 @@ export default function App() {
                     </Space.Compact>
                   </Space>
                   <Space wrap align="center">
-                    <Tooltip title="Start from a bar 1 mm over the largest turned diameter and cut down to the programmed profile (sharp corner, follows the tool path).">
-                      <Button
-                        type="primary"
-                        ghost
-                        icon={<ExperimentOutlined />}
-                        loading={simStatus === 'running'}
-                        onClick={() => simulate()}
-                      >
-                        Simulate turning
-                      </Button>
-                    </Tooltip>
+                    <CommandButton
+                      id="simulateTurning"
+                      type="primary"
+                      ghost
+                      icon={<TurningIcon />}
+                      loading={simStatus === 'running'}
+                      onClick={() => simulate()}
+                    />
                     {sim && (
                       <Statistic title="Removed (mm³)" value={sim.removedVolume} precision={0} />
                     )}
@@ -853,99 +1154,80 @@ export default function App() {
                     />
                   )}
 
-                  <Space wrap align="center">
-                    <span style={{ color: '#94a3b8' }}>Tool ⌀</span>
-                    <Space.Compact>
-                      <InputNumber controls={false}
-                        min={0.1}
-                        step={0.5}
-                        value={toolRadius * 2}
-                        onChange={(v) => setTool({ toolRadius: (v || 0.2) / 2 })}
-                        style={{ width: 80 }}
-                      />
-                      <span className="ant-input-group-addon" style={addonStyle('right')}>mm</span>
-                    </Space.Compact>
-                    <Segmented
-                      value={toolType}
-                      onChange={(v) => setTool({ toolType: v })}
-                      options={[{ label: 'Flat', value: 'flat' }, { label: 'Ball', value: 'ball' }]}
-                    />
-                  </Space>
-                  <Space align="center" wrap>
-                    <span style={{ color: '#94a3b8' }}>Grid</span>
-                    <Space.Compact>
-                      <InputNumber controls={false}
-                        min={0.1}
-                        step={0.1}
-                        value={cellSize}
-                        onChange={(v) => setTool({ cellSize: v || 0.5 })}
-                        style={{ width: 80 }}
-                      />
-                      <span className="ant-input-group-addon" style={addonStyle('right')}>mm</span>
-                    </Space.Compact>
-                  </Space>
+                  {/* The cutter the sim carves with is normally read out of the
+                      program and edited per tool in the Tool table above. This
+                      is the fallback for a program that never says — worth
+                      having, not worth a permanent row, so it lives behind a +.
+                      It opens on its own when the program declared no tools at
+                      all, because then it is the only thing that decides the
+                      cut. */}
+                  <ToolFallback
+                    open={toolFallbackOpen}
+                    onOpen={() => setToolFallbackOpen(true)}
+                    detected={detectedTools.length}
+                    diameter={toolRadius * 2}
+                    cutter={toolCutter}
+                    flutes={toolFlutes}
+                    angle={toolAngle}
+                    onDiameter={(v) => setTool({ toolRadius: (v || 0.2) / 2 })}
+                    onCutter={setCutter}
+                    onFlutes={setFlutes}
+                    onAngle={(v) => setTool({ toolAngle: v || 90 })}
+                    addonStyle={addonStyle}
+                  />
 
-                  {/* Billet definition — empty = auto-derived from the toolpath. */}
-                  <Space align="center" wrap size="small">
-                    <span style={{ color: '#94a3b8' }}>Stock</span>
-                    <Tooltip title="Billet top Z (blank = highest move)">
-                      <Space.Compact>
-                        <span className="ant-input-group-addon" style={addonStyle('left')}>T</span>
-                        <InputNumber controls={false}
-                          placeholder="top auto"
-                          value={stockTop}
-                          onChange={(v) => setTool({ stockTop: v ?? null })}
-                          style={{ width: 80 }}
-                        />
-                      </Space.Compact>
-                    </Tooltip>
-                    <Tooltip title="Billet bottom Z (blank = below deepest cut)">
-                      <Space.Compact>
-                        <span className="ant-input-group-addon" style={addonStyle('left')}>B</span>
-                        <InputNumber controls={false}
-                          placeholder="bot auto"
-                          value={stockBase}
-                          onChange={(v) => setTool({ stockBase: v ?? null })}
-                          style={{ width: 80 }}
-                        />
-                      </Space.Compact>
-                    </Tooltip>
-                    <Tooltip title="XY overhang around the toolpath">
-                      <Space.Compact>
-                        <span className="ant-input-group-addon" style={addonStyle('left')}>M</span>
-                        <InputNumber controls={false}
-                          min={0}
-                          value={stockMargin}
-                          onChange={(v) => setTool({ stockMargin: v ?? 0 })}
-                          style={{ width: 76 }}
-                        />
-                      </Space.Compact>
-                    </Tooltip>
-                  </Space>
+                  {/* The billet, as a piece of material: X × Y × Z, and the
+                      corner it sits on. The arithmetic lives in
+                      `engine/sim/billet.js`; this only collects the numbers and
+                      shows what the engine says about them. */}
+                  <BilletBox
+                    size={stockSize}
+                    origin={stockOrigin}
+                    extents={billetExtentsNow}
+                    suggestion={billetSuggestion}
+                    warnings={billetProblems}
+                    onSize={setStockSize}
+                    onOrigin={setStockOrigin}
+                    onFit={() => setBillet(billetSuggestion)}
+                    enabled={stockEnabled}
+                    onToggle={toggleStockEnabled}
+                    addonStyle={addonStyle}
+                  />
 
                   <Space wrap>
-                    <Tooltip title={rotaryIndices.length > 1
-                      ? 'Multi-axis: carves every rotary face and every tool into one voxel block (undercuts included).'
-                      : 'Carves the Z-up height field — scrub-able with playback.'}>
-                      <Button
+                    {/* Each sim carries its own resolution, because they are
+                        resolutions of different things — the height field's XY
+                        cell and the voxel block's edge. Sitting in one column
+                        under a shared "Stock" heading, they read as two settings
+                        of one simulator, which they have never been. */}
+                    <Space.Compact>
+                      <CommandButton
+                        id={rotaryIndices.length > 1 ? 'simulateFaces' : 'simulate'}
                         type="primary"
                         ghost
-                        icon={<ExperimentOutlined />}
+                        icon={rotaryIndices.length > 1 ? <VoxelIcon /> : <StockCutIcon />}
                         loading={simStatus === 'running'}
                         onClick={() => simulate()}
-                      >
-                        {rotaryIndices.length > 1 ? 'Simulate all faces' : 'Simulate'}
-                      </Button>
-                    </Tooltip>
-                    <Tooltip title="Force the voxel sim (all faces + undercuts) at this resolution — smaller mm = finer, slower.">
-                      <Space.Compact>
-                        <Button
-                          icon={<ExperimentOutlined />}
-                          loading={simStatus === 'running'}
-                          onClick={() => simulateVoxel()}
-                        >
-                          Voxel
-                        </Button>
+                      />
+                      <Tooltip title="Height-field cell size — smaller mm is finer and slower">
+                        <InputNumber controls={false}
+                          min={0.1}
+                          step={0.1}
+                          value={cellSize}
+                          onChange={(v) => setTool({ cellSize: v || 0.5 })}
+                          style={{ width: 70 }}
+                        />
+                      </Tooltip>
+                      <span className="ant-input-group-addon" style={addonStyle('right')}>mm</span>
+                    </Space.Compact>
+                    <Space.Compact>
+                      <CommandButton
+                        id="simulateVoxel"
+                        icon={<VoxelIcon />}
+                        loading={simStatus === 'running'}
+                        onClick={() => simulateVoxel()}
+                      />
+                      <Tooltip title="Voxel edge length — smaller mm is finer and slower">
                         <InputNumber controls={false}
                           min={0.5}
                           step={0.5}
@@ -953,10 +1235,27 @@ export default function App() {
                           onChange={(v) => setTool({ voxelSize: v || 1 })}
                           style={{ width: 70 }}
                         />
-                        <span className="ant-input-group-addon" style={addonStyle('right')}>mm</span>
-                      </Space.Compact>
-                    </Tooltip>
+                      </Tooltip>
+                      <span className="ant-input-group-addon" style={addonStyle('right')}>mm</span>
+                    </Space.Compact>
                   </Space>
+                  {/* A carve that takes nothing off looks exactly like a carve
+                      that never ran. Saying which cause it was turns a silent
+                      failure into a fixable one — see `engine/sim/removal.js`. */}
+                  {removalNote && (
+                    <Alert
+                      type="warning"
+                      showIcon
+                      message="Nothing was removed"
+                      description={removalNote}
+                    />
+                  )}
+                  <Text style={{ color: '#475569', fontSize: 11 }}>
+                    Left carves a <b>height field</b> — one Z per cell, so it is fast and
+                    scrubs with playback, but cannot show an undercut. Right carves a{' '}
+                    <b>voxel block</b> — every rotary face and every undercut, one shot,
+                    no scrubbing.
+                  </Text>
                   {simMethod === 'voxel' && sim && (
                     <Text style={{ color: '#475569', fontSize: 12 }}>
                       Voxel model — all faces &amp; undercuts, {(sim.cells / 1e6).toFixed(2)}M cells removed {sim.removedVolume?.toFixed(0)} mm³
@@ -1032,66 +1331,84 @@ export default function App() {
               padding: '6px 12px', borderRadius: 8,
             }}>
               <Segmented size="small" value={view} onChange={setViewPreset} options={VIEWS} />
-              <Tooltip title={sketching ? 'Fit sketch to view' : 'Fit part and toolpath to view'}>
-                <Button size="small" icon={<ExpandOutlined />} onClick={() => setViewPreset(view)} />
-              </Tooltip>
-              {/* Only offered once a model exists — a dead toggle is worse than
-                  no toggle. Hiding the part is how you see a toolpath that runs
-                  inside it. */}
+              <CommandButton
+                id="fitView" size="small"
+                icon={<ExpandOutlined />}
+                title={sketching ? 'Frame the sketch in the window' : undefined}
+                onClick={() => setViewPreset(view)}
+              />
+              {/* What the viewport draws is a set of toolbar toggles, the way a
+                  CAD view toolbar does it — a pressed glyph, not a labelled
+                  switch. `type` carries the on/off state. Only offered once
+                  there is something to hide: a dead toggle is worse than none. */}
               {!sketching && partAnalysis && (
-                <Tooltip title="Show the imported STL model">
-                  <Space size={4}>
-                    <Switch size="small" checked={showPart} onChange={setShowPart} />
-                    <Text style={{ color: '#94a3b8', fontSize: 12 }}>Part</Text>
-                  </Space>
-                </Tooltip>
+                <CommandButton
+                  id="showPart" size="small"
+                  type={showPart ? 'primary' : 'default'}
+                  icon={<PartIcon />}
+                  onClick={() => setShowPart(!showPart)}
+                />
               )}
               {/* The arbor is the widest part of the marker, so it is what hides
                   the cut. Milling only — the lathe holder is drawn a different
                   way and has nothing to drop. */}
               {arborToggle && (
-                <Tooltip title="Show the collet / arbor above the cutter — turn it off to see the cut it covers">
-                  <Space size={4}>
-                    <Switch size="small" checked={showArbor} onChange={toggleArbor} />
-                    <Text style={{ color: '#94a3b8', fontSize: 12 }}>Arbor</Text>
-                  </Space>
-                </Tooltip>
+                <CommandButton
+                  id="showArbor" size="small"
+                  type={showArbor ? 'primary' : 'default'}
+                  icon={<ArborIcon />}
+                  onClick={toggleArbor}
+                />
+              )}
+              {/* 4th axis: which end of the same rigid motion to watch. A rotary
+                  table turns the WORK — that is what a 4-axis machine selects by
+                  default — but the part frame, which keeps the workpiece still
+                  and tilts the tool, is how you inspect every face at once. Both
+                  states are real, so the tooltip says which one you are in. */}
+              {canRotateWork && (
+                <CommandButton
+                  id="rotateWork" size="small"
+                  type={rotaryFrame === 'machine' ? 'primary' : 'default'}
+                  icon={<RotateWorkIcon />}
+                  title={rotaryFrame === 'machine'
+                    ? 'On: the table turns the work under an upright spindle, as it does on the machine'
+                    : 'Off: the workpiece stays put and the tool tilts onto each indexed face'}
+                  onClick={() => setRotaryFrame(rotaryFrame === 'machine' ? 'part' : 'machine')}
+                />
               )}
               {!sketching && <>
               <div style={{ width: 1, alignSelf: 'stretch', background: '#334155' }} />
-              <Tooltip title="Restart">
-                <Button
-                  size="small" shape="circle"
-                  icon={<FastBackwardOutlined />}
-                  onClick={() => setPlayhead(0)}
-                  disabled={count === 0}
-                />
-              </Tooltip>
+              <CommandButton
+                id="restart"
+                size="small" shape="circle"
+                icon={<FastBackwardOutlined />}
+                onClick={() => setPlayhead(0)}
+                disabled={count === 0}
+              />
               {/* Single block, either way: one source line per press, so an arc
                   steps as the one move it was written as and not as the hundreds
                   of chords it tessellates into. */}
-              <Tooltip title="Single block back — replay the block that just ran">
-                <Button
-                  size="small" shape="circle"
-                  icon={<StepBackwardOutlined />}
-                  onClick={() => stepBlock(-1)}
-                  disabled={count === 0 || playhead === 0}
-                />
-              </Tooltip>
-              <Button
+              <CommandButton
+                id="stepBack"
+                size="small" shape="circle"
+                icon={<StepBackwardOutlined />}
+                onClick={() => stepBlock(-1)}
+                disabled={count === 0 || playhead === 0}
+              />
+              <CommandButton
+                id={playing ? 'pause' : 'play'}
                 type="primary" shape="circle"
                 icon={playing ? <PauseCircleFilled /> : <PlayCircleFilled />}
                 onClick={togglePlay}
                 disabled={count === 0}
               />
-              <Tooltip title="Single block — run one block and stop">
-                <Button
-                  size="small" shape="circle"
-                  icon={<StepForwardOutlined />}
-                  onClick={() => stepBlock(1)}
-                  disabled={count === 0}
-                />
-              </Tooltip>
+              <CommandButton
+                id="stepForward"
+                size="small" shape="circle"
+                icon={<StepForwardOutlined />}
+                onClick={() => stepBlock(1)}
+                disabled={count === 0}
+              />
               <Segmented size="small" value={speed} onChange={setSpeed} options={SPEEDS} />
               <Slider
                 style={{ flex: 1, minWidth: 120, margin: 0 }}
@@ -1118,10 +1435,12 @@ export default function App() {
               sketchFit={sketchFit}
               turnChuck={turnChuck}
               showStock={showStock}
-              toolPos={toolPos}
+              toolPos={markerPos}
               toolRotary={toolRotary}
               toolRadius={markerRadius}
               toolType={markerType}
+              toolCutter={markerCutter}
+              toolAngle={toolAngle}
               toolLength={markerLength}
               turnInsert={turnInsert}
               bufVer={bufVer}
@@ -1129,6 +1448,10 @@ export default function App() {
               mode={sketching ? 'mill' : mode}
               sketching={sketching}
               showArbor={showArbor}
+              rotaryFrame={rotaryFrame}
+              rotaryCenter={rotaryCenter}
+              simFrameA={simFrameA}
+              stockSolid={stockSolid}
               view={view}
               viewNonce={viewNonce}
             />

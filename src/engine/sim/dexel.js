@@ -12,6 +12,8 @@
  * The engine is pure JS (no three / no DOM) so it runs and tests under Node,
  * exactly like the Phase 0 G-code engine.
  */
+import { billetBox } from './billet.js';
+import { profileRise } from '../cam/cutters.js';
 
 /**
  * @typedef {Object} Tool
@@ -34,22 +36,27 @@ export function resetStock(stock) {
 }
 
 /**
- * Build a stock block sized to the toolpath bounds plus margin.
- * `top` / `base` (billet top & bottom Z) may be given explicitly; otherwise the
- * top defaults to the highest move and the base to just below the deepest move.
+ * Build a stock block for a toolpath.
+ *
+ * `size` is the operator's billet — X × Y × Z in mm — and `origin` is its
+ * minimum corner in work coordinates; see `billet.js` for why those are the
+ * right two questions to ask. Any axis left blank falls back to wrapping the
+ * toolpath: `margin` all round in XY, and `top` / `base` in Z (defaulting to
+ * the highest move and just below the deepest), exactly as this always did.
  */
-export function stockFromBounds(bounds, { margin = 5, cellSize = 1, top, base } = {}) {
-  const [minx, miny, minz] = bounds.min;
-  const [maxx, maxy, maxz] = bounds.max;
-  const t = top ?? maxz;
-  const b = base ?? minz - 2;
+export function stockFromBounds(bounds, {
+  margin = 5, cellSize = 1, top, base, size, origin,
+} = {}) {
+  const box = billetBox(bounds, size ?? {}, {
+    margin, origin: origin ?? {}, autoTop: top, autoBase: base,
+  });
   return createStock({
-    xMin: minx - margin,
-    yMin: miny - margin,
-    xMax: maxx + margin,
-    yMax: maxy + margin,
-    top: t,
-    base: b,
+    xMin: box.xMin,
+    yMin: box.yMin,
+    xMax: box.xMax,
+    yMax: box.yMax,
+    top: box.top,
+    base: box.base,
     cellSize,
   });
 }
@@ -64,12 +71,16 @@ function cellY(stock, y) {
 
 /**
  * Stamp the cutter at (x,y) with its tip at height z: every cell whose centre
- * lies under the tool disc is lowered to at most `z` (flat) or the ball-nose
- * surface height (ball). Returns the volume removed by this stamp.
+ * lies under the tool is lowered to the cutter's own surface at that offset
+ * from its axis. Returns the volume removed by this stamp.
+ *
+ * The surface comes from `profileRise` in `cam/cutters.js`, shared with the
+ * voxel carver — so a flat, a ball and a chamfer cone are one formula with
+ * three cases, and the two simulators cannot disagree about the shape of a
+ * tool.
  */
 export function stamp(stock, x, y, z, tool) {
   const r = tool.radius;
-  const ball = tool.type === 'ball';
   const cs = stock.cellSize;
   const ci0 = Math.max(0, cellX(stock, x - r));
   const ci1 = Math.min(stock.nx - 1, cellX(stock, x + r));
@@ -89,8 +100,7 @@ export function stamp(stock, x, y, z, tool) {
       if (d2 > r2) continue;
 
       // Surface height of the tool at this offset from its axis.
-      let surfZ = z;
-      if (ball) surfZ = z + (r - Math.sqrt(Math.max(0, r2 - d2)));
+      const surfZ = z + profileRise(tool, Math.sqrt(d2));
 
       const idx = j * stock.nx + i;
       const h = stock.heights[idx];

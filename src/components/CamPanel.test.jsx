@@ -35,6 +35,15 @@ function stlFile(soup, name = 'part.stl') {
 
 const store = () => useCamPlanStore.getState();
 
+/**
+ * A command button, by its catalogue id.
+ *
+ * The panel's buttons carry no text — `CommandButton` stamps `data-cmd` on each
+ * one precisely so there is still something stable to find them by. Matching on
+ * the label would go back to coupling every test to the wording.
+ */
+const cmd = (el, id) => el.querySelector(`button[data-cmd="${id}"]`);
+
 let container;
 let root;
 
@@ -105,7 +114,11 @@ describe('the workflow starts at the part', () => {
     const top = store().features().faces.find((f) => f.facing === 'up');
     await act(async () => { store().selectFeature(top); });
     const el = await render();
-    expect(el.textContent).toMatch(/Clear this face/);
+    // The buttons are icon-only now, so the command id is the handle — see
+    // `engine/view/commands.js`. The *description* of what was picked is still
+    // prose, and still has to be on screen: a glyph cannot say "up face".
+    expect(cmd(el, 'addFaceOp')).toBeTruthy();
+    expect(cmd(el, 'addFaceOp').getAttribute('aria-label')).toBe('Clear this face');
     expect(el.textContent).toMatch(/up face/);
   });
 
@@ -113,8 +126,8 @@ describe('the workflow starts at the part', () => {
     await store().loadStl(stlFile(box(60, 40, 20)));
     await act(async () => { store().selectFeature(store().features().edges[0]); });
     const el = await render();
-    expect(el.textContent).toMatch(/Trace this edge/);
-    expect(el.textContent).not.toMatch(/Clear this face/);
+    expect(cmd(el, 'addEdgeOp')).toBeTruthy();
+    expect(cmd(el, 'addFaceOp')).toBeNull();
   });
 
   it('refuses to arm the button for a face the cutter cannot reach', async () => {
@@ -123,8 +136,7 @@ describe('the workflow starts at the part', () => {
     await act(async () => { store().selectFeature(side); });
     const el = await render();
     expect(el.textContent).toMatch(/A 3-axis cutter cannot reach it/);
-    const button = [...el.querySelectorAll('button')].find((b) => /Clear this face/.test(b.textContent));
-    expect(button.disabled).toBe(true);
+    expect(cmd(el, 'addFaceOp').disabled).toBe(true);
   });
 
   it('shows the table once something has been picked', async () => {
@@ -140,7 +152,7 @@ describe('the workflow starts at the part', () => {
   it('keeps auto-plan available but out of the way', async () => {
     await store().loadStl(stlFile(box(60, 40, 20)));
     const el = await render();
-    const auto = [...el.querySelectorAll('button')].find((b) => /Auto-plan/.test(b.textContent));
+    const auto = cmd(el, 'autoPlan');
     expect(auto).toBeTruthy();
     expect(auto.className).not.toMatch(/ant-btn-primary/);
   });

@@ -7,8 +7,9 @@
  * a highlighting editable field while giving a clear "which line is running" cue.
  */
 import { useEffect, useMemo, useRef, useState } from 'react';
-import { Button, Input, Space } from 'antd';
+import { Input, Space } from 'antd';
 import { EditOutlined, EyeOutlined } from '@ant-design/icons';
+import CommandButton from './CommandButton.jsx';
 
 export default function GcodePanel({ gcode, activeLine, onChange }) {
   const [editing, setEditing] = useState(false);
@@ -25,13 +26,14 @@ export default function GcodePanel({ gcode, activeLine, onChange }) {
   return (
     <div>
       <Space style={{ marginBottom: 6 }}>
-        <Button
+        {/* One button, two commands — the catalogue names each state rather
+            than the toggle, so the tooltip says what pressing it will do. */}
+        <CommandButton
+          id={editing ? 'viewGcode' : 'editGcode'}
           size="small"
           icon={editing ? <EyeOutlined /> : <EditOutlined />}
           onClick={() => setEditing((e) => !e)}
-        >
-          {editing ? 'View' : 'Edit'}
-        </Button>
+        />
         {!editing && activeLine > 0 && (
           <span style={{ color: '#64748b', fontSize: 12 }}>line {activeLine}</span>
         )}

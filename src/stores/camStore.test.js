@@ -139,3 +139,50 @@ describe('camStore.stepBlock — single block', () => {
     expect(useCamStore.getState().playhead).toBe(0);
   });
 });
+
+describe('camStore rotary frame — the machine picks how the 4th axis is drawn', () => {
+  beforeEach(() => {
+    useCamPlanStore.getState().clear();
+    useCamStore.setState({ mode: 'mill', rotaryFrame: 'part', gcode: '' });
+  });
+
+  it('starts in the part frame — a 3-axis job has no table to turn', () => {
+    expect(useCamStore.getState().rotaryFrame).toBe('part');
+  });
+
+  it('switches to the machine frame when a 4-axis mill is selected', () => {
+    useCamPlanStore.getState().setMachine('generic-vmc-4axis');
+    expect(useCamStore.getState().rotaryFrame).toBe('machine');
+  });
+
+  it('switches back when a 3-axis mill is selected again', () => {
+    useCamPlanStore.getState().setMachine('generic-vmc-4axis');
+    useCamPlanStore.getState().setMachine('haas-vf2');
+    expect(useCamStore.getState().rotaryFrame).toBe('part');
+  });
+
+  it('leaves a lathe in the part frame — turning is already drawn spindle-first', () => {
+    useCamPlanStore.getState().setMachine('okuma-lb3000');
+    expect(useCamStore.getState().rotaryFrame).toBe('part');
+  });
+
+  it('carries the frame into the interpreter options, in both workers', () => {
+    useCamPlanStore.getState().setMachine('generic-vmc-4axis');
+    expect(useCamStore.getState().machineOpts().rotaryFrame).toBe('machine');
+  });
+
+  it('the toggle pins the frame the machine would not have chosen', () => {
+    useCamPlanStore.getState().setMachine('generic-vmc-4axis');
+    useCamStore.getState().setRotaryFrame('part');
+    expect(useCamStore.getState().rotaryFrame).toBe('part');
+    expect(useCamStore.getState().machineOpts().rotaryFrame).toBe('part');
+  });
+
+  it('re-picking the frame already drawn is a no-op, not a re-parse', () => {
+    // setRotaryFrame re-parses, which needs a worker; the guard is what keeps
+    // an idempotent set from reaching for one.
+    useCamStore.setState({ gcode: 'G0 X0' });
+    expect(() => useCamStore.getState().setRotaryFrame('part')).not.toThrow();
+    expect(useCamStore.getState().rotaryFrame).toBe('part');
+  });
+});

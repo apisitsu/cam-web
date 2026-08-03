@@ -17,6 +17,8 @@
  * Pure JS, no three / no DOM — it runs and tests under Node like the rest.
  */
 
+import { profileRise } from '../cam/cutters.js';
+
 const DEG = Math.PI / 180;
 
 /**
@@ -63,8 +65,20 @@ export function createVoxelStock(bounds, { margin = 3, cellSize = 1 } = {}) {
   return { ox, oy, oz, cs, nx, ny, nz, solid, count: nx * ny * nz };
 }
 
-/** Clear the oriented tool's swept solid at one tip position `p`. */
-function stampVoxel(v, px, py, pz, ax, ay, az, r, ballR, length) {
+/**
+ * Clear the oriented tool's swept solid at one tip position `p`.
+ *
+ * A voxel is inside the tool when it is within the cutter radius of the axis,
+ * below the flute length, and **above the cutter's own surface** at that
+ * distance out — which is exactly `profileRise`, the same function the height
+ * field stamps with. Expressing it that way replaced three hand-written cases
+ * (straight flute / hemispherical nose / flat bottom) with one test that is
+ * right for all of them, and got cones for free: a chamfer mill now carves a
+ * cone here as well as in the dexel field, instead of the two simulators
+ * quietly disagreeing about what the tool is.
+ */
+function stampVoxel(v, px, py, pz, ax, ay, az, tool, length) {
+  const r = tool.radius;
   const { ox, oy, oz, cs, nx, ny, nz, solid } = v;
   // AABB bounding the cylinder from p to p + axis·length, fattened by r.
   const ex = px + ax * length;
@@ -99,16 +113,9 @@ function stampVoxel(v, px, py, pz, ax, ay, az, r, ballR, length) {
         // Split the offset from the tip into along-axis and perpendicular parts.
         const axial = cx * ax + cy * ay + cz * az;
         const perp2 = cx * cx + cy * cy + cz * cz - axial * axial;
-        let inside = false;
-        if (axial >= ballR && axial <= length) {
-          inside = perp2 <= r2; // straight flute
-        } else if (ballR > 0 && axial >= 0 && axial < ballR) {
-          // Hemispherical nose: inside the sphere centred ballR up the axis.
-          const da = axial - ballR;
-          inside = perp2 + da * da <= r2;
-        } else if (ballR === 0 && axial >= 0 && axial <= length) {
-          inside = perp2 <= r2; // flat bottom
-        }
+        const inside = perp2 <= r2
+          && axial <= length
+          && axial >= profileRise(tool, Math.sqrt(Math.max(0, perp2)));
         if (inside) {
           solid[idx] = 0;
           removed++;
@@ -121,11 +128,10 @@ function stampVoxel(v, px, py, pz, ax, ay, az, r, ballR, length) {
 
 /**
  * Carve one straight move a→b with a tool pointing along `axis` (part frame).
- * @param {object} tool  { radius, type:'flat'|'ball', length? }
+ * @param {object} tool  { radius, type:'flat'|'ball'|'cone', angle?, length? }
  */
 export function carveVoxelMove(v, a, b, axis, tool) {
   const r = tool.radius;
-  const ballR = tool.type === 'ball' ? r : 0;
   // Flute reach: the detected length, else clear through the whole block.
   const gridDiag = (v.nx + v.ny + v.nz) * v.cs;
   const length = tool.length > 0 ? tool.length : gridDiag;
@@ -140,7 +146,7 @@ export function carveVoxelMove(v, a, b, axis, tool) {
   let removed = 0;
   for (let s = 0; s <= n; s++) {
     const t = s / n;
-    removed += stampVoxel(v, a[0] + dx * t, a[1] + dy * t, a[2] + dz * t, ax, ay, az, r, ballR, length);
+    removed += stampVoxel(v, a[0] + dx * t, a[1] + dy * t, a[2] + dz * t, ax, ay, az, tool, length);
   }
   return removed;
 }

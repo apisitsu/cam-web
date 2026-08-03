@@ -12,6 +12,7 @@ import { OrbitControls, Html } from '@react-three/drei';
 import * as THREE from 'three';
 import Backplot from './Backplot.jsx';
 import StockMesh from './StockMesh.jsx';
+import StockPreview from './StockPreview.jsx';
 import PartMesh, { FeatureHighlight, OriginMarker, RotaryAxisLine } from './PartMesh.jsx';
 import SketchLayer from './SketchLayer.jsx';
 import { getBuf, setView } from '../engine/bufferCache.js';
@@ -19,6 +20,7 @@ import { sliceUpTo } from '../engine/gcode/path.js';
 import { useSketchStore } from '../stores/sketchStore.js';
 import { framing, unionBounds } from '../engine/view/camera.js';
 import { endMillGeometry } from '../engine/view/millTool.js';
+import { workTransform, toolTilt } from '../engine/view/rotaryFrame.js';
 
 /**
  * Eye directions for each preset, in machine coordinates (X right, Y away,
@@ -94,21 +96,32 @@ function CameraRig({ bounds, sketchFit, view, viewNonce, controlsRef, mode }) {
  * the collet face, so the stick-out is shown to scale; otherwise a sensible
  * default is used.
  */
-function EndMill({ radius = 3, type = 'flat', length = 0, arbor = true }) {
+function EndMill({ radius = 3, type = 'flat', cutter, angle, length = 0, arbor = true }) {
   // All the stacking arithmetic lives in engine/view/millTool.js, where it is
-  // tested — a wrong offset here draws a tool floating off its own tip.
+  // tested — a wrong offset here draws a tool floating off its own tip. The
+  // cutter TYPE changes the whole silhouette, not just the tip: a face mill is
+  // a wide shallow disc, an endmill a long stick.
   const { nose, flutes, shank, arbor: holder } = endMillGeometry({
-    radius, type, length, arbor,
+    radius, type, cutter, angle, length, arbor,
   });
 
   return (
     <>
       {/* Named so the scene-graph tests can tell the parts apart — a tapered
           cylinder is not a reliable way to find the arbor. */}
-      {/* Ball nose (full sphere; upper half is hidden inside the cutter). */}
-      {nose && (
+      {/* The nose: a full sphere for a ball (upper half hidden inside the
+          cutter), or a cone standing on its point for a chamfer mill. */}
+      {nose && nose.kind === 'ball' && (
         <mesh name="tool-nose" position={[0, 0, nose.z]}>
           <sphereGeometry args={[nose.radius, 24, 16]} />
+          <meshStandardMaterial color="#e2e8f0" metalness={0.6} roughness={0.3} />
+        </mesh>
+      )}
+      {nose && nose.kind === 'cone' && (
+        // cylinderGeometry with a zero bottom radius IS a cone; modelled along
+        // local Y like the rest, so it stands up with the same +90° about X.
+        <mesh name="tool-nose" position={[0, 0, nose.z]} rotation={[Math.PI / 2, 0, 0]}>
+          <cylinderGeometry args={[nose.radius, 0, nose.height, 32]} />
           <meshStandardMaterial color="#e2e8f0" metalness={0.6} roughness={0.3} />
         </mesh>
       )}
@@ -339,26 +352,47 @@ function Chuck({ zEnd, od }) {
 const DEG = Math.PI / 180;
 
 /**
- * Cutting tool at the current tip. On a 4-/5-axis program the backplot geometry
- * is drawn in the *part* frame (the table's rotation is undone so each face sits
- * where it belongs), so the tool has to be tilted the same way to stand normal
- * to the face being cut — otherwise it points straight up +Z through the side of
- * the part. `rotary` carries the A (about X) and B (about Y) index in degrees;
- * nesting the groups composes Ry(-B)·Rx(-A), matching the interpreter's
- * toPartFrame(). The tip stays pinned at `pos` because every rotation is about
- * the group origin.
+ * Cutting tool at the current tip.
+ *
+ * In the **part** frame the backplot is drawn with the table's rotation undone
+ * (each face sits where it belongs on the workpiece), so the tool has to be
+ * tilted the same way to stand normal to the face being cut — otherwise it
+ * points straight up +Z through the side of the part. In the **machine** frame
+ * there is nothing to undo and the tool stays upright, which is what a real
+ * spindle does. `toolTilt` decides between them; nesting the groups composes
+ * Ry(-B)·Rx(-A), matching the interpreter's toPartFrame(). The tip stays pinned
+ * at `pos` because every rotation is about the group origin.
  */
-function Tool({ pos, rotary, radius, type, length, insert, mode, showArbor = true }) {
+function Tool({
+  pos, rotary, radius, type, cutter, angle, length, insert, mode, showArbor = true,
+  rotaryFrame = 'part',
+}) {
   if (!pos) return null;
-  const thetaA = -(rotary?.a || 0) * DEG;
-  const thetaB = -(rotary?.b || 0) * DEG;
+  const tilt = toolTilt(rotaryFrame, rotary);
   return (
-    <group position={pos} rotation={[0, thetaB, 0]}>
-      <group rotation={[thetaA, 0, 0]}>
+    <group position={pos} rotation={[0, tilt.b, 0]}>
+      <group rotation={[tilt.a, 0, 0]}>
         {mode === 'turn'
           ? <LatheTool radius={Math.min(radius, 1.6)} shape={insert} />
-          : <EndMill radius={radius} type={type} length={length} arbor={showArbor} />}
+          : <EndMill radius={radius} type={type} cutter={cutter} angle={angle} length={length} arbor={showArbor} />}
       </group>
+    </group>
+  );
+}
+
+/**
+ * Everything that rides the rotary table, placed for the frame being drawn.
+ *
+ * Two nested groups, always — translate to the A axis, turn, translate back —
+ * because the physical axis runs through wherever it was touched off, not
+ * through the part's own zero. The structure is unconditional even when the
+ * transform is identity: collapsing it would remount the part and stock
+ * geometry every time the angle crossed zero.
+ */
+function WorkGroup({ t, name, children }) {
+  return (
+    <group name={name} position={t.pivot} rotation={t.rotation}>
+      <group position={t.unpivot}>{children}</group>
     </group>
   );
 }
@@ -414,9 +448,16 @@ function SpindleAxis({ bounds }) {
  */
 export function SceneContents({
   bounds, turnChuck, showStock, toolPos, toolRotary, toolRadius, toolType,
-  toolLength, turnInsert, bufVer, drawVer, partVer, showPart = true,
+  toolCutter, toolAngle, toolLength, turnInsert, bufVer, drawVer, partVer, showPart = true,
   mode = 'mill', sketching = false, showArbor = true,
+  rotaryFrame = 'part', rotaryCenter, simFrameA = 0, stockSolid = null,
 }) {
+  // Where the workpiece and the carved stock sit for this frame. They can differ:
+  // the height-field sim carves one index in the machine frame, so its block is
+  // already turned to `simFrameA` and must only travel the rest of the way.
+  const a = toolRotary?.a ?? 0;
+  const partT = workTransform(rotaryFrame, { a, center: rotaryCenter });
+  const stockT = workTransform(rotaryFrame, { a, baseA: simFrameA, center: rotaryCenter });
   return (
     <>
       <ambientLight intensity={0.8} />
@@ -436,23 +477,40 @@ export function SceneContents({
             <Chuck zEnd={turnChuck.z - 5} od={turnChuck.od} />
           )}
 
+          {/* The backplot is never rotated: it is where the tool went, and in
+              the machine frame that is exactly the stationary trail the
+              programmed coordinates describe. */}
           <Backplot drawVer={drawVer} />
-          <StockMesh simVer={bufVer} visible={showStock} />
-          {/* The imported model. Drawn on both machining pages: a part is a
-              part whether it is going to be turned or milled. */}
-          <PartMesh meshVer={partVer} visible={showPart} />
-          {showPart && <FeatureHighlight meshVer={partVer} />}
-          {showPart && <OriginMarker meshVer={partVer} />}
-          {showPart && <RotaryAxisLine meshVer={partVer} />}
+          <WorkGroup name="stock-work" t={stockT}>
+            <StockMesh simVer={bufVer} visible={showStock} />
+            {/* The uncarved blank, live off the store. Yielded to the carved
+                block the moment there is one — two overlapping stocks would be
+                a picture of nothing. */}
+            <StockPreview solid={stockSolid} visible={showStock} />
+          </WorkGroup>
+          {/* The imported model and its datum, on the table. Drawn on both
+              machining pages: a part is a part whether it is going to be turned
+              or milled. Picking a datum off it reads world coordinates, which is
+              only the part's own frame while this group is unrotated — true
+              whenever a program is not mid-index, which is when picking happens. */}
+          <WorkGroup name="part-work" t={partT}>
+            <PartMesh meshVer={partVer} visible={showPart} />
+            {showPart && <FeatureHighlight meshVer={partVer} />}
+            {showPart && <OriginMarker meshVer={partVer} />}
+            {showPart && <RotaryAxisLine meshVer={partVer} />}
+          </WorkGroup>
           <Tool
             pos={toolPos}
             rotary={toolRotary}
             radius={toolRadius}
             type={toolType}
+            cutter={toolCutter}
+            angle={toolAngle}
             length={toolLength}
             insert={turnInsert}
             mode={mode}
             showArbor={showArbor}
+            rotaryFrame={rotaryFrame}
           />
         </>
       )}
@@ -462,8 +520,9 @@ export function SceneContents({
 
 export default function Viewport({
   bounds, fitBounds, sketchFit, turnChuck, showStock, toolPos, toolRotary, toolRadius, toolType,
-  toolLength, turnInsert, bufVer, playhead, partVer, showPart = true,
+  toolCutter, toolAngle, toolLength, turnInsert, bufVer, playhead, partVer, showPart = true,
   mode = 'mill', sketching = false, view = 'iso', viewNonce = 0, showArbor = true,
+  rotaryFrame = 'part', rotaryCenter, simFrameA = 0, stockSolid = null,
 }) {
   const controlsRef = useRef();
   // Disable orbit while dragging a sketch point so the drag moves the point,
@@ -493,7 +552,10 @@ export default function Viewport({
     invalidate();
   // `showArbor` belongs here: the canvas is frameloop="demand", so dropping the
   // holder would not appear on screen until some other input happened to change.
-  }, [drawVer, showStock, toolPos, toolRotary, toolRadius, toolType, toolLength, turnInsert, mode, partVer, showPart, showArbor]);
+  // `rotaryFrame`/`simFrameA` belong here for the same reason `showArbor` does:
+  // the canvas is frameloop="demand", so flipping the frame would not appear on
+  // screen until some other input happened to change.
+  }, [drawVer, showStock, toolPos, toolRotary, toolRadius, toolType, toolLength, turnInsert, mode, partVer, showPart, showArbor, rotaryFrame, simFrameA, stockSolid, toolCutter, toolAngle]);
 
   return (
     <Canvas
@@ -510,6 +572,8 @@ export default function Viewport({
         toolRotary={toolRotary}
         toolRadius={toolRadius}
         toolType={toolType}
+        toolCutter={toolCutter}
+        toolAngle={toolAngle}
         toolLength={toolLength}
         turnInsert={turnInsert}
         bufVer={bufVer}
@@ -519,6 +583,10 @@ export default function Viewport({
         mode={mode}
         sketching={sketching}
         showArbor={showArbor}
+        rotaryFrame={rotaryFrame}
+        rotaryCenter={rotaryCenter}
+        simFrameA={simFrameA}
+        stockSolid={stockSolid}
       />
 
       <CameraRig

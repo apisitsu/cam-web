@@ -126,6 +126,9 @@ export const useCamPlanStore = create((set, get) => ({
     const machine = machineById(id);
     const modeChanged = _ctx && _ctx.mode !== machine.kind;
     set({ machineId: machine.id, forceMode: machine.kind });
+    // A 4-axis mill turns the work, so the viewport should show it turning.
+    // Pushed rather than watched: camStore cannot import this store back.
+    useCamStore.getState().applyMachine(machine);
     if (!_mesh.welded) return;
     // Re-measure when the process changed — a turning profile and a milling
     // slice are different measurements of the same mesh — but *keep the
@@ -141,6 +144,7 @@ export const useCamPlanStore = create((set, get) => ({
       ? machineById(get().machineId)
       : machineForMode(mode, get().machineId);
     set({ forceMode: mode, machineId: machine.id });
+    useCamStore.getState().applyMachine(machine);
     if (!_mesh.welded) return;
     get().prepare();
     get().rebuild();
@@ -742,6 +746,9 @@ export const useCamPlanStore = create((set, get) => ({
         previewFeature: null,
         datumPickMode: null,
       });
+
+      // A restored 4-axis machine should restore its viewport behaviour with it.
+      useCamStore.getState().applyMachine(machineById(get().machineId));
 
       // Measure against the restored settings; `prepare` reconciles the saved
       // recipe against the freshly measured context (dropping any operation the

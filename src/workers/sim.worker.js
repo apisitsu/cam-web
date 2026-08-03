@@ -68,6 +68,10 @@ const api = {
   init(text, opts) {
     session = createSession(text, opts);
     const result = carveTo(session, 0);
+    // Carried back so the store can say *why* a carve removed nothing instead
+    // of leaving a solid block to speak for itself — see `sim/removal.js`.
+    result.cutBounds = session.cutBounds;
+    result.box = session.box;
     return Comlink.transfer(result, [result.positions.buffer, result.indices.buffer]);
   },
 

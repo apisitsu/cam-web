@@ -17,23 +17,11 @@ import {
 import { useState, useEffect, useCallback } from 'react';
 import { useSketchStore } from '../stores/sketchStore.js';
 import { saveProject, openProjectFile, exportSketchDxf } from '../lib/projectIO.js';
+// The helper this rail introduced now serves the whole app — see `glyph.jsx`.
+import { glyph } from './glyph.jsx';
 
 const { Text } = Typography;
 const DEG = Math.PI / 180;
-
-/** Wrap an SVG path set as an antd-compatible icon. */
-const glyph = (node) => function Glyph() {
-  return (
-    <span role="img" className="anticon" style={{ display: 'inline-flex' }}>
-      <svg
-        viewBox="0 0 24 24" width="1em" height="1em" fill="none"
-        stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"
-      >
-        {node}
-      </svg>
-    </span>
-  );
-};
 
 // Symbolic glyphs for each drawing tool.
 const SelectIcon = glyph(<path d="M5 3l6 15 2.2-6.2L19.5 9.6z" fill="currentColor" stroke="none" />);

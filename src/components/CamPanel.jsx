@@ -33,10 +33,14 @@ import {
   Divider, Switch, Tooltip, Empty, Dropdown, InputNumber, Collapse,
 } from 'antd';
 import {
-  UploadOutlined, ExperimentOutlined, DownloadOutlined, SendOutlined,
+  DownloadOutlined, SendOutlined, CloseOutlined,
   ArrowUpOutlined, ArrowDownOutlined, DeleteOutlined, PlusOutlined,
-  ReloadOutlined,
+  ReloadOutlined, RollbackOutlined,
 } from '@ant-design/icons';
+import CommandButton from './CommandButton.jsx';
+import {
+  PartIcon, AutoPlanIcon, ClearFaceIcon, ContourIcon, A0FaceIcon, RotaryCentreIcon,
+} from './glyph.jsx';
 import { useCamPlanStore } from '../stores/camPlanStore.js';
 import { MATERIALS } from '../engine/cam/library.js';
 import {
@@ -213,7 +217,10 @@ function SelectionActions({ feature, onAddFace, onAddEdge, onClear }) {
             {isEdge ? describeEdge(feature) : describeFace(feature)}
           </Text>
         </Space>
-        <Button size="small" type="text" onClick={onClear}>clear</Button>
+        <CommandButton
+          id="clearSelection" size="small" type="text"
+          icon={<CloseOutlined />} onClick={onClear}
+        />
       </Space>
 
       {!reachable && (
@@ -232,21 +239,19 @@ function SelectionActions({ feature, onAddFace, onAddEdge, onClear }) {
                 addonAfter="mm" value={depth} onChange={(v) => setDepth(v ?? 0)}
               />
             </Tooltip>
-            <Button
-              size="small" type="primary" icon={<PlusOutlined />}
+            <CommandButton
+              id="addEdgeOp"
+              size="small" type="primary" icon={<ContourIcon />}
               onClick={() => onAddEdge(feature.id, { depth })}
-            >
-              Trace this edge
-            </Button>
+            />
           </>
         ) : (
-          <Button
-            size="small" type="primary" icon={<PlusOutlined />}
+          <CommandButton
+            id="addFaceOp"
+            size="small" type="primary" icon={<ClearFaceIcon />}
             disabled={!reachable}
             onClick={() => onAddFace(feature.id)}
-          >
-            Clear this face
-          </Button>
+          />
         )}
       </Space>
     </div>
@@ -408,17 +413,20 @@ export default function CamPanel() {
       width: 78,
       render: (_, row) => (
         <Space size={0}>
-          <Button
+          <CommandButton
+            id="moveStepUp"
             type="text" size="small" icon={<ArrowUpOutlined />}
             disabled={row.index === 0}
             onClick={() => moveStep(row.key, -1)}
           />
-          <Button
+          <CommandButton
+            id="moveStepDown"
             type="text" size="small" icon={<ArrowDownOutlined />}
             disabled={row.index === recipe.length - 1}
             onClick={() => moveStep(row.key, 1)}
           />
-          <Button
+          <CommandButton
+            id="removeStep"
             type="text" size="small" danger icon={<DeleteOutlined />}
             onClick={() => removeStep(row.key)}
           />
@@ -439,23 +447,18 @@ export default function CamPanel() {
           showUploadList={false}
           beforeUpload={(file) => { loadPart(file); return false; }}
         >
-          <Button icon={<UploadOutlined />} loading={status === 'loading'}>
-            Import part
-          </Button>
+          <CommandButton id="importPart" icon={<PartIcon />} loading={status === 'loading'} />
         </Upload>
         {/* Secondary, and deliberately so. It replaces the whole recipe, which
             is fine as a starting point and wrong as a thing that happens to
             you — so it is a button you press, not a gate you pass through. */}
-        <Tooltip title="Replace everything with an automatic plan for the whole part">
-          <Button
-            icon={<ExperimentOutlined />}
-            disabled={!analysis}
-            loading={status === 'planning'}
-            onClick={() => makePlan()}
-          >
-            Auto-plan
-          </Button>
-        </Tooltip>
+        <CommandButton
+          id="autoPlan"
+          icon={<AutoPlanIcon />}
+          disabled={!analysis}
+          loading={status === 'planning'}
+          onClick={() => makePlan()}
+        />
       </Space>
 
       {stlName && (
@@ -691,9 +694,11 @@ export default function CamPanel() {
                 })}
               </div>
               {datum.point && (
-                <Button size="small" type="text" style={{ marginTop: 4 }} onClick={clearDatum}>
-                  Reset all axes to native origin
-                </Button>
+                <CommandButton
+                  id="clearDatum" size="small" type="text"
+                  icon={<RollbackOutlined />}
+                  style={{ marginTop: 4 }} onClick={clearDatum}
+                />
               )}
               {/* Turns the whole part 180° about Z — a rotation, not a
                   mirror, so both X and Y reverse together — for when a
@@ -748,19 +753,24 @@ export default function CamPanel() {
                 </Text>
                 <div style={{ marginTop: 4 }}>
                   <Space wrap size={6}>
-                    <Tooltip title="Click the face that should be up (facing the spindle) at A0">
-                      <Button
-                        size="small"
-                        type={datumPickMode === 'zero' ? 'primary' : 'default'}
-                        onClick={() => (datumPickMode === 'zero' ? cancelPickDatum() : startPickRotaryZero())}
-                      >
-                        {datumPickMode === 'zero' ? 'Click the part…' : 'Pick face for A0'}
-                      </Button>
-                    </Tooltip>
+                    {/* Armed state shows as a pressed button; the tooltip says
+                        what the next click will do, which is the one thing the
+                        glyph cannot carry. */}
+                    <CommandButton
+                      id="pickA0Face"
+                      size="small"
+                      icon={<A0FaceIcon />}
+                      type={datumPickMode === 'zero' ? 'primary' : 'default'}
+                      title={datumPickMode === 'zero'
+                        ? 'Armed — click the face on the part now, or press again to cancel'
+                        : undefined}
+                      onClick={() => (datumPickMode === 'zero' ? cancelPickDatum() : startPickRotaryZero())}
+                    />
                     {datum.rotaryZero && (
-                      <Button size="small" type="text" onClick={clearRotaryZero}>
-                        Reset to modelled A0
-                      </Button>
+                      <CommandButton
+                        id="clearA0Face" size="small" type="text"
+                        icon={<RollbackOutlined />} onClick={clearRotaryZero}
+                      />
                     )}
                   </Space>
                   {datum.rotaryZero && (
@@ -782,19 +792,21 @@ export default function CamPanel() {
                 </Text>
                 <div style={{ marginTop: 4 }}>
                   <Space wrap size={6}>
-                    <Tooltip title="Click a point on the part that sits on the rotary's centreline">
-                      <Button
-                        size="small"
-                        type={datumPickMode === 'rotary' ? 'primary' : 'default'}
-                        onClick={() => (datumPickMode === 'rotary' ? cancelPickDatum() : startPickRotaryCenter())}
-                      >
-                        {datumPickMode === 'rotary' ? 'Click the part…' : 'Pick A-axis centre on part'}
-                      </Button>
-                    </Tooltip>
+                    <CommandButton
+                      id="pickRotaryCentre"
+                      size="small"
+                      icon={<RotaryCentreIcon />}
+                      type={datumPickMode === 'rotary' ? 'primary' : 'default'}
+                      title={datumPickMode === 'rotary'
+                        ? 'Armed — click the point on the part now, or press again to cancel'
+                        : undefined}
+                      onClick={() => (datumPickMode === 'rotary' ? cancelPickDatum() : startPickRotaryCenter())}
+                    />
                     {datum.rotaryCenter && (
-                      <Button size="small" type="text" onClick={clearRotaryCenter}>
-                        Reset to frame origin
-                      </Button>
+                      <CommandButton
+                        id="clearRotaryCentre" size="small" type="text"
+                        icon={<RollbackOutlined />} onClick={clearRotaryCenter}
+                      />
                     )}
                   </Space>
                   <Space size={4} style={{ marginTop: 6 }}>
@@ -854,16 +866,17 @@ export default function CamPanel() {
                   onClick: ({ key }) => addStep(key),
                 }}
               >
-                <Button size="small" icon={<PlusOutlined />}>Add operation</Button>
+                {/* The one button in the panel that keeps its words: it drops a
+                    menu open, and a bare glyph gives no clue there is one. */}
+                <CommandButton id="addOperation" size="small" icon={<PlusOutlined />} />
               </Dropdown>
-              <Tooltip title="Discard the edits and take the planner's proposal again">
-                <Button
-                  size="small"
-                  icon={<ReloadOutlined />}
-                  disabled={!edited}
-                  onClick={() => resetRecipe()}
-                />
-              </Tooltip>
+              <CommandButton
+                id="resetRecipe"
+                size="small"
+                icon={<ReloadOutlined />}
+                disabled={!edited}
+                onClick={() => resetRecipe()}
+              />
             </Space>
           </Space>
 
@@ -932,19 +945,19 @@ export default function CamPanel() {
           />
 
           <Space wrap>
-            <Button
+            <CommandButton
+              id="exportNc"
               type="primary"
               icon={<DownloadOutlined />}
               disabled={!nc}
               onClick={() => downloadNc(nc, `${(stlName || 'part').replace(/\.[^.]+$/, '')}.nc`)}
-            >
-              Export NC
-            </Button>
-            <Tooltip title="Load the generated program into the backplot and simulator">
-              <Button icon={<SendOutlined />} disabled={!nc} onClick={() => sendToViewport()}>
-                Verify in viewport
-              </Button>
-            </Tooltip>
+            />
+            <CommandButton
+              id="verifyInViewport"
+              icon={<SendOutlined />}
+              disabled={!nc}
+              onClick={() => sendToViewport()}
+            />
           </Space>
         </>
       )}

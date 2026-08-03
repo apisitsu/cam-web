@@ -8,6 +8,15 @@ export default defineConfig({
   plugins: [react()],
   server: {
     port: 3100,
+    // Listen on every interface, not just loopback, so the shop's other
+    // machines can open this at `plbmp118:3100`. Vite's default binds
+    // `localhost` only, which reads as "the server is up but nothing answers"
+    // from anywhere else on the LAN.
+    //
+    // This is a *dev* server on a trusted internal network: no auth, and it
+    // serves the working tree as-is. Fine behind the shop firewall, not
+    // something to expose past it.
+    host: true,
     proxy: {
       '/api': 'http://localhost:2005',
     },

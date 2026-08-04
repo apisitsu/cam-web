@@ -2,8 +2,9 @@ import { describe, it, expect } from 'vitest';
 import {
   buildPath, feedsBefore, feedsBeforeAt, timeAt, segmentAtTime, sliceUpTo,
   rotaryAt, toolAt, lineAt, segmentIndexAt, toolPointAt, blockTargetAt,
-  nextBlockEnd, prevBlockStart,
+  nextBlockEnd, prevBlockStart, feedProgressAt,
 } from './path.js';
+import { interpret } from './interpreter.js';
 
 /** A minimal segment, in the shape `interpret()` produces. */
 function seg(type, opts = {}) {
@@ -277,5 +278,48 @@ describe('rotaryAt / toolAt / lineAt', () => {
     expect(toolAt(path, 1)).toBe(1);
     expect(toolAt(path, 2)).toBe(2);
     expect(lineAt(path, 2)).toBe(20);
+  });
+});
+
+describe('feedProgressAt — how far the cut has really got', () => {
+  // One long cut: a plunge, then 100 mm of feed as a single block.
+  const path = buildPath(interpret([
+    'G21 G90', 'G0 X0 Y0 Z5', 'G1 Z-2 F600', 'G1 X100 F600', 'G0 Z5',
+  ].join('\n'), { mode: 'mill' }).segments);
+  const end = path.timePrefix[path.count - 1];
+
+  it('counts whole feed moves as they complete', () => {
+    expect(feedProgressAt(path, 0)).toBe(0);
+    expect(feedProgressAt(path, end)).toBe(2);        // both feeds done
+  });
+
+  it('reports part of the move in progress — the whole point', () => {
+    // Whole moves were the unit before, so a 100 mm G1 cut nothing until it
+    // finished and then removed the lot in one frame.
+    const tPlunge = path.timePrefix[1];               // end of the plunge
+    const tCut = path.timePrefix[2];                  // end of the long feed
+    const half = feedProgressAt(path, tPlunge + (tCut - tPlunge) / 2);
+    expect(half).toBeGreaterThan(1.4);
+    expect(half).toBeLessThan(1.6);
+  });
+
+  it('climbs steadily rather than jumping', () => {
+    const seen = [];
+    for (let i = 0; i <= 10; i++) seen.push(feedProgressAt(path, (end * i) / 10));
+    for (let i = 1; i < seen.length; i++) expect(seen[i]).toBeGreaterThanOrEqual(seen[i - 1]);
+    expect(new Set(seen).size).toBeGreaterThan(5);
+  });
+
+  it('adds nothing while a rapid is in progress', () => {
+    // A rapid traverses above the part; the cut does not advance under it.
+    const tLast = path.timePrefix[path.count - 2];
+    const during = feedProgressAt(path, (tLast + end) / 2);
+    expect(during).toBe(2);
+  });
+
+  it('is 0 before anything has run, and never exceeds the feeds there are', () => {
+    expect(feedProgressAt(path, -5)).toBe(0);
+    expect(feedProgressAt(path, end * 10)).toBe(2);
+    expect(feedProgressAt(null, 5)).toBe(0);
   });
 });

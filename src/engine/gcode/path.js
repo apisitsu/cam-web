@@ -190,6 +190,41 @@ export function feedsBeforeAt(path, k, aIndex) {
   return arr ? arr[kk - 1] : 0;
 }
 
+/**
+ * How far the cut has actually got, as a **fractional** feed count: whole feed
+ * moves completed, plus how far into the one in progress.
+ *
+ * The integer version is what the carvers were driven by, and it is why the
+ * material came off a whole block at a time: a 50 mm `G1` is one feed move, so
+ * the tool crossed the part with nothing happening and then the entire cut
+ * appeared at the end of it. Following the tool means carving part of a move.
+ *
+ * `aIndex` restricts the count to one rotary index — the height field carves
+ * one face, so a move at another index adds nothing to its cursor.
+ *
+ * @param {object} path
+ * @param {number} seconds machine time (the same clock the marker rides)
+ * @param {number} [aIndex]
+ * @returns {number} feeds, fractional
+ */
+export function feedProgressAt(path, seconds, aIndex) {
+  if (!path || path.count === 0 || seconds <= 0) return 0;
+  const i = segmentIndexAt(path, seconds);
+  if (i < 0) return 0;
+  const done = aIndex === undefined
+    ? feedsBefore(path, i)
+    : feedsBeforeAt(path, i, aIndex);
+  // A rapid in progress cuts nothing, and neither does a feed at another index.
+  if (path.types[i] !== 1) return done;
+  if (aIndex !== undefined && path.rotary && path.rotary[i] !== aIndex) return done;
+  const tp = path.timePrefix;
+  if (seconds >= tp[path.count - 1]) return done + 1;
+  const t0 = i > 0 ? tp[i - 1] : 0;
+  const t1 = tp[i];
+  const u = t1 > t0 ? (seconds - t0) / (t1 - t0) : 1;
+  return done + Math.max(0, Math.min(1, u));
+}
+
 /** Seconds of machine time elapsed once `k` segments have run. */
 export function timeAt(path, k) {
   if (!path || k <= 0 || path.count === 0) return 0;

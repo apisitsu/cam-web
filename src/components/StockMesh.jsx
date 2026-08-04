@@ -1,7 +1,8 @@
 /**
- * StockMesh — renders the simulated remaining stock (dexel height field) as a
- * shaded surface. Built from the worker's transferred position/index buffers;
- * normals are computed once for lighting.
+ * StockMesh — renders the simulated remaining stock (height field, voxel block
+ * or turned solid) as a shaded surface. Built from the worker's transferred
+ * position/colour/index buffers; normals are computed once for lighting unless
+ * the engine shipped exact ones.
  *
  * The buffers are read from the module cache (keyed on the scalar `simVer`)
  * rather than received as props, so React 19's dev Performance Track can't walk
@@ -18,7 +19,10 @@ export default function StockMesh({ simVer, visible }) {
     if (!sim) return null;
     const g = new THREE.BufferGeometry();
     g.setAttribute('position', new THREE.BufferAttribute(sim.positions, 3));
-    // Per-vertex colours (turning) tell machined vs raw stock apart.
+    // Per-vertex colours tell machined material from raw stock — all three
+    // simulators ship them now, from the one palette in `sim/stockColors.js`.
+    // Without them a face the tool has just been through looks exactly like one
+    // it has never touched, and "did that pass cut anything?" has no answer.
     if (sim.colors) g.setAttribute('color', new THREE.BufferAttribute(sim.colors, 3));
     g.setIndex(new THREE.BufferAttribute(sim.indices, 1));
     // The turning sim ships exact normals for its solid of revolution; the
@@ -46,6 +50,7 @@ export default function StockMesh({ simVer, visible }) {
     <mesh geometry={geometry} castShadow receiveShadow>
       {/* Aluminium billet; per-vertex colours (turning: cut vs raw) when present. */}
       <meshStandardMaterial
+        // White under vertex colours, so the palette comes through unshifted.
         color={hasColors ? '#ffffff' : '#9aa4b2'}
         vertexColors={hasColors}
         metalness={0.35}

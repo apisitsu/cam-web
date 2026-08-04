@@ -3,6 +3,7 @@ import { tokenizeLine, stripComments } from './tokenizer.js';
 import { tessellateArc } from './arc.js';
 import { interpret } from './interpreter.js';
 import { parseGcode } from './index.js';
+import { parseToolTable } from './tools.js';
 
 const near = (a, b, eps = 1e-3) => Math.abs(a - b) <= eps;
 
@@ -367,5 +368,45 @@ describe('interpreter — constant surface speed (G96 / G97 / G50)', () => {
     // G50 on a mill cancels scaling and carries no S; G96/G97 are not used.
     const { stats } = interpret('G21 G17 G94\nS2000 M03\nG00 X0 Y0\nG01 X100 F500', { mode: 'mill' });
     expect(stats.cycleTime).toBeCloseTo((100 / 500) * 60, 1);
+  });
+});
+
+describe('parseToolTable — the tool a program says it is using', () => {
+  it('reads the comment on the tool-change line', () => {
+    const t = parseToolTable('T3(ENDMILL D7 L48-54 - ROUGH B2)\nM6');
+    expect(t.get(3)).toMatchObject({ type: 'endmill', cutter: 'endmill', diameter: 7, length: 48 });
+  });
+
+  it("reads this app's own posted form, where the tool number is inside the comment", () => {
+    // `fanuc.js` writes `(TOOL: T1 FACEMILL Ø50)` and then a bare `T1 M06`, so
+    // there is no comment on the tool-change line to read. Missing this meant
+    // every posted program simulated with the fallback cutter — choosing a tool
+    // in the CAM panel changed nothing you could see.
+    const posted = [
+      '(OP1: FACE)',
+      '(TOOL: T1 FACEMILL Ø50)',
+      'T1 M06',
+      'S1200 M03',
+      '(OP2: FINISH)',
+      '(TOOL: T2 BALL Ø6)',
+      'T2 M06',
+    ].join('\n');
+    const t = parseToolTable(posted);
+    expect(t.get(1)).toMatchObject({ type: 'facemill', cutter: 'face', diameter: 50, radius: 25 });
+    expect(t.get(2)).toMatchObject({ type: 'ballmill', cutter: 'ball', simType: 'ball', diameter: 6 });
+  });
+
+  it('reads Ø as a diameter, the way the tool library writes it', () => {
+    expect(parseToolTable('T1(ENDMILL Ø12)\nM6').get(1).diameter).toBe(12);
+    expect(parseToolTable('T1(DRILL Ø3.3)\nM6').get(1).radius).toBeCloseTo(1.65);
+  });
+
+  it('is not fooled by other comments that begin with TOOL', () => {
+    expect(parseToolTable('(TOOLPATH: CONTOUR)\n(TOOL CHANGE POSITION)\nG0 Z50').size).toBe(0);
+  });
+
+  it('carries the cutter shape through to the whole program table', () => {
+    const { stats } = interpret('(TOOL: T1 FACEMILL Ø50)\nT1 M06\nG0 X0 Y0\nG1 X10 F300', { mode: 'mill' });
+    expect(stats.tools[0]).toMatchObject({ n: 1, cutter: 'face', radius: 25 });
   });
 });

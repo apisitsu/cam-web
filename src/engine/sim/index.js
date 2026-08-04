@@ -9,6 +9,7 @@ import { cuttingBounds } from './removal.js';
 import { cutterGeometry } from '../cam/cutters.js';
 import { heightmapToSolidMesh } from './mesh.js';
 import { dominantIndex, boundsOf, feedTopZ, toolResolver } from './session.js';
+import { voxelSizeFor, thinnestCut } from './method.js';
 import { createVoxelStock, carveVoxels, voxelSurfaceMesh } from './voxel.js';
 import {
   createTurningStock, carveTurning, carveTurningMove, resetTurningStock,
@@ -17,7 +18,11 @@ import {
 
 export { createStock, stockFromBounds, resetStock, stamp, cutSegment, simulate } from './dexel.js';
 export { heightmapToMesh, heightmapToSolidMesh } from './mesh.js';
-export { createSession, carveTo, dominantIndex, boundsOf, feedTopZ, toolResolver } from './session.js';
+export {
+  createSession, carveTo, createVoxelSession, carveVoxelSessionTo,
+  dominantIndex, boundsOf, feedTopZ, toolResolver,
+} from './session.js';
+export { simMethodFor, undercutting, voxelSizeFor, thinnestCut } from './method.js';
 export { removalDiagnosis, cuttingBounds } from './removal.js';
 export { createVoxelStock, carveVoxels, voxelSurfaceMesh, toolAxisFor } from './voxel.js';
 export {
@@ -55,13 +60,20 @@ export function runSimulation(text, opts = {}) {
   // chosen TYPE wins over the bare flat/ball, so a chamfer mill carves its cone
   // instead of a flat floor — see `cam/cutters.js`.
   const fallbackTool = opts.cutter
-    ? cutterGeometry({ cutter: opts.cutter, diameter: radius * 2, angle: opts.angle })
+    ? cutterGeometry({
+      cutter: opts.cutter,
+      diameter: radius * 2,
+      angle: opts.angle,
+      thickness: opts.thickness,
+    })
     : { radius, type: toolType };
   const resolve = toolResolver(stats.tools, fallbackTool, opts.toolOverrides);
   const { removedVolume } = simulate(stock, segments, resolve);
   const mesh = heightmapToSolidMesh(stock);
   return {
     positions: mesh.positions,
+    // Cut faces are a different colour from raw stock — see `stockColors.js`.
+    colors: mesh.colors,
     indices: mesh.indices,
     nx: mesh.nx,
     ny: mesh.ny,
@@ -87,22 +99,47 @@ export function runVoxelSimulation(text, opts = {}) {
   // Part frame (default): every face is assembled onto the workpiece and each
   // segment keeps its A/B index so the swept tool is oriented correctly.
   const { segments, bounds, stats } = interpret(text, { ...opts, rotaryFrame: 'part' });
-  const fit = bounds.feedMin && Number.isFinite(bounds.feedMin[0])
+  const feeds = segments.filter((s) => s.type !== 'rapid');
+  const indices = new Set(feeds.map((f) => f.a4 || 0));
+  const raw = bounds.feedMin && Number.isFinite(bounds.feedMin[0])
     ? { min: bounds.feedMin, max: bounds.feedMax }
     : bounds;
+  // The surface is where a feed move TRAVELS, not where the highest one starts
+  // — a plunge begins in the air. See `createVoxelSession`.
+  const oneFace = indices.size <= 1;
+  const fit = oneFace ? (cuttingBounds(feeds) ?? raw) : raw;
+  const autoTop = oneFace ? feedTopZ(feeds, raw.max[2]) : undefined;
   // The stated billet, where there is one. `margin` is dropped to zero for a
   // sized axis: the operator gave the blank's real dimensions and padding them
   // would quietly hand back a block bigger than the material they have.
-  const box = billetBox(fit, stockSize ?? {}, { margin, origin: stockOrigin ?? {} });
-  const vox = createVoxelStock(
-    { min: [box.xMin, box.yMin, box.base], max: [box.xMax, box.yMax, box.top] },
-    { margin: 0, cellSize: voxelSize },
-  );
+  const box = billetBox(fit, stockSize ?? {}, {
+    margin, origin: stockOrigin ?? {}, autoTop,
+  });
+  const block = {
+    min: [box.xMin, box.yMin, box.base],
+    max: [box.xMax, box.yMax, box.top],
+  };
+  // A cut is rounded out to whole voxels, so the grid has to be fine enough to
+  // hold the thinnest thing being cut — see `voxelSizeFor`.
+  const { size: cellSize, sizeZ: cellSizeZ } = voxelSizeFor({
+    requested: voxelSize,
+    thickness: thinnestCut({
+      fallbackTool: { thickness: opts.thickness },
+      overrides: opts.toolOverrides,
+    }),
+    bounds: block,
+  });
+  const vox = createVoxelStock(block, { margin: 0, cellSize, cellSizeZ });
   // The fallback cutter, for moves whose tool the program never described. A
   // chosen TYPE wins over the bare flat/ball, so a chamfer mill carves its cone
   // instead of a flat floor — see `cam/cutters.js`.
   const fallbackTool = opts.cutter
-    ? cutterGeometry({ cutter: opts.cutter, diameter: radius * 2, angle: opts.angle })
+    ? cutterGeometry({
+      cutter: opts.cutter,
+      diameter: radius * 2,
+      angle: opts.angle,
+      thickness: opts.thickness,
+    })
     : { radius, type: toolType };
   const resolve = toolResolver(stats.tools, fallbackTool, opts.toolOverrides);
   const { removedVolume } = carveVoxels(vox, segments, resolve);
@@ -110,9 +147,12 @@ export function runVoxelSimulation(text, opts = {}) {
   return {
     positions: mesh.positions,
     normals: mesh.normals,
+    colors: mesh.colors,
     indices: mesh.indices,
     removedVolume,
     cells: vox.count,
+    cellSize,
+    cellSizeZ,
   };
 }
 

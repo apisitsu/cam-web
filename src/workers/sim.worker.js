@@ -10,10 +10,12 @@ import * as Comlink from 'comlink';
 import {
   runSimulation, runVoxelSimulation, runTurningSimulation, createSession, carveTo,
   createTurningSession, carveTurningSessionTo,
+  createVoxelSession, carveVoxelSessionTo,
 } from '../engine/sim/index.js';
 
 let session = null;
 let turnSession = null;
+let voxSession = null;
 
 const api = {
   run(text, opts) {
@@ -21,17 +23,47 @@ const api = {
     return Comlink.transfer(result, [result.positions.buffer, result.indices.buffer]);
   },
 
+  // NOTE: the height-field meshes below ship `colors` too (cut vs raw stock).
+  // Those share the mesh builder's own buffer, which is re-created per carve,
+  // so they are transferred with the rest.
+
   /**
    * One-shot voxel simulation: the whole part, all rotary faces, undercuts
    * included. Returns a surface mesh (positions + indices); StockMesh recomputes
    * normals, so we don't ship them.
    */
   runVoxel(text, opts) {
-    const { positions, indices, removedVolume, cells } = runVoxelSimulation(text, opts);
+    const {
+      positions, normals, colors, indices, removedVolume, cells,
+    } = runVoxelSimulation(text, opts);
     return Comlink.transfer(
-      { positions, indices, removedVolume, cells },
-      [positions.buffer, indices.buffer],
+      { positions, normals, colors, indices, removedVolume, cells },
+      [positions.buffer, normals.buffer, colors.buffer, indices.buffer],
     );
+  },
+
+  /**
+   * Start a voxel playback session; returns totalFeeds and the uncut block.
+   *
+   * The voxel sim used to be one-shot — the finished part, with no way to watch
+   * it happen. Since an undercutting cutter now needs this model for ordinary
+   * work, that trade is no longer one the operator can avoid, so it is a
+   * session like the other two.
+   */
+  initVoxel(text, opts) {
+    voxSession = createVoxelSession(text, opts);
+    const r = carveVoxelSessionTo(voxSession, 0);
+    r.box = voxSession.box;
+    return Comlink.transfer(r,
+      [r.positions.buffer, r.normals.buffer, r.colors.buffer, r.indices.buffer]);
+  },
+
+  /** Carve the voxel session until `k` feed moves have run. */
+  carveVoxelStep(k) {
+    if (!voxSession) throw new Error('voxel session not initialised');
+    const r = carveVoxelSessionTo(voxSession, k);
+    return Comlink.transfer(r,
+      [r.positions.buffer, r.normals.buffer, r.colors.buffer, r.indices.buffer]);
   },
 
   /** Turning sim: revolve the carved radial profile into a solid. */
@@ -72,14 +104,16 @@ const api = {
     // of leaving a solid block to speak for itself — see `sim/removal.js`.
     result.cutBounds = session.cutBounds;
     result.box = session.box;
-    return Comlink.transfer(result, [result.positions.buffer, result.indices.buffer]);
+    return Comlink.transfer(result,
+      [result.positions.buffer, result.colors.buffer, result.indices.buffer]);
   },
 
   /** Carve the active session until `k` feed moves have run. */
   carve(k) {
     if (!session) throw new Error('sim session not initialised');
     const result = carveTo(session, k);
-    return Comlink.transfer(result, [result.positions.buffer, result.indices.buffer]);
+    return Comlink.transfer(result,
+      [result.positions.buffer, result.colors.buffer, result.indices.buffer]);
   },
 };
 

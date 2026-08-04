@@ -81,6 +81,32 @@ describe('the marker takes the shape of the cutter type', () => {
     }
   });
 
+  it('cuts the slot mill to the body length it was given', async () => {
+    // The one dimension a slot cutter's diameter cannot imply.
+    const short = await mount({ toolCutter: 'slot', toolRadius: 6, toolThickness: 8 });
+    const long = await mount({ toolCutter: 'slot', toolRadius: 6, toolThickness: 25 });
+    expect(fluteLength(short)).toBeCloseTo(8, 6);
+    expect(fluteLength(long)).toBeCloseTo(25, 6);
+    // It still stands along the tool axis, like every other milling cutter.
+    expect(named(short, 'tool-flutes')[0].instance.rotation.x).toBeCloseTo(Math.PI / 2, 6);
+  });
+
+  it("falls back to the type's own body when none is given", async () => {
+    const implied = await mount({ toolCutter: 'slot', toolRadius: 5 });
+    expect(fluteLength(implied)).toBeCloseTo(30, 6);   // Ø10 x bodyRatio 3
+  });
+
+  it('necks the slot mill down to the shank it was given', async () => {
+    // Ø20 where it cuts, Ø8 where it is held — and the holder comes down with
+    // the shank, because that is what a collet grips.
+    const necked = await mount({ toolCutter: 'slot', toolRadius: 10, toolShank: 8 });
+    const plain = await mount({ toolCutter: 'slot', toolRadius: 10 });
+    const rOf = (r, name) => named(r, name)[0].instance.geometry.parameters.radiusTop;
+    expect(rOf(necked, 'tool-shank')).toBeCloseTo(4, 6);
+    expect(rOf(necked, 'tool-flutes')).toBeCloseTo(10, 6);
+    expect(rOf(necked, 'tool-arbor')).toBeLessThan(rOf(plain, 'tool-arbor'));
+  });
+
   it('falls back to the plain flat/ball when no type is given', async () => {
     // A tool detected from the program keeps its own simType — the fallback
     // picker must not redraw a detected Ø50 face mill as whatever it last showed.

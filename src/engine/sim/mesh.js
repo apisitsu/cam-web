@@ -6,6 +6,7 @@
  * builds in a worker and transfers zero-copy to the viewport, where it becomes
  * a THREE.BufferGeometry.
  */
+import { CUT, RAW } from './stockColors.js';
 /**
  * Convert the height field into a **closed solid** box: the carved top surface,
  * four side walls, and a flat bottom. This reads as a real billet instead of a
@@ -31,7 +32,7 @@
  * off. Winding is not made consistent — StockMesh uses DoubleSide.
  */
 export function heightmapToSolidMesh(stock) {
-  const { nx, ny, cellSize: cs, xMin, yMin, heights, base } = stock;
+  const { nx, ny, cellSize: cs, xMin, yMin, heights, base, top } = stock;
   const N = nx * ny;
 
   let minH = Infinity;
@@ -53,10 +54,15 @@ export function heightmapToSolidMesh(stock) {
   const quads = N + risers + 2 * nx + 2 * ny + 1;
   const positions = new Float32Array(quads * 4 * 3);
   const indices = new Uint32Array(quads * 2 * 3);
+  // Cut faces are told from raw stock by colour — every quad here is one or the
+  // other, and each carries four fresh vertices, so the boundary is crisp.
+  const colors = new Float32Array(quads * 4 * 3);
 
   let v = 0; // vertex count
   let p = 0; // position write cursor
   let t = 0; // index write cursor
+  let cw = 0; // colour write cursor
+  let col = RAW;
   /** Push one planar quad as four fresh vertices and two triangles. */
   const quad = (ax, ay, az, bx, by, bz, cx, cy, cz, dx, dy, dz) => {
     positions[p] = ax; positions[p + 1] = ay; positions[p + 2] = az;
@@ -64,6 +70,10 @@ export function heightmapToSolidMesh(stock) {
     positions[p + 6] = cx; positions[p + 7] = cy; positions[p + 8] = cz;
     positions[p + 9] = dx; positions[p + 10] = dy; positions[p + 11] = dz;
     p += 12;
+    for (let n = 0; n < 4; n++) {
+      colors[cw] = col[0]; colors[cw + 1] = col[1]; colors[cw + 2] = col[2];
+      cw += 3;
+    }
     indices[t] = v; indices[t + 1] = v + 1; indices[t + 2] = v + 2;
     indices[t + 3] = v; indices[t + 4] = v + 2; indices[t + 5] = v + 3;
     t += 6;
@@ -82,6 +92,8 @@ export function heightmapToSolidMesh(stock) {
       const x0 = xAt(i);
       const x1 = x0 + cs;
       // Flat top over this cell's own footprint — never sloped toward a neighbour.
+      // Lowered below the blank's top means the tool has been through it.
+      col = h < top - 1e-6 ? CUT : RAW;
       quad(x0, y0, h, x1, y0, h, x1, y1, h, x0, y1, h);
 
       // Vertical riser closing the step to the +X neighbour.
@@ -90,6 +102,8 @@ export function heightmapToSolidMesh(stock) {
         if (h2 !== h) {
           const lo = Math.min(h, h2);
           const hi = Math.max(h, h2);
+          // A step exists only where something was removed: a cut wall.
+          col = CUT;
           quad(x1, y0, lo, x1, y1, lo, x1, y1, hi, x1, y0, hi);
         }
       }
@@ -99,12 +113,17 @@ export function heightmapToSolidMesh(stock) {
         if (h2 !== h) {
           const lo = Math.min(h, h2);
           const hi = Math.max(h, h2);
+          col = CUT;
           quad(x0, y1, lo, x1, y1, lo, x1, y1, hi, x0, y1, hi);
         }
       }
     }
   }
 
+  // The four outside faces of the billet and its floor: the blank's own
+  // surfaces, as sawn. A cut that breaks out through a side shortens the face
+  // rather than machining it, so raw is the honest colour for all of them.
+  col = RAW;
   // The four outside faces of the billet, one quad per boundary cell so each
   // drops from its own height straight to the floor.
   for (let i = 0; i < nx; i++) {
@@ -137,6 +156,7 @@ export function heightmapToSolidMesh(stock) {
 
   return {
     positions: positions.subarray(0, p),
+    colors: colors.subarray(0, cw),
     indices: indices.subarray(0, t),
     nx,
     ny,

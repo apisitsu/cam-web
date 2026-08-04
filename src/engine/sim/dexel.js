@@ -13,7 +13,7 @@
  * exactly like the Phase 0 G-code engine.
  */
 import { billetBox } from './billet.js';
-import { profileRise } from '../cam/cutters.js';
+import { cutFootprint } from '../cam/cutters.js';
 
 /**
  * @typedef {Object} Tool
@@ -74,7 +74,7 @@ function cellY(stock, y) {
  * lies under the tool is lowered to the cutter's own surface at that offset
  * from its axis. Returns the volume removed by this stamp.
  *
- * The surface comes from `profileRise` in `cam/cutters.js`, shared with the
+ * The surface comes from `cutFootprint` in `cam/cutters.js`, shared with the
  * voxel carver — so a flat, a ball and a chamfer cone are one formula with
  * three cases, and the two simulators cannot disagree about the shape of a
  * tool.
@@ -86,7 +86,6 @@ export function stamp(stock, x, y, z, tool) {
   const ci1 = Math.min(stock.nx - 1, cellX(stock, x + r));
   const cj0 = Math.max(0, cellY(stock, y - r));
   const cj1 = Math.min(stock.ny - 1, cellY(stock, y + r));
-  const r2 = r * r;
   const cellArea = cs * cs;
   let removed = 0;
 
@@ -96,11 +95,12 @@ export function stamp(stock, x, y, z, tool) {
     for (let i = ci0; i <= ci1; i++) {
       const cx = stock.xMin + (i + 0.5) * cs;
       const dx = cx - x;
-      const d2 = dx * dx + dy * dy;
-      if (d2 > r2) continue;
 
-      // Surface height of the tool at this offset from its axis.
-      const surfZ = z + profileRise(tool, Math.sqrt(d2));
+      // Surface height of the tool over this cell, or null when it is clear of
+      // the cutter altogether.
+      const rise = cutFootprint(tool, dx, dy);
+      if (rise === null) continue;
+      const surfZ = z + rise;
 
       const idx = j * stock.nx + i;
       const h = stock.heights[idx];

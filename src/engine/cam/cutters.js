@@ -78,11 +78,23 @@ export const CUTTERS = [
   {
     id: 'slot',
     label: 'Slot mill',
-    note: 'Two flutes, centre-cutting. Plunges and cuts a full-width slot without rubbing.',
+    note: 'Two flutes, centre-cutting. Plunges a slot to a set depth of cut without rubbing.',
     profile: 'flat',
     flutes: 2,
     fluteRange: [2, 3],
     bodyRatio: 3,
+    // The one type whose second dimension is a number the operator knows and
+    // the diameter cannot imply: how deep the cutting body reaches — the depth
+    // of cut it can take in one pass. Every other type's cutting body just
+    // follows its diameter through `bodyRatio`.
+    thicknessAdjustable: true,
+    thicknessRange: [0.5, 200],
+    // ...and the same for the shank. A slot mill is commonly necked — a wide
+    // cutting body on a narrower shank, so the shank clears the walls of the
+    // slot it has just cut. Every other type's shank is its own diameter, near
+    // enough that asking would be noise.
+    shankAdjustable: true,
+    shankRange: [0.5, 200],
   },
   {
     id: 'ball',
@@ -116,17 +128,97 @@ export function cutterById(id) {
 }
 
 /**
+ * The cutter a program's own tool comment describes.
+ *
+ * `gcode/tools.js` classifies `T1(SHOULDERMILL D32 - FACE MILLING)` into a
+ * normalised type; this says which of the shapes above that type *is*, so a
+ * detected tool draws and carves as itself instead of as whatever the fallback
+ * picker happens to hold.
+ *
+ * Returns `null` — not the endmill — for the types that are **not** milling
+ * cutters at all (drill, reamer, tap, bore). None of the six shapes describes a
+ * twist drill, and claiming one would be a worse lie than the neutral stick the
+ * marker already draws for them. Callers treat `null` as "keep the plain
+ * flat/ball".
+ */
+const CUTTER_FOR_TYPE = {
+  endmill: 'endmill',
+  // A bull nose is an endmill with a corner radius; square-ended is the closer
+  // of the two shapes we have (a ball nose has no flat at all).
+  bullmill: 'endmill',
+  slotmill: 'slot',
+  shouldermill: 'shoulder',
+  facemill: 'face',
+  ballmill: 'ball',
+  chamfer: 'chamfer',
+};
+
+export function cutterFromType(type) {
+  return CUTTER_FOR_TYPE[String(type ?? '').toLowerCase()] ?? null;
+}
+
+/**
+ * How thick the cutting body is — the axial length of the flutes, in mm.
+ *
+ * This is the tool's *second* dimension, and for most types it is not worth
+ * asking for: an endmill's flute length follows its diameter closely enough
+ * that `bodyRatio` can imply it, and a face mill is a shallow disc whatever its
+ * size. A slot cutter is the exception — it is specified as Ø × thickness, and
+ * the thickness is the width of the slot it leaves, so it cannot be derived
+ * from anything. `thickness` (from the tool table, or the fallback picker)
+ * overrides the implied value when the operator has one.
+ *
+ * Floored at 2 mm: a zero-length cutting body is not a thin tool, it is an
+ * invisible one.
+ */
+export function defaultThickness(id, diameter = 6) {
+  return Math.max(2, Math.max(diameter, 0) * cutterById(id).bodyRatio);
+}
+
+/** Clamp a thickness to what the type is sensibly made in. */
+export function clampThickness(id, mm) {
+  const c = cutterById(id);
+  const [lo, hi] = c.thicknessRange ?? [0.5, 200];
+  if (!Number.isFinite(mm)) return null;
+  return Math.max(lo, Math.min(hi, mm));
+}
+
+/**
+ * Shank diameter (mm) — the plain part above the flutes, which the holder grips.
+ *
+ * Almost always the cutting diameter, and it is drawn a hair under so the flutes
+ * read as flutes rather than as more shank. A slot mill is the exception worth
+ * asking about: a necked cutter runs a wide body on a narrow shank precisely so
+ * the shank clears the slot walls, and a marker that draws it full width says
+ * the tool will rub when it will not.
+ */
+export function defaultShank(id, diameter = 6) {
+  const d = Math.max(diameter, 0);
+  return Math.max(d * 0.9, d - 1, 0.1);
+}
+
+/** Clamp a shank diameter to what the type is sensibly made in. */
+export function clampShank(id, mm) {
+  const c = cutterById(id);
+  const [lo, hi] = c.shankRange ?? [0.5, 200];
+  if (!Number.isFinite(mm)) return null;
+  return Math.max(lo, Math.min(hi, mm));
+}
+
+/**
  * The `flat`/`ball` the older carving code understands.
  *
  * A cone has no equivalent there, and saying "flat" for one would carve a
  * square-bottomed pocket. It maps to `ball` instead — wrong in detail, but
  * wrong in the *direction of a rounded bottom* rather than a sharp corner,
  * which is the safer of the two lies for anything that has not been taught
- * cones. Everything that stamps through `profileRise` gets the real shape.
+ * cones. A disc keeps `flat`, which is the shape it used to be carved as
+ * everywhere — a wrong slot width is a smaller lie than a rounded floor.
+ * Everything that stamps through `cutFootprint` gets the real shape.
  */
 export function simTypeOf(id) {
   const c = cutterById(id);
-  return c.profile === 'flat' ? 'flat' : 'ball';
+  return c.profile === 'ball' || c.profile === 'cone' ? 'ball' : 'flat';
 }
 
 /**
@@ -184,15 +276,49 @@ export function profileRise(tool, d) {
 }
 
 /**
+ * Where the cutter's surface sits above the tip, at an offset `(u, w)` from the
+ * tool axis. `null` means the point is clear of the cutter and the cell is not
+ * touched — which is what separates "no material removed here" from "removed
+ * down to the tip", and is why the carvers ask this rather than testing the
+ * radius themselves.
+ *
+ * Every cutter is a solid of revolution about the spindle axis, so only the
+ * distance from the axis matters and the two offsets are interchangeable. They
+ * are kept separate because a cell's offset is naturally two numbers, and one
+ * `Math.hypot` here is cheaper than every caller repeating the same test.
+ *
+ * @param {{radius:number, type?:string, angle?:number}} tool
+ * @param {number} u  offset from the tool axis, mm
+ * @param {number} w  offset from the tool axis at right angles to `u`, mm
+ * @returns {number|null} height above the tip, or null when outside the cutter
+ */
+export function cutFootprint(tool, u, w) {
+  const r = Math.max(tool.radius ?? 0, 1e-9);
+  const d = Math.hypot(u, w);
+  if (d > r) return null;
+  return profileRise(tool, d);
+}
+
+/**
  * The carving geometry for a cutter type at a diameter — what `toolResolver`
  * hands each stamp.
  */
-export function cutterGeometry({ cutter = DEFAULT_CUTTER, diameter = 6, angle } = {}) {
+export function cutterGeometry({
+  cutter = DEFAULT_CUTTER, diameter = 6, angle, thickness,
+} = {}) {
   const c = cutterById(cutter);
   return {
     radius: Math.max(diameter, 1e-6) / 2,
     type: c.profile,
     ...(c.profile === 'cone' ? { angle: angle ?? c.angle ?? 90 } : {}),
+    // How far up the tool the cutting body reaches, and only when the operator
+    // has actually said. The height field cannot use it — a column has nothing
+    // below its own top — but the voxel carver can, and a cutter that only cuts
+    // for its first few mm leaves material standing above that. An *implied*
+    // thickness must not do this: it is a drawing default, not a measurement,
+    // and silently capping every cut at 3× the diameter is not something a
+    // guess has earned.
+    ...(c.thicknessAdjustable && thickness > 0 ? { thickness } : {}),
   };
 }
 

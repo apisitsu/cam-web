@@ -690,6 +690,10 @@ export function interpret(text, opts = {}) {
       n,
       type: def?.type ?? 'unknown',
       simType: def?.simType ?? 'flat',
+      // The shape from `cam/cutters.js`, when the comment named a milling
+      // cutter — null for a drill/tap/reamer, and for a tool that only ever
+      // appeared as a bare `T5`.
+      cutter: def?.cutter ?? null,
       diameter: def?.diameter ?? null,
       radius: def?.radius ?? null,
       length: def?.length ?? null,

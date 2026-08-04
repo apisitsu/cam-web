@@ -9,13 +9,15 @@
 import { create } from 'zustand';
 import * as Comlink from 'comlink';
 import {
-  feedsBeforeAt, feedsBefore, nextBlockEnd, prevBlockStart, timeAt,
+  feedProgressAt, nextBlockEnd, prevBlockStart, timeAt,
 } from '../engine/gcode/path.js';
 import { setBuffers, clearBuffers, getBuf } from '../engine/bufferCache.js';
 import { removalDiagnosis } from '../engine/sim/removal.js';
+import { simMethodFor } from '../engine/sim/method.js';
 import { rotaryFrameFor } from '../engine/view/rotaryFrame.js';
 import {
-  cutterById, simTypeOf, clampFlutes, defaultFlutes, DEFAULT_CUTTER,
+  cutterById, simTypeOf, clampFlutes, defaultFlutes, clampThickness, clampShank,
+  DEFAULT_CUTTER,
 } from '../engine/cam/cutters.js';
 import { getPlanContext } from './camPlanStore.js';
 
@@ -89,9 +91,22 @@ export const useCamStore = create((set, get) => ({
   toolCutter: DEFAULT_CUTTER,
   toolFlutes: defaultFlutes(DEFAULT_CUTTER),
   toolAngle: 90,       // chamfer/spot mills: included angle
+  // Slot cutters: the thickness of the cutting body, which is the width of the
+  // slot it leaves. null = let the type imply it from the diameter, which is
+  // all any other type does. See `defaultThickness` in `cam/cutters.js`.
+  toolThickness: null,
+  // Slot cutters: the shank diameter, for a necked tool whose shank is narrower
+  // than what it cuts. null = the type's own (just under the cutting diameter).
+  toolShank: null,
   toolType: 'flat',
   cellSize: 0.5,
   voxelSize: 1,        // voxel sim resolution (mm) — coarser than the dexel cell
+  // What the last voxel run actually carved at, and whether the grid budget
+  // (not the cutter) decided it. The requested size is only a request: a cut is
+  // rounded out to whole voxels, so a thin cutting body forces a finer grid —
+  // see `engine/sim/method.js`.
+  voxelSizeUsed: null,
+  voxelLimited: false,
   simMethod: 'height', // 'height' (dexel) | 'voxel' (undercut) | 'turning' (revolved)
   // ---- Turning ----
   turnTool: 'mvjnr',   // selected OD toolholder type (marker appearance)
@@ -164,12 +179,33 @@ export const useCamStore = create((set, get) => ({
       toolType: simTypeOf(c.id),
       toolFlutes: defaultFlutes(c.id),
       ...(c.angle ? { toolAngle: c.angle } : {}),
+      // A thickness or a shank typed in for one type means nothing on the next:
+      // 4 mm is a slot cutter and would be a Ø10 endmill with 4 mm of flute.
+      // Back to what the type implies.
+      toolThickness: null,
+      toolShank: null,
     });
   },
 
   /** Flute count, clamped to what the chosen type is actually made in. */
   setFlutes(n) {
     set((s) => ({ toolFlutes: clampFlutes(s.toolCutter, n) }));
+  },
+
+  /**
+   * Cutting-body thickness for the fallback tool — for a slot cutter, the width
+   * of the slot. `null` hands it back to the type's implied body.
+   */
+  setThickness(mm) {
+    set((s) => ({ toolThickness: mm == null ? null : clampThickness(s.toolCutter, mm) }));
+  },
+
+  /**
+   * Shank diameter for the fallback tool — the plain part the holder grips.
+   * `null` hands it back to the type's own (just under the cutting diameter).
+   */
+  setShank(mm) {
+    set((s) => ({ toolShank: mm == null ? null : clampShank(s.toolCutter, mm) }));
   },
   toggleStock: () => set((s) => ({ showStock: !s.showStock })),
 
@@ -449,13 +485,13 @@ export const useCamStore = create((set, get) => ({
     // routed to its own sim.
     if (get().mode === 'turn') return get().simulateTurning(text);
     if (get().mode !== 'mill') return;
-    // A multi-axis program machines different tools on different rotary faces,
-    // and a single Z-up height field can only carve one of them — which looked
-    // like "only T3 cuts". Route those to the voxel sim, which carves every face
-    // (and every tool) into one block. Single-axis jobs keep the scrub-able
-    // height field.
-    const idx = getBuf().stats?.aIndices ?? [0];
-    if (idx.length > 1) return get().simulateVoxel(text);
+    // Which model can actually show this cut — see `engine/sim/method.js`. A
+    // multi-axis program (a Z-up height field carves one face, so the others
+    // look uncut) and a cutter that only cuts near its tip (its groove has a
+    // roof, and a column has one top-Z) both need the voxel block. Everything
+    // else keeps the scrub-able height field.
+    const plan = get().simPlan();
+    if (plan.method === 'voxel') return get().simulateVoxel(text);
     const source = text ?? get().gcode;
     const {
       toolRadius, toolType, cellSize, stockTop, stockBase, stockMargin,
@@ -472,6 +508,9 @@ export const useCamStore = create((set, get) => ({
         ...get().machineOpts(),
         radius: toolRadius, toolType, cellSize,
         cutter: get().toolCutter, flutes: get().toolFlutes, angle: get().toolAngle,
+        // A slot cutter's thickness IS the slot it leaves — without it the
+        // carvers would take out a channel the full diameter wide.
+        thickness: get().toolThickness ?? undefined,
         margin: stockMargin,
         top: stockTop ?? undefined,
         base: stockBase ?? undefined,
@@ -530,29 +569,55 @@ export const useCamStore = create((set, get) => ({
       toolRadius, toolType, voxelSize, stockMargin,
     } = get();
     const { stockSize, stockOrigin } = get().billetOpts();
-    set({ simStatus: 'running', error: null, cutFollowsPlayback: false });
+    set({ simStatus: 'running', error: null, _lastCarveTarget: null });
     try {
       const api = getSimWorker();
-      const result = await api.runVoxel(source, {
+      // A session, not a one-shot: an undercutting cutter needs this model for
+      // ordinary work now, so losing playback with it is not a trade the
+      // operator can opt out of. `initVoxel` returns the uncut block; the
+      // playhead carves it from there, exactly like the height field.
+      const init = await api.initVoxel(source, {
         ...get().machineOpts(),
         radius: toolRadius, toolType,
         cutter: get().toolCutter, flutes: get().toolFlutes, angle: get().toolAngle,
+        // How far up the tool cuts. Without it the carvers clear the whole
+        // flute length and the groove comes back with its roof taken off.
+        thickness: get().toolThickness ?? undefined,
         voxelSize, margin: stockMargin,
         stockSize, stockOrigin,
         toolOverrides: get().toolOverrides,
       });
-      setBuffers({ sim: result });
+      // Pressing Simulate means "run the program through the material", so the
+      // whole thing is carved here and the playhead moves to the end to match
+      // what is on screen — the same contract the height field has. Leaving it
+      // to `carveToPlayhead` handed back an UNCUT block to anyone whose
+      // cut-with-playback switch was off, which the old one-shot voxel run
+      // turned off for them.
+      const full = await api.carveVoxelStep(init.totalFeeds);
+      setBuffers({ sim: full });
       set({
         bufVer: get().bufVer + 1,
         simStatus: 'done',
         showStock: true,
-        simReady: false, // voxel is not a scrub-able session
-        totalFeeds: 0,
+        simReady: true,          // scrub-able, like the height field
+        // The one-shot voxel run turned this OFF, and nothing ever turned it
+        // back on — so anyone who had used it got a playhead that carved
+        // nothing, for a model that can now carve step by step.
+        cutFollowsPlayback: true,
+        totalFeeds: init.totalFeeds,
+        _lastCarveTarget: init.totalFeeds,
         simMethod: 'voxel',
+        // The grid may have been refined to hold the thinnest cut, or held back
+        // by the budget — either way it is no longer the number in the box, so
+        // the UI reads it from here.
+        voxelSizeUsed: init.cellSizeZ,
+        voxelLimited: !!init.limited,
         // The voxel sim assembles every face onto the part in the part frame,
         // so its block turns with the model from zero.
         simFrameA: 0,
       });
+      const path = getBuf().path;
+      if (path && get().playhead <= 0) set({ playhead: path.count, playT: 0 });
     } catch (err) {
       set({ simStatus: 'error', error: err.message || String(err) });
     }
@@ -600,11 +665,67 @@ export const useCamStore = create((set, get) => ({
     set({ turnTool });
   },
 
+  /**
+   * Which simulator this setup needs, and why — the rule is pure, in
+   * `engine/sim/method.js`. The UI asks the same question so the button can say
+   * up front what pressing it will do, instead of the model changing under the
+   * operator with no explanation.
+   */
+  simPlan() {
+    return simMethodFor({
+      rotaryIndices: getBuf().stats?.aIndices ?? [0],
+      fallbackTool: { thickness: get().toolThickness ?? undefined },
+      overrides: get().toolOverrides,
+    });
+  },
+
   /** Edit one tool's simulation geometry (merges into the override for that T). */
   setToolOverride(n, patch) {
     const cur = get().toolOverrides;
     const next = { ...cur, [n]: { ...(cur[n] || {}), ...patch } };
     set({ toolOverrides: next });
+  },
+
+  /**
+   * Pick one tool's cutter type in the Tool table.
+   *
+   * `simType` is written alongside so the flat/ball the older carving code
+   * speaks can never drift from the type on screen — the same rule `setCutter`
+   * follows for the fallback tool. A type with its own angle brings that angle
+   * with it, so switching to a chamfer mill does not leave a stale 30° behind
+   * from whatever was picked before.
+   */
+  setToolCutter(n, id) {
+    const c = cutterById(id);
+    get().setToolOverride(n, {
+      cutter: c.id,
+      simType: simTypeOf(c.id),
+      ...(c.angle ? { angle: c.angle } : {}),
+      // A thickness and a shank belong to the type they were typed for — see
+      // `setCutter`.
+      thickness: undefined,
+      shank: undefined,
+    });
+  },
+
+  /**
+   * One tool's cutting-body thickness (the slot width, for a slot cutter).
+   *
+   * `cutter` is the type the row is showing — which may have come from the
+   * program's comment rather than from an override, so the store cannot look it
+   * up on its own. It only bounds the clamp.
+   */
+  setToolThickness(n, mm, cutter) {
+    get().setToolOverride(n, {
+      thickness: mm == null ? undefined : clampThickness(cutter, mm),
+    });
+  },
+
+  /** One tool's shank diameter — the plain part above the flutes. */
+  setToolShank(n, mm, cutter) {
+    get().setToolOverride(n, {
+      shank: mm == null ? undefined : clampShank(cutter, mm),
+    });
   },
 
   /** Clear a tool's overrides, reverting it to the auto-detected values. */
@@ -626,16 +747,26 @@ export const useCamStore = create((set, get) => ({
     // the last one already carved — re-asking the worker (and re-building the
     // whole grid's mesh) for an answer that would come back byte-identical is
     // exactly the wasted, repeated work that showed up as stutter.
-    const target = simMethod === 'turning'
-      ? feedsBefore(path, playhead)
-      : feedsBeforeAt(path, playhead, aIndex ?? 0);
+    // Where the cut has actually got, on the same clock the tool marker rides —
+    // fractional, so the material comes off *under the tool* instead of a whole
+    // block at a time. A 50 mm `G1` is one feed move: counting whole moves let
+    // the tool cross the part with nothing happening, then dropped the entire
+    // cut in at the end of it.
+    //
+    // The height field carves ONE rotary index, so it counts only that index's
+    // feeds; turning and the voxel block carve every move there is.
+    const seconds = get().playing ? get().playT : timeAt(path, playhead);
+    const target = simMethod === 'height'
+      ? feedProgressAt(path, seconds, aIndex ?? 0)
+      : feedProgressAt(path, seconds);
     if (target === _lastCarveTarget) return;
     set({ _carving: true });
     try {
       const api = getSimWorker();
-      const sim = simMethod === 'turning'
-        ? await api.carveTurningStep(target)
-        : await api.carve(target);
+      let sim;
+      if (simMethod === 'turning') sim = await api.carveTurningStep(target);
+      else if (simMethod === 'voxel') sim = await api.carveVoxelStep(target);
+      else sim = await api.carve(target);
       setBuffers({ sim });
       set({ bufVer: get().bufVer + 1, _carving: false, _lastCarveTarget: target });
     } catch (err) {

@@ -180,3 +180,88 @@ describe('parkedTip — the tool is visible when nothing is running', () => {
     }
   });
 });
+
+describe('endMillGeometry — a cutting body the operator has measured', () => {
+  it('makes the cutting body exactly that long', () => {
+    // The tool's second dimension: how far up it actually cuts. A slot cutter
+    // is the one type where the diameter cannot imply it.
+    expect(endMillGeometry({ radius: 6, cutter: 'slot', thickness: 8 }).flutes.length)
+      .toBeCloseTo(8, 9);
+    expect(endMillGeometry({ radius: 6, cutter: 'slot', thickness: 25 }).flutes.length)
+      .toBeCloseTo(25, 9);
+  });
+
+  it('leaves the rest of the tool stacked on it', () => {
+    const g = endMillGeometry({ radius: 6, cutter: 'slot', thickness: 8 });
+    expect(span(g.flutes)[0]).toBeCloseTo(0, 9);          // still cutting at the tip
+    expect(span(g.flutes)[1]).toBeCloseTo(span(g.shank)[0], 9);
+    expect(span(g.shank)[1]).toBeCloseTo(g.gauge, 9);
+  });
+
+  it("falls back to the type's own body when none is stated", () => {
+    const implied = endMillGeometry({ radius: 5, cutter: 'slot' }).flutes.length;
+    expect(implied).toBeCloseTo(10 * 3, 9);               // bodyRatio 3 x Ø10
+    expect(endMillGeometry({ radius: 5, cutter: 'slot', thickness: null }).flutes.length)
+      .toBeCloseTo(implied, 9);
+  });
+
+  it('draws a thin cutter rather than nothing at all', () => {
+    // A body thinner than the renderer can show is a tool that vanished.
+    for (const thickness of [0, 0.05, -3]) {
+      const g = endMillGeometry({ radius: 20, cutter: 'slot', thickness });
+      expect(g.flutes.length, String(thickness)).toBeGreaterThan(0);
+      expect(g.shank.length, String(thickness)).toBeGreaterThan(0);
+    }
+  });
+
+  it('is what the gauge length has to make room for', () => {
+    // 40 mm of stick-out cannot hold a 60 mm cutting body; the marker still
+    // has to be drawable rather than inverted.
+    const g = endMillGeometry({ radius: 20, cutter: 'slot', thickness: 60, length: 40 });
+    expect(g.flutes.length).toBeGreaterThan(0);
+    expect(g.shank.length).toBeGreaterThan(0);
+    expect(span(g.flutes)[1]).toBeCloseTo(span(g.shank)[0], 9);
+  });
+});
+
+describe('endMillGeometry — a shank the operator has measured', () => {
+  it('draws the shank at exactly that diameter', () => {
+    // A necked slot mill: Ø20 where it cuts, Ø10 where it is held.
+    const g = endMillGeometry({ radius: 10, cutter: 'slot', shank: 10 });
+    expect(g.shank.radius).toBeCloseTo(5, 9);
+    expect(g.flutes.radius).toBeCloseTo(10, 9);   // the cutter is untouched
+  });
+
+  it('sizes the holder off the shank it actually grips', () => {
+    // The point of a necked tool is that the fat part stays out of the slot.
+    // A collet drawn off the cutting diameter would deny it.
+    const necked = endMillGeometry({ radius: 10, cutter: 'slot', shank: 6 });
+    const plain = endMillGeometry({ radius: 10, cutter: 'slot' });
+    expect(necked.arbor.rBottom).toBeLessThan(plain.arbor.rBottom);
+    expect(necked.arbor.rBottom).toBeGreaterThan(necked.shank.radius);
+  });
+
+  it('leaves every other tool exactly as it was', () => {
+    // The shank is stated for one type; nothing may move for the rest.
+    for (const cutter of ['endmill', 'face', 'ball', 'chamfer']) {
+      const g = endMillGeometry({ radius: 8, cutter });
+      expect(g.shank.radius, cutter).toBeCloseTo(Math.max(8 * 0.9, 8 - 0.5), 9);
+      expect(g.arbor.rBottom, cutter).toBeCloseTo(Math.max(8 * 1.8, 8 + 4), 9);
+    }
+  });
+
+  it('draws a hair-thin shank rather than nothing at all', () => {
+    for (const shank of [0, 0.05, -4]) {
+      const g = endMillGeometry({ radius: 10, cutter: 'slot', shank });
+      expect(g.shank.radius, String(shank)).toBeGreaterThan(0);
+      expect(g.arbor.rBottom, String(shank)).toBeGreaterThan(g.shank.radius);
+    }
+  });
+
+  it('allows a shank wider than the cutter without inverting the holder', () => {
+    // Unusual but not impossible (a stub cutter on a big arbor).
+    const g = endMillGeometry({ radius: 3, cutter: 'slot', shank: 20 });
+    expect(g.shank.radius).toBeCloseTo(10, 9);
+    expect(g.arbor.rBottom).toBeGreaterThan(g.shank.radius);
+  });
+});

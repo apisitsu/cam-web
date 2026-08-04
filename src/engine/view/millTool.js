@@ -15,7 +15,7 @@
  * Pure. No three.js, no React.
  */
 
-import { cutterById } from '../cam/cutters.js';
+import { cutterById, defaultThickness, defaultShank } from '../cam/cutters.js';
 
 /** Arbor (collet/holder) length in mm — a fixed lump, it is not to scale. */
 export const ARBOR_LENGTH = 26;
@@ -34,8 +34,18 @@ export const ARBOR_LENGTH = 26;
  * about whether the holder will clear the fixture. `bodyRatio` on each cutter
  * is what sets the flute length when the tool table has not given a real one.
  *
+ * `thickness` is the cutting body's own length along the tool, when the
+ * operator knows it: a slot cutter's is the depth of cut it can take, which no
+ * ratio on the diameter can imply. Without one, `bodyRatio` stands in.
+ *
+ * `shank` is that part's diameter. A necked slot mill runs a wide body on a
+ * narrow shank so the shank clears the walls of the slot it just cut, and the
+ * **holder is sized off the shank it grips** rather than off the cutter — which
+ * is the whole reason a necked tool reaches where a plain one cannot.
+ *
  * @param {{radius?:number, type?:'flat'|'ball'|'cone', cutter?:string,
- *   angle?:number, length?:number, arbor?:boolean}} opts
+ *   angle?:number, thickness?:number, shank?:number, length?:number,
+ *   arbor?:boolean}} opts
  *   `arbor: false` omits the holder — it is the widest thing on the tool and it
  *   hides the cut it is making. See `showArbor` in camStore.
  * @returns {{nose:object|null, flutes:object, shank:object, arbor:object|null,
@@ -43,25 +53,31 @@ export const ARBOR_LENGTH = 26;
  *   the mesh centre along the tool axis. `nose.kind` is 'ball' or 'cone'.
  */
 export function endMillGeometry({
-  radius = 3, type = 'flat', cutter, angle, length = 0, arbor = true,
+  radius = 3, type = 'flat', cutter, angle, thickness, shank, length = 0, arbor = true,
 } = {}) {
   const r = Math.max(radius, 1e-6);
   const spec = cutter ? cutterById(cutter) : null;
   const profile = spec ? spec.profile : type;
+
   // The nose occupies the bottom of the tool, so the flutes start above it: a
   // ball's hemisphere is `r` tall, a cone's point is `r / tan(half-angle)`.
   const coneRise = r / Math.tan((Math.max(1, Math.min(89.9,
     (angle ?? spec?.angle ?? 90) / 2)) * Math.PI) / 180);
   const noseOffset = profile === 'ball' ? r : (profile === 'cone' ? coneRise : 0);
   // A face mill's flutes are a shallow band; an endmill's are most of its
-  // stick-out. `bodyRatio` is a multiple of DIAMETER, hence the 2r.
-  const flute = spec
-    ? Math.max(2, r * 2 * spec.bodyRatio)
-    : Math.max(8, r * 4);
-  const arborR = Math.max(r * 1.8, r + 4);
+  // stick-out. A stated thickness beats both — it is how far up the tool the
+  // operator says it actually cuts.
+  const flute = thickness > 0
+    ? Math.max(0.2, thickness)
+    : (spec ? defaultThickness(spec.id, r * 2) : Math.max(8, r * 4));
   const gauge = Math.max(length > 0 ? length : flute + r * 3, flute + 1);
   const fluteLen = Math.min(flute, gauge - noseOffset);
-  const shankR = Math.max(r * 0.9, r - 0.5);
+  const shankR = shank > 0 ? Math.max(shank / 2, 0.05) : defaultShank(spec?.id, r * 2) / 2;
+  // The collet grips the SHANK, so that is what sizes it — but only where the
+  // operator has actually stated one. Left implied, the holder goes on being
+  // sized off the cutter, exactly as every existing tool draws it.
+  const holdR = shank > 0 ? shankR : r;
+  const arborR = Math.max(holdR * 1.8, holdR + 4);
   const shankBot = noseOffset + fluteLen;
   // Never zero-length: a degenerate cylinder renders as a glitch, not as nothing.
   const shankLen = Math.max(0.01, gauge - shankBot);

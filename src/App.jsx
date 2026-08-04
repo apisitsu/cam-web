@@ -23,8 +23,9 @@ import {
   CUTTER_ICONS,
 } from './components/glyph.jsx';
 import {
-  CUTTERS, cutterById, cutterWarning,
+  CUTTERS, cutterById, cutterWarning, defaultThickness, defaultShank,
 } from './engine/cam/cutters.js';
+import { effectiveTool } from './engine/cam/effectiveTool.js';
 import { useCamStore } from './stores/camStore.js';
 import { useCamPlanStore } from './stores/camPlanStore.js';
 import { PART_FORMATS } from './engine/mesh/import.js';
@@ -33,6 +34,7 @@ import { useSketchStore } from './stores/sketchStore.js';
 import { saveProject, saveGcode, openProjectFile } from './lib/projectIO.js';
 import { fitBoundsFor, fitBoundsForPart, chuckFromBounds } from './engine/view/setup.js';
 import { unionBounds } from './engine/view/camera.js';
+import { simMethodFor } from './engine/sim/method.js';
 import { SPEEDS, PLAY_BASE_SECONDS, perTick } from './engine/view/playback.js';
 import { sidebarSections } from './engine/view/sidebar.js';
 import { offerArborToggle, parkedTip } from './engine/view/millTool.js';
@@ -219,6 +221,56 @@ function TurnInsertPicker({ value, onChange }) {
 }
 
 /**
+ * Pick a cutter TYPE — the six shapes in `engine/cam/cutters.js`.
+ *
+ * Icon-only, per the toolbar convention: the tooltip names each and says what
+ * it is for. Shared by the fallback cutter and by every row of the Tool table,
+ * because they are the same question asked about different tools — the table
+ * used to ask a narrower one (Flat or Ball), which could not say "face mill"
+ * at all, so a Ø50 face mill in the program could only ever be drawn and
+ * carved as a Ø50 stick.
+ */
+function CutterPicker({ value, onChange, box = 32, scope = 'fallback' }) {
+  return (
+    <Space size={2} wrap>
+      {CUTTERS.map((c) => {
+        const Icon = CUTTER_ICONS[c.id];
+        return (
+          <Tooltip
+            key={c.id}
+            title={(
+              <span>
+                <b>{c.label}</b>
+                <span style={{ display: 'block', opacity: 0.82, fontSize: 12, marginTop: 2 }}>
+                  {c.note}
+                </span>
+              </span>
+            )}
+          >
+            <Button
+              size="small"
+              aria-label={c.label}
+              data-cutter={c.id}
+              // Which tool is being typed — the fallback, or a row of the Tool
+              // table. Both render the same six glyphs, so a test that asks for
+              // "the face mill button" has to say whose.
+              data-cutter-scope={scope}
+              type={value === c.id ? 'primary' : 'text'}
+              icon={<Icon />}
+              onClick={() => onChange(c.id)}
+              style={{
+                width: box, height: box, padding: 0,
+                color: value === c.id ? undefined : '#cbd5e1',
+              }}
+            />
+          </Tooltip>
+        );
+      })}
+    </Space>
+  );
+}
+
+/**
  * The cutter the sim falls back to when the program never named one.
  *
  * Always collapsed to a single `+` until asked for. The first cut at this
@@ -228,8 +280,8 @@ function TurnInsertPicker({ value, onChange }) {
  * form is worse than either; this is a button, and pressing it gives the form.
  */
 function ToolFallback({
-  open, onOpen, detected, diameter, cutter, flutes, angle,
-  onDiameter, onCutter, onFlutes, onAngle, addonStyle,
+  open, onOpen, detected, diameter, cutter, flutes, angle, thickness, shank,
+  onDiameter, onCutter, onFlutes, onAngle, onThickness, onShank, addonStyle,
 }) {
   const spec = cutterById(cutter);
   if (!open) {
@@ -248,27 +300,8 @@ function ToolFallback({
   const advice = cutterWarning({ cutter, diameter });
   return (
     <Space direction="vertical" size={4} style={{ width: '100%' }}>
-      {/* The TYPE first: it decides what the other two fields mean. Icon-only,
-          per the toolbar convention — the tooltip names each and says what it
-          is for. See `engine/cam/cutters.js`. */}
-      <Space size={2} wrap>
-        {CUTTERS.map((c) => {
-          const Icon = CUTTER_ICONS[c.id];
-          return (
-            <Tooltip key={c.id} title={<span><b>{c.label}</b><span style={{ display: 'block', opacity: 0.82, fontSize: 12, marginTop: 2 }}>{c.note}</span></span>}>
-              <Button
-                size="small"
-                aria-label={c.label}
-                data-cutter={c.id}
-                type={cutter === c.id ? 'primary' : 'text'}
-                icon={<Icon />}
-                onClick={() => onCutter(c.id)}
-                style={{ width: 32, height: 32, padding: 0, color: cutter === c.id ? undefined : '#cbd5e1' }}
-              />
-            </Tooltip>
-          );
-        })}
-      </Space>
+      {/* The TYPE first: it decides what the other two fields mean. */}
+      <CutterPicker value={cutter} onChange={onCutter} />
       <Space wrap align="center" size="small">
         <Tooltip title="Cutting diameter">
           <Space.Compact>
@@ -301,6 +334,49 @@ function ToolFallback({
                 style={{ width: 62 }}
               />
               <span className="ant-input-group-addon" style={addonStyle('right')}>°</span>
+            </Space.Compact>
+          </Tooltip>
+        )}
+        {/* A slot cutter's cutting body and its shank are both numbers the
+            diameter cannot imply — a necked tool is wide where it cuts and
+            narrow where the holder grips it. */}
+        {spec.thicknessAdjustable && (
+          <Tooltip title="Cutter thickness — the width of the slot this tool leaves.">
+            <Space.Compact>
+              <span className="ant-input-group-addon" style={addonStyle('left')}>t</span>
+              <InputNumber controls={false}
+                aria-label="Cutter thickness"
+                min={spec.thicknessRange[0]}
+                max={spec.thicknessRange[1]}
+                step={0.5}
+                // Empty means "not measured": the marker falls back to what the
+                // type implies and the cut is not capped. Showing that default
+                // as a VALUE read as a setting that was already in force, so
+                // pressing Simulate changed nothing and looked broken.
+                value={thickness ?? null}
+                placeholder={String(defaultThickness(spec.id, diameter))}
+                onChange={onThickness}
+                style={{ width: 66 }}
+              />
+              <span className="ant-input-group-addon" style={addonStyle('right')}>mm</span>
+            </Space.Compact>
+          </Tooltip>
+        )}
+        {spec.shankAdjustable && (
+          <Tooltip title="Shank diameter — the plain part above the flutes, which the holder grips.">
+            <Space.Compact>
+              <span className="ant-input-group-addon" style={addonStyle('left')}>s⌀</span>
+              <InputNumber controls={false}
+                aria-label="Shank diameter"
+                min={spec.shankRange[0]}
+                max={spec.shankRange[1]}
+                step={0.5}
+                value={shank ?? null}
+                placeholder={String(defaultShank(spec.id, diameter))}
+                onChange={onShank}
+                style={{ width: 66 }}
+              />
+              <span className="ant-input-group-addon" style={addonStyle('right')}>mm</span>
             </Space.Compact>
           </Tooltip>
         )}
@@ -431,8 +507,12 @@ export default function App() {
   const toolCutter = useCamStore((s) => s.toolCutter);
   const toolFlutes = useCamStore((s) => s.toolFlutes);
   const toolAngle  = useCamStore((s) => s.toolAngle);
+  const toolThickness = useCamStore((s) => s.toolThickness);
+  const toolShank = useCamStore((s) => s.toolShank);
   const cellSize  = useCamStore((s) => s.cellSize);
   const voxelSize = useCamStore((s) => s.voxelSize);
+  const voxelSizeUsed = useCamStore((s) => s.voxelSizeUsed);
+  const voxelLimited = useCamStore((s) => s.voxelLimited);
   const simMethod = useCamStore((s) => s.simMethod);
   const turnTool  = useCamStore((s) => s.turnTool);
   const stockOversize = useCamStore((s) => s.stockOversize);
@@ -460,9 +540,14 @@ export default function App() {
   const simulateVoxel = useCamStore((s) => s.simulateVoxel);
   const setTurnTool = useCamStore((s) => s.setTurnTool);
   const setToolOverride = useCamStore((s) => s.setToolOverride);
+  const setToolCutter = useCamStore((s) => s.setToolCutter);
+  const setToolThickness = useCamStore((s) => s.setToolThickness);
+  const setToolShank = useCamStore((s) => s.setToolShank);
   const clearToolOverride = useCamStore((s) => s.clearToolOverride);
   const setTool     = useCamStore((s) => s.setTool);
   const setCutter   = useCamStore((s) => s.setCutter);
+  const setThickness = useCamStore((s) => s.setThickness);
+  const setShank = useCamStore((s) => s.setShank);
   const setFlutes   = useCamStore((s) => s.setFlutes);
   const toggleStock = useCamStore((s) => s.toggleStock);
   const setStockSize = useCamStore((s) => s.setStockSize);
@@ -696,20 +781,32 @@ export default function App() {
   const detectedTools = stats?.tools ?? [];
   const currentToolNum = useMemo(() => toolAt(path, playhead), [path, playhead, bufVer]);
   const currentTool = detectedTools.find((t) => t.n === currentToolNum) || null;
-  // The tool marker follows the active cutter's real size/shape when known, so
-  // it visibly shrinks from a Ø32 face mill to a Ø3 reamer as the program runs;
-  // the slider is the fallback for tools the program never described.
+  // The tool marker follows the active cutter's real size AND shape, so it
+  // visibly shrinks from a Ø32 face mill to a Ø3 reamer as the program runs, and
+  // a face mill is a disc where a slot drill is a stick. Which of the three
+  // sources wins — the Tool table, the program's comment, the fallback picker —
+  // is `cam/effectiveTool.js`, the same decision the carvers make.
   const currentOverride = toolOverrides[currentToolNum] || {};
-  const markerRadius = (currentOverride.diameter != null
-    ? currentOverride.diameter / 2
-    : currentTool?.radius) ?? toolRadius;
-  const markerType = currentOverride.simType ?? currentTool?.simType ?? toolType;
-  // The cutter TYPE only drives the marker where it is the tool actually being
-  // used — i.e. where the program named no tool for this move. A detected Ø50
-  // face mill must not be redrawn as whatever the fallback picker last showed.
-  const markerCutter = currentTool || currentOverride.simType ? undefined : toolCutter;
+  const marker = effectiveTool({
+    detected: currentTool,
+    override: currentOverride,
+    fallback: {
+      radius: toolRadius,
+      cutter: toolCutter,
+      type: toolType,
+      angle: toolAngle,
+      thickness: toolThickness ?? undefined,
+      shank: toolShank ?? undefined,
+    },
+  });
+  const markerRadius = marker.radius;
+  const markerType = marker.type;
+  const markerCutter = marker.cutter;
+  const markerAngle = marker.angle;
+  const markerThickness = marker.thickness;
+  const markerShank = marker.shank;
   // Gauge length (tip to collet) drives how far the milling marker sticks out.
-  const markerLength = currentOverride.length ?? currentTool?.length ?? 0;
+  const markerLength = marker.length;
   // The turning toolholder for the marker — chosen per-tool in the Tool table.
   // MVJNR's insert nose angle is adjustable; MVVNN's is fixed.
   const baseTurnTool = STANDARD_TURN_TOOLS.find((t) => t.id === (currentOverride.insert ?? turnTool))
@@ -778,6 +875,17 @@ export default function App() {
   const markerPos = useMemo(
     () => toolPos ?? parkedTip({ solid: stockSolid, bounds, radius: markerRadius }),
     [toolPos, stockSolid, bounds, markerRadius],
+  );
+
+  // Which simulator this setup needs, and why — the same pure rule the store
+  // routes on, so the button says up front what pressing it will do.
+  const simPlan = useMemo(
+    () => simMethodFor({
+      rotaryIndices,
+      fallbackTool: { thickness: toolThickness ?? undefined },
+      overrides: toolOverrides,
+    }),
+    [rotaryIndices, toolThickness, toolOverrides],
   );
 
   const toolRotary = useMemo(() => {
@@ -973,9 +1081,26 @@ export default function App() {
                       const ov = toolOverrides[t.n] || {};
                       const active = t.n === currentToolNum;
                       const edited = ov.diameter != null || ov.simType != null
+                        || ov.cutter != null || ov.angle != null || ov.thickness != null
+                        || ov.shank != null
                         || ov.length != null || ov.insert != null || ov.insertAngle != null;
                       const effDia = ov.diameter ?? t.diameter;
-                      const effType = ov.simType ?? t.simType;
+                      // What this row's tool actually is, by the same rules the
+                      // marker and the carvers use — so the highlighted glyph is
+                      // the shape on screen, detected or picked.
+                      const eff = effectiveTool({
+                        detected: t,
+                        override: ov,
+                        fallback: {
+                          radius: toolRadius,
+                          cutter: toolCutter,
+                          type: toolType,
+                          angle: toolAngle,
+                          thickness: toolThickness ?? undefined,
+                          shank: toolShank ?? undefined,
+                        },
+                      });
+                      const effSpec = cutterById(eff.cutter);
                       return (
                         <div
                           key={t.n}
@@ -1028,12 +1153,70 @@ export default function App() {
                                 onChange={(v) => setToolOverride(t.n, { diameter: v ?? undefined })}
                                 style={{ width: 68 }}
                               />
-                              <Segmented
-                                size="small"
-                                value={effType}
-                                onChange={(v) => setToolOverride(t.n, { simType: v })}
-                                options={[{ label: 'Flat', value: 'flat' }, { label: 'Ball', value: 'ball' }]}
+                              {/* The type, not just flat/ball: it is what the
+                                  marker draws and what the carvers stamp. */}
+                              <CutterPicker
+                                box={26}
+                                scope={`T${t.n}`}
+                                value={eff.cutter}
+                                onChange={(id) => setToolCutter(t.n, id)}
                               />
+                              {effSpec.angleAdjustable && eff.cutter && (
+                                <Tooltip title="Included angle — the chamfer this cutter leaves. 90° gives a 45° chamfer.">
+                                  <Space.Compact>
+                                    <span className="ant-input-group-addon" style={addonStyle('left')}>∠</span>
+                                    <InputNumber controls={false}
+                                      size="small"
+                                      min={15}
+                                      max={175}
+                                      step={5}
+                                      value={eff.angle}
+                                      onChange={(v) => setToolOverride(t.n, { angle: v || 90 })}
+                                      style={{ width: 56 }}
+                                    />
+                                  </Space.Compact>
+                                </Tooltip>
+                              )}
+                              {/* Thickness: the slot this tool leaves. Only the
+                                  slot cutter is specified that way. */}
+                              {effSpec.thicknessAdjustable && eff.cutter && (
+                                <Tooltip title="Cutter thickness — the width of the slot this tool leaves.">
+                                  <Space.Compact>
+                                    <span className="ant-input-group-addon" style={addonStyle('left')}>t</span>
+                                    <InputNumber controls={false}
+                                      size="small"
+                                      aria-label={`T${t.n} cutter thickness`}
+                                      min={effSpec.thicknessRange[0]}
+                                      max={effSpec.thicknessRange[1]}
+                                      step={0.5}
+                                      value={eff.thickness ?? null}
+                                      placeholder={String(defaultThickness(eff.cutter, eff.radius * 2))}
+                                      onChange={(v) => setToolThickness(t.n, v, eff.cutter)}
+                                      style={{ width: 62 }}
+                                    />
+                                  </Space.Compact>
+                                </Tooltip>
+                              )}
+                              {/* Shank: a necked slot mill is narrower where
+                                  the holder grips it than where it cuts. */}
+                              {effSpec.shankAdjustable && eff.cutter && (
+                                <Tooltip title="Shank diameter — the plain part above the flutes, which the holder grips.">
+                                  <Space.Compact>
+                                    <span className="ant-input-group-addon" style={addonStyle('left')}>s⌀</span>
+                                    <InputNumber controls={false}
+                                      size="small"
+                                      aria-label={`T${t.n} shank diameter`}
+                                      min={effSpec.shankRange[0]}
+                                      max={effSpec.shankRange[1]}
+                                      step={0.5}
+                                      value={eff.shank ?? null}
+                                      placeholder={String(defaultShank(eff.cutter, eff.radius * 2))}
+                                      onChange={(v) => setToolShank(t.n, v, eff.cutter)}
+                                      style={{ width: 62 }}
+                                    />
+                                  </Space.Compact>
+                                </Tooltip>
+                              )}
                               <Tooltip title="Gauge length — tip to the collet face (stick-out)">
                                 <span style={{ color: '#94a3b8' }}>L</span>
                               </Tooltip>
@@ -1132,6 +1315,35 @@ export default function App() {
                 </>
               ) : (
                 <>
+                  {/* A tool that only cuts near its tip leaves a groove with a
+                      roof on it, and the height field cannot hold one — see
+                      `engine/sim/method.js`. Saying so is the difference
+                      between "the slot cutter did not cut a slot" and knowing
+                      which model is running. */}
+                  {simPlan.method === 'voxel' && rotaryIndices.length <= 1 && (
+                    <Alert
+                      type="info"
+                      showIcon
+                      message="Simulating as voxels — this cutter leaves an undercut"
+                      description={
+                        <>
+                          {simPlan.why}
+                          {' '}The voxel block keeps it, and scrubs with playback
+                          like the height field does.
+                          {voxelSizeUsed && voxelSizeUsed !== voxelSize && (
+                            <>
+                              {' '}Voxels were
+                              {voxelLimited ? ' held at ' : ' cut to '}
+                              <b>{voxelSizeUsed.toFixed(3)} mm</b> tall
+                              {voxelLimited
+                                ? ' — as fine as this part can afford. A groove is rounded out to whole voxels, so it may still read taller than the tool.'
+                                : ', so the groove is the height of the tool rather than of the grid. Their footprint stays at the size beside the button.'}
+                            </>
+                          )}
+                        </>
+                      }
+                    />
+                  )}
                   {rotaryIndices.length > 1 && (
                     <Alert
                       type="info"
@@ -1169,10 +1381,14 @@ export default function App() {
                     cutter={toolCutter}
                     flutes={toolFlutes}
                     angle={toolAngle}
+                    thickness={toolThickness}
+                    shank={toolShank}
                     onDiameter={(v) => setTool({ toolRadius: (v || 0.2) / 2 })}
                     onCutter={setCutter}
                     onFlutes={setFlutes}
                     onAngle={(v) => setTool({ toolAngle: v || 90 })}
+                    onThickness={setThickness}
+                    onShank={setShank}
                     addonStyle={addonStyle}
                   />
 
@@ -1202,10 +1418,12 @@ export default function App() {
                         of one simulator, which they have never been. */}
                     <Space.Compact>
                       <CommandButton
-                        id={rotaryIndices.length > 1 ? 'simulateFaces' : 'simulate'}
+                        id={simPlan.method === 'voxel'
+                          ? (rotaryIndices.length > 1 ? 'simulateFaces' : 'simulateUndercut')
+                          : 'simulate'}
                         type="primary"
                         ghost
-                        icon={rotaryIndices.length > 1 ? <VoxelIcon /> : <StockCutIcon />}
+                        icon={simPlan.method === 'voxel' ? <VoxelIcon /> : <StockCutIcon />}
                         loading={simStatus === 'running'}
                         onClick={() => simulate()}
                       />
@@ -1440,7 +1658,9 @@ export default function App() {
               toolRadius={markerRadius}
               toolType={markerType}
               toolCutter={markerCutter}
-              toolAngle={toolAngle}
+              toolAngle={markerAngle}
+              toolThickness={markerThickness}
+              toolShank={markerShank}
               toolLength={markerLength}
               turnInsert={turnInsert}
               bufVer={bufVer}

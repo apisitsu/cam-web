@@ -16,8 +16,18 @@ import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import React, { act } from 'react';
 import { createRoot } from 'react-dom/client';
 
+// The canvas needs WebGL, so it is stubbed — but the marker props are exactly
+// what "does the tool on screen follow the tool that is cutting?" comes down to,
+// so the stub reports them.
 vi.mock('./components/Viewport.jsx', () => ({
-  default: () => React.createElement('div', { 'data-testid': 'viewport-stub' }),
+  default: (props) => React.createElement('div', {
+    'data-testid': 'viewport-stub',
+    'data-tool-cutter': props.toolCutter ?? '',
+    'data-tool-type': props.toolType ?? '',
+    'data-tool-radius': String(props.toolRadius ?? ''),
+    'data-tool-thickness': String(props.toolThickness ?? ''),
+    'data-tool-shank': String(props.toolShank ?? ''),
+  }),
 }));
 
 const { default: App } = await import('./App.jsx');
@@ -59,6 +69,18 @@ function siderCommands() {
 
 /** A command button anywhere in the app, by id. */
 const cmd = (id) => container.querySelector(`button[data-cmd="${id}"]`);
+
+/** The tool the viewport is being asked to draw — see the Viewport stub. */
+function marker() {
+  const el = container.querySelector('[data-testid="viewport-stub"]');
+  return {
+    cutter: el.dataset.toolCutter,
+    type: el.dataset.toolType,
+    radius: Number(el.dataset.toolRadius),
+    thickness: el.dataset.toolThickness,
+    shank: el.dataset.toolShank,
+  };
+}
 
 // jsdom has no layout, so it has no scrollIntoView; GcodePanel calls it to keep
 // the executing line in view whenever the playhead moves.
@@ -299,7 +321,10 @@ describe('the Material removal panel', () => {
     await loadWithTools([{ n: 1, radius: 3, cutLength: 40 }]);
     await act(async () => { cmd('toolFallback').click(); });
     for (const id of ['endmill', 'shoulder', 'face', 'slot', 'ball', 'chamfer']) {
-      expect(container.querySelector(`button[data-cutter="${id}"]`), id).not.toBeNull();
+      expect(
+        container.querySelector(`button[data-cutter="${id}"][data-cutter-scope="fallback"]`),
+        id,
+      ).not.toBeNull();
     }
   });
 
@@ -520,7 +545,8 @@ describe('sizing stock before any program exists', () => {
 });
 
 describe('choosing the cutting tool', () => {
-  const cutterBtn = (id) => container.querySelector(`button[data-cutter="${id}"]`);
+  const cutterBtn = (id) => container
+    .querySelector(`button[data-cutter="${id}"][data-cutter-scope="fallback"]`);
 
   async function openPicker() {
     const src = 'G0 X0 Y0 Z5\nG1 Z-8 F200\nG1 X60 F400';
@@ -603,5 +629,204 @@ describe('choosing the cutting tool', () => {
     const s = useCamStore.getState();
     expect(s.toolCutter).toBe('chamfer');
     expect(s.toolAngle).toBe(90);
+  });
+
+  it('asks for the thickness only of a slot cutter, and draws it', async () => {
+    // The slot mill is the one type whose cutting body its diameter cannot
+    // imply. Every other type follows `bodyRatio` and is not worth a field.
+    const field = () => container.querySelector('input[aria-label="Cutter thickness"]');
+    await mount();
+    await openPicker();
+    expect(field()).toBeNull();
+    await act(async () => { cutterBtn('slot').click(); });
+    expect(field()).not.toBeNull();
+    await act(async () => { useCamStore.getState().setThickness(4); });
+    expect(marker().thickness).toBe('4');
+    await act(async () => { cutterBtn('face').click(); });
+    expect(field()).toBeNull();
+  });
+
+  it('asks for the shank diameter on the same one type, and draws it', async () => {
+    // A necked slot mill is wide where it cuts and narrow where it is held —
+    // two independent numbers, and the marker has to show both.
+    const field = () => container.querySelector('input[aria-label="Shank diameter"]');
+    await mount();
+    await openPicker();
+    expect(field()).toBeNull();
+    await act(async () => { cutterBtn('slot').click(); });
+    expect(field()).not.toBeNull();
+    await act(async () => { useCamStore.getState().setShank(8); });
+    expect(marker().shank).toBe('8');
+    await act(async () => { cutterBtn('endmill').click(); });
+    expect(field()).toBeNull();
+  });
+
+  it('switches to the voxel sim for a cutter that leaves a roof, and says so', async () => {
+    // A slot cutter with a stated cutting body leaves a groove with material
+    // over it. The height field holds one top-Z per column, so it takes the
+    // roof off and the result reads as "the slot cutter did not cut a slot".
+    await mount();
+    await openPicker();
+    expect(cmd('simulate')).not.toBeNull();
+    await act(async () => { cutterBtn('slot').click(); });
+    await act(async () => { useCamStore.getState().setThickness(3); });
+    expect(cmd('simulateUndercut')).not.toBeNull();
+    expect(cmd('simulate')).toBeNull();
+    expect(sider().textContent).toMatch(/leaves an undercut/i);
+    expect(sider().textContent).toMatch(/3 mm/);
+    // ...and the store routes the run the same way, off the same rule.
+    expect(useCamStore.getState().simPlan().method).toBe('voxel');
+  });
+
+  it('keeps the scrub-able height field until a cutting body is stated', async () => {
+    await mount();
+    await openPicker();
+    await act(async () => { cutterBtn('slot').click(); });
+    expect(useCamStore.getState().simPlan().method).toBe('height');
+    expect(sider().textContent).not.toMatch(/leaves an undercut/i);
+  });
+
+  it('drops a shank typed for one type when another is picked', async () => {
+    // Ø8 is the shank of a necked slot mill; on the next tool it is a guess.
+    await mount();
+    await openPicker();
+    await act(async () => { cutterBtn('slot').click(); });
+    await act(async () => { useCamStore.getState().setShank(8); });
+    await act(async () => { cutterBtn('ball').click(); });
+    expect(useCamStore.getState().toolShank).toBeNull();
+  });
+
+  it('drops a thickness typed for one type when another is picked', async () => {
+    // 4 mm is a slot cutter; on a Ø10 endmill it would be 4 mm of flute.
+    await mount();
+    await openPicker();
+    await act(async () => { cutterBtn('slot').click(); });
+    await act(async () => { useCamStore.getState().setThickness(4); });
+    await act(async () => { cutterBtn('endmill').click(); });
+    expect(useCamStore.getState().toolThickness).toBeNull();
+  });
+
+  it('keeps the stated thickness inside what the type is made in', async () => {
+    await mount();
+    await openPicker();
+    await act(async () => { cutterBtn('slot').click(); });
+    await act(async () => { useCamStore.getState().setThickness(9999); });
+    expect(useCamStore.getState().toolThickness).toBe(200);
+  });
+
+  it('draws the fallback tool the picker just chose', async () => {
+    // Nothing else on screen says what "face mill" did; the marker is the answer.
+    await mount();
+    await openPicker();
+    await act(async () => { cutterBtn('face').click(); });
+    expect(marker()).toMatchObject({ cutter: 'face', type: 'flat' });
+  });
+});
+
+/**
+ * The Tool table's own cutter type.
+ *
+ * The picker under the table only ever described the tool the program did NOT
+ * name. Once a program named its tools — the normal case — the type stopped
+ * reaching the marker entirely: a Ø50 face mill was drawn as a Ø50 endmill
+ * stick, and every attempt to change it did nothing. The type now lives on the
+ * row, and `cam/effectiveTool.js` decides which source wins.
+ */
+describe('the cutter type of a tool the program named', () => {
+  const rowBtn = (n, id) => container
+    .querySelector(`button[data-cutter="${id}"][data-cutter-scope="T${n}"]`);
+  const pressed = (b) => b.classList.contains('ant-btn-primary');
+
+  /** Load a program whose comments describe its tools, parked at the end. */
+  async function loadProgramWithTools(src) {
+    const { segments, bounds, stats } = interpret(src, { mode: 'mill' });
+    const path = buildPath(segments);
+    setBuffers({ path, bounds, stats });
+    await setStore({ gcode: src, bufVer: 1, playing: false, playhead: path.count });
+  }
+
+  const FACE = 'T1(FACEMILL D50 - FACE)\nM6\nG0 X0 Y0 Z5\nG1 Z-2 F200\nG1 X60 F400';
+
+  afterEach(() => {
+    clearBuffers();
+    useCamStore.setState({ toolOverrides: {} });
+  });
+
+  it('draws the tool the program described, not the fallback', async () => {
+    await mount();
+    await loadProgramWithTools(FACE);
+    expect(marker()).toMatchObject({ cutter: 'face', radius: 25 });
+  });
+
+  it('shows that type as the pressed glyph on the row', async () => {
+    await mount();
+    await loadProgramWithTools(FACE);
+    expect(pressed(rowBtn(1, 'face'))).toBe(true);
+    expect(pressed(rowBtn(1, 'endmill'))).toBe(false);
+  });
+
+  it('re-types a tool from the row, and the marker follows', async () => {
+    await mount();
+    await loadProgramWithTools(FACE);
+    await act(async () => { rowBtn(1, 'ball').click(); });
+    expect(useCamStore.getState().toolOverrides[1]).toMatchObject({
+      cutter: 'ball',
+      simType: 'ball',      // kept in step for the carvers, never set by hand
+    });
+    expect(marker()).toMatchObject({ cutter: 'ball', type: 'ball', radius: 25 });
+  });
+
+  it('asks for the included angle only once a chamfer mill is picked', async () => {
+    await mount();
+    await loadProgramWithTools(FACE);
+    await act(async () => { rowBtn(1, 'chamfer').click(); });
+    expect(useCamStore.getState().toolOverrides[1].angle).toBe(90);
+    expect(marker().type).toBe('cone');
+  });
+
+  it('reverts to the detected type when the row is reset', async () => {
+    await mount();
+    await loadProgramWithTools(FACE);
+    await act(async () => { rowBtn(1, 'slot').click(); });
+    expect(marker().cutter).toBe('slot');
+    await act(async () => { cmd('resetTool').click(); });
+    expect(marker().cutter).toBe('face');
+  });
+
+  it('takes a thickness per tool, and the marker takes that shape', async () => {
+    // The Ø50 the program named, cut to the 4 mm slot cutter actually on the
+    // shelf: same tool number, same diameter, a different tool.
+    const field = () => container.querySelector('input[aria-label="T1 cutter thickness"]');
+    await mount();
+    await loadProgramWithTools(FACE);
+    expect(field()).toBeNull();                       // a face mill is not asked
+    await act(async () => { rowBtn(1, 'slot').click(); });
+    expect(field()).not.toBeNull();
+    // Empty until it is measured — the implied value is only a placeholder, so
+    // "nothing is set here" is visible rather than looking already in force.
+    expect(field().value).toBe('');
+    expect(field().placeholder).toBe('150');          // Ø50 x bodyRatio 3
+    await act(async () => { useCamStore.getState().setToolThickness(1, 12, 'slot'); });
+    expect(marker()).toMatchObject({ cutter: 'slot', radius: 25, thickness: '12' });
+  });
+
+  it('takes a shank diameter per tool, independent of what it cuts', async () => {
+    const field = () => container.querySelector('input[aria-label="T1 shank diameter"]');
+    await mount();
+    await loadProgramWithTools(FACE);
+    expect(field()).toBeNull();                       // a face mill is not asked
+    await act(async () => { rowBtn(1, 'slot').click(); });
+    expect(field()).not.toBeNull();
+    expect(field().value).toBe('');
+    expect(Number(field().placeholder)).toBeCloseTo(49, 6);   // just under Ø50
+    await act(async () => { useCamStore.getState().setToolShank(1, 16, 'slot'); });
+    expect(marker()).toMatchObject({ cutter: 'slot', radius: 25, shank: '16' });
+  });
+
+  it('leaves a drill on the plain flat stick — no shape here is a drill', async () => {
+    await mount();
+    await loadProgramWithTools('T2(DRILL 9)\nM6\nG0 X0 Y0 Z5\nG1 Z-2 F200\nG1 X60 F400');
+    expect(marker()).toMatchObject({ cutter: '', type: 'flat', radius: 4.5 });
+    expect(pressed(rowBtn(2, 'endmill'))).toBe(false);
   });
 });

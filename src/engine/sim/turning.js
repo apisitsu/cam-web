@@ -14,6 +14,7 @@
  * one insert parameter that actually changes the cut, so it is a first-class
  * input here. Pure JS, no three / no DOM.
  */
+import { CUT, RAW } from './stockColors.js';
 
 /**
  * The two standard OD toolholders drawn for the marker, taken from the catalogue
@@ -273,10 +274,9 @@ export function turningMesh(stock, sides = 96, { creaseDeg = 25, simplifyTol = 0
   const normals = [];
   const indices = [];
   const colors = [];
-  // Machined (cut) surfaces read as bright steel; raw bar (never turned, still at
-  // the stock radius) reads as amber, so cut and uncut material are told apart.
-  const CUT = [0.80, 0.83, 0.88];
-  const RAW = [0.80, 0.55, 0.26];
+  // Machined (cut) surfaces read as bright steel; raw bar (never turned, still
+  // at the stock radius) reads as amber. Shared with the milling models, so all
+  // three tell cut from raw the same way — see `stockColors.js`.
   const colOf = (k) => (radius[k] < rStock - 0.02 ? CUT : RAW);
   const rOf = (k) => Math.max(radius[k], 0);
 

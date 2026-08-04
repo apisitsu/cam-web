@@ -83,6 +83,10 @@ export const COMMANDS = [
     hint: 'Multi-axis: carve every rotary face and every tool into one voxel block',
   },
   {
+    id: 'simulateUndercut', group: 'sim', label: 'Simulate the undercut',
+    hint: 'This cutter leaves a roof over its groove — carve it as voxels, which can hold one',
+  },
+  {
     id: 'simulateTurning', group: 'sim', label: 'Simulate turning',
     hint: 'Turn a raw bar down to the programmed profile, sharp corner, following the tool path',
   },

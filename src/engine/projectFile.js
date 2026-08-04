@@ -19,7 +19,9 @@ export const PROJECT_VERSION = 2;
 /** camStore settings worth carrying (everything else is derived). */
 const SETTING_KEYS = [
   'mode', 'rapidRate', 'diameterMode',
-  'toolRadius', 'toolType', 'toolCutter', 'toolFlutes', 'toolAngle', 'toolOverrides',
+  'toolRadius', 'toolType', 'toolCutter', 'toolFlutes', 'toolAngle', 'toolThickness',
+  'toolShank',
+  'toolOverrides',
   'cellSize', 'voxelSize', 'simMethod',
   // `stockSize` is the billet the operator stated (X/Y/Z, top on Z0); the
   // T/B/M trio it replaced stays on the list so an older project still loads.

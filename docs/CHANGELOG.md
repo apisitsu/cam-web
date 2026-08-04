@@ -4,6 +4,274 @@ Notable fixes and changes, newest first. Dates are absolute.
 
 ---
 
+## 2026-08-04
+
+### Fix — the stale height-field mesh check now describes what is built
+
+`heightmapToSolidMesh is a closed box` had been failing since before any of
+this: it still described the *original* construction (one vertex per cell
+centre, quads joining neighbours), which was replaced because it drew every
+vertical face a cutter leaves as a quad leaning by one cell width. A check that
+always fails is exactly as useful as no check at all — and it hid real failures
+in the runs above it. It now holds the stepped solid to four fresh vertices per
+planar quad, a floor at or below the stated base, and nothing above the blank's
+top.
+
+### Add — machined material is a different colour from raw stock
+
+A single-colour block answers "what shape is left" and nothing else. It cannot
+answer the question an operator actually has in front of a running simulation —
+*did this pass cut anything, and where?* — because a face the tool has just been
+through looks exactly like one it has never touched.
+
+The turning sim has told them apart since it was written. That palette now lives
+in `sim/stockColors.js` and all three models use it: bright steel for a cut
+surface, amber for stock as it came. The height field colours each quad as it
+emits it (a lowered cell top, and every step riser, are cut; the billet's four
+sides and floor are not); the voxel block needs one bounds test — it starts
+solid, so an exposed face is either the blank's own outside or one the tool made
+by taking its neighbour away.
+
+### Fix — a ramp begins in the air too
+
+The blank's top comes from where a feed move **travels in XY** — the only thing
+that proves material was there. But a ramp travels in XY *while descending from
+the clearance plane*, and it was credited with its high end, so the clearance
+plane went back on top of the blank as a slab of phantom material. A job then
+simulated three or four passes deep before anything visibly came off. A
+travelling move is now credited with its **lower** end, where it has actually
+reached material.
+
+### Fix — the voxel blank stops at the material, not at the clearance plane
+
+A ten-pass job showed nothing coming off until pass six or seven. The blank was
+the reason: the voxel block was sized to the **raw feed bounds**, and a plunge
+is a feed move that *begins in the air above the billet*, so the block grew a
+slab of phantom material on top of the real surface. The height field has always
+inferred the surface with `feedTopZ` — from where a feed move actually travels
+in XY, which is the only thing that proves material was there — and the voxel
+path never got the same treatment.
+
+With an ordinary cutter the slab is cleared on the way down and nobody notices.
+With a cutter that only cuts near its tip, it cannot be cleared at all: it just
+stands there as a roof over the whole cut.
+
+Both models now derive the same blank (single rotary index only — with several
+faces assembled in the part frame, "the top" is not one direction). On the same
+ten-pass job they land within 0.1% of each other, which the node checks hold
+them to.
+
+### Fix — the cut follows the tool along a move, not a block at a time
+
+Both simulators counted **whole feed moves**. A 50 mm `G1` is one feed move, so
+the tool crossed the part with nothing happening and then the entire cut
+appeared in a single frame — which from the outside is exactly "the material
+does not come off in step with the tool", whichever model was running.
+
+`feedProgressAt(path, seconds, aIndex?)` reports the cut as a **fractional**
+feed count — whole moves done, plus how far into the one in progress — read off
+the same clock the tool marker rides. `advanceCut` (shared by the height field
+and the voxel block) carves that fraction of the move, and scrubbing back
+refills and re-carves as before. A quarter of the way along a cut now has a
+quarter of it gone.
+
+This one was never visible from the engine or the routing rule: it lived in the
+store's orchestration, which had no tests at all. `camStore.sim.test.js` now
+drives the store against a stubbed worker and holds it to running the right
+model, carving the program on the press, leaving the session scrub-able, and
+asking for fractional targets as playback runs.
+
+### Fix — voxels shorter than they are wide, so the groove is the tool's height
+
+Refining the whole grid to hold a thin cut was the wrong lever. A cut is rounded
+out to whole voxels, but the dimension it is ever wrong in is **Z** — the
+groove's height is what the cutting body sets, and its outline needs no more
+resolution than the operator asked for. Refining all three axes costs the *cube*
+of the refinement, so a 0.5 mm cutter on an ordinary billet asked for 34M cells,
+hit the grid budget, and was coarsened straight back to a groove that did not
+match the tool.
+
+`createVoxelStock` now takes a cell **height** as well as a footprint, and
+`voxelSizeFor` refines only the height. The cost goes up in proportion instead:
+
+```
+tool  4.0 mm  →  groove 4.000 mm   grid 1 x 1.000 mm    68k cells
+tool  3.0 mm  →  groove 3.000 mm   grid 1 x 0.750 mm    92k cells
+tool  0.5 mm  →  groove 0.500 mm   grid 1 x 0.125 mm   540k cells
+```
+
+A playback step on that costs 30–90 ms in the worker, which is the same trade
+the height field already makes.
+
+### Fix — cut-with-playback comes back on for a voxel run
+
+The old one-shot voxel run turned the switch off and nothing ever turned it back
+on, so the playhead carved nothing on a model that can now carve step by step —
+the material came off all at once or not at all. Starting a voxel session turns
+it back on, the way switching machine mode already did.
+
+### Fix — four ways a stated cutting body failed to reach the cut
+
+The groove still came out wrong after the model was right, for four separate
+reasons, none of them in the carvers:
+
+- **Simulate handed back an uncut block.** Making the voxel run a session left
+  the carving to `carveToPlayhead` — which does nothing when cut-with-playback
+  is off, and the *old* one-shot voxel run turned that switch off for anyone who
+  had used it. It now carves the whole program on the press, like the height
+  field, and the playhead scrubs from there.
+- **The grid ignored a thickness stated on a Tool table row.** `voxelSizeFor`
+  was asked about the fallback picker's number only, so a per-tool slot cutter
+  was carved on a grid coarser than its own groove. `thinnestCut` looks at every
+  tool in play.
+- **A thickness typed on the picker never reached a tool the program named.**
+  Detection wins on the type and the size — rightly, a comment says both — but
+  no comment syntax states a cutting-body length, so the operator's number was
+  the only measurement there was, and it was dropped. `effectiveTool` now fills
+  in the thickness and the shank from the fallback where the tool has none of
+  its own, and still lets the tool's own row win.
+- **The field showed a number that was not set.** `t` and `s⌀` displayed the
+  implied value as their *value*, so it read as a setting already in force —
+  press Simulate, nothing changes. They show it as a placeholder now: empty
+  means not measured.
+
+### Fix — the groove is the height of the tool, not of the voxel grid
+
+A 0.5 mm cutting body carved on the 1 mm grid the box asks for came back as a
+1 mm groove — twice the tool, and exactly what "the slot is taller than the
+cutter" looks like. A cut is rounded out to whole voxels, so a grid coarser than
+the thinnest thing being cut cannot report it.
+
+`voxelSizeFor` refines the grid to four layers across the thinnest cut, whatever
+resolution was requested — and `MAX_VOXELS` stops it short on a part too big to
+afford that, saying so rather than quietly carving at a resolution that cannot
+show the cut. The notice above the button reads out the size actually used.
+
+### Add — the voxel sim carves with playback, like the height field
+
+It was a one-shot: press Simulate and the finished part appears, with nothing of
+how it got there. That is a fair trade for a slow model and a poor one to force
+— and forced is what it became the moment an ordinary slot cutter needed this
+model. `createVoxelSession` / `carveVoxelSessionTo` make it a session like the
+other two: the playhead carves it, and scrubbing back refills the block and
+re-carves (a cleared voxel carries no record of what was above it).
+
+The grid budget is sized for that: every carve step re-scans the block to
+rebuild its surface, so the ceiling bounds the scan, not the memory.
+
+### Fix — a slot cutter's groove is simulated by the model that can hold it
+
+Setting a cutting-body thickness and pressing Simulate still came back with a
+full-depth channel, and the reason was never the cutter: it was **which
+simulator ran**. A cutter that only cuts for its first few mm leaves a groove
+with material standing over it — a keyseat. The height field keeps one top-Z per
+XY column, so there is nowhere for that roof to live, and it comes off every
+time. The voxel block holds it. Same program, same tool:
+
+```
+height field   ......................    the column is gone
+voxel Z -6     ######################    roof intact
+      Z -8     ......................    the 3 mm groove
+      Z-10     ######################    floor intact
+```
+
+`engine/sim/method.js` now decides which model a setup needs — more than one
+rotary index, or any tool with a stated cutting-body thickness — and both the
+store's `simulate()` and the Simulate button read the same rule. The button
+becomes **Simulate the undercut** with the voxel glyph, and a line above it says
+what changed and that this model runs once rather than scrubbing with playback.
+A run that silently swaps simulators owes the operator that sentence.
+
+### Add — a slot cutter's shank diameter is a number you set
+
+A slot mill is commonly **necked**: a wide cutting body on a narrower shank, so
+the shank clears the walls of the slot it has just cut. The marker drew the
+shank at the cutting diameter for every tool, which says the tool will rub when
+it will not.
+
+`s⌀` sits beside `t`, in the fallback picker and on each Tool table row, and
+only for the slot cutter — every other type's shank is its own diameter, near
+enough that asking would be noise. A **stated** shank also sizes the collet: the
+holder grips the shank, so a Ø20 × Ø6-shank cutter now draws a small holder
+where a plain Ø20 draws a big one. That is the whole point of a necked tool, and
+a holder drawn off the cutting diameter denies it. Left unstated, nothing moves
+for any type.
+
+Marker only — the shank does not cut, and no collision or holder check is
+performed (see the note under the CAM panel).
+
+### Add — a slot cutter's cutting-body length is a number you set
+
+A slot mill's second dimension is how far up it actually cuts — the depth it can
+take in one pass. Nothing about the diameter implies it, and it was implied
+anyway (`bodyRatio` × Ø), so the marker drew every slot mill as the same long
+stick as an endmill.
+
+`t` now sits next to the diameter, in the fallback picker and on each row of the
+Tool table, and only for the slot cutter — every other type's cutting body does
+follow its diameter closely enough not to ask. `defaultThickness` is what the
+field starts from and what `endMillGeometry` falls back to, so nothing moved for
+the other five types. Changing the type drops a thickness typed for the old one.
+
+A **stated** thickness reaches the voxel carver as the tool's cutting length, so
+a cutter that only cuts for its first few mm leaves material standing above
+that — the one place a body length can show in the removal, and one a height
+field could never express (a column has nothing below its own top). An implied
+thickness deliberately does not: it is a drawing default, and silently capping
+every cut at 3× the diameter is not something a guess has earned.
+
+**Not a slot width.** A first attempt modelled the slot cutter as a disc on its
+edge, so its thickness became the width of the cut — and drew it that way, on
+edge and turned to the direction of travel. That is a slitting saw on a
+horizontal arbor, not what this tool is here: it is a vertical cutter like every
+other one in the catalogue, and the slot it leaves is its diameter wide. The
+disc model and the feed-direction machinery it needed (`feedDirections`,
+`feedFrame`, `feedHeading`) are gone.
+
+### Fix — the tool marker takes the shape of the tool actually cutting
+
+Picking a cutter type changed the simulation and left the tool on screen the
+same stick, which reads exactly like a picker that does nothing. Three separate
+causes, all of them now one path:
+
+- **The type never reached the marker once a program named its tools.** `App`
+  deliberately dropped the chosen type the moment a tool was detected, and the
+  Tool table could only say Flat or Ball — a word that cannot express "face
+  mill". So a detected Ø50 face mill was drawn as a Ø50 endmill.
+- **A program posted from the CAM panel had no tool table at all.** `fanuc.js`
+  writes `(TOOL: T1 FACEMILL Ø50)` on its own line and then a bare `T1 M06`;
+  `parseToolTable` only ever read a comment sitting *on* the tool-change line,
+  and `Ø50` was not recognised as a diameter either. Every posted program
+  therefore simulated and drew with the fallback cutter, whatever tools the
+  operator had chosen for the operations.
+- **The carve and the picture resolved the tool separately.** `sim/session.js`
+  merged detection and overrides its own way; `App.jsx` merged them another.
+
+The precedence now lives once in **`engine/cam/effectiveTool.js`** — override,
+then the program's comment, then the fallback, with the fallback used whole only
+when nothing at all is known about the tool (which is exactly when the carvers
+use it). Both `toolResolver` and the marker ask it, so what carves and what is
+drawn cannot disagree.
+
+### Add — a cutter type per tool in the Tool table
+
+Every milling row now offers the same six glyphs as the fallback picker (plus
+the included angle on a chamfer mill) instead of a Flat/Ball switch. The
+highlighted glyph is what the row's tool *is*, detected or picked, and
+`setToolCutter` keeps the flat/ball the carvers speak in step with it. A drill,
+tap or reamer highlights nothing — none of the six shapes is a drill, and they
+keep the plain stick they always had.
+
+### Change — shoulder mills, face mills and slot drills are told apart
+
+`gcode/tools.js` classified `SHOULDERMILL` as a face mill (they are drawn and
+fed as different tools) and let `SLOT DRILL` fall through to `DRILL`. Both now
+have their own type, and every detected type carries the cutter id it maps to.
+A detected chamfer/spot mill consequently carves its real **cone** rather than a
+flat floor.
+
+---
+
 ## 2026-07-11
 
 ### Add — more turning tools in the holder dropdown

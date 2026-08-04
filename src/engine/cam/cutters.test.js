@@ -2,6 +2,7 @@ import { describe, it, expect } from 'vitest';
 import {
   CUTTERS, cutterById, simTypeOf, clampFlutes, defaultFlutes,
   profileRise, cutterGeometry, cutterWarning, DEFAULT_CUTTER,
+  defaultThickness, clampThickness, defaultShank, clampShank, cutFootprint,
 } from './cutters.js';
 import { millingSpeeds } from './feeds.js';
 
@@ -134,12 +135,45 @@ describe('cutterGeometry — what the carver is handed', () => {
     expect(cutterGeometry({ cutter: 'endmill', diameter: 10 }).angle).toBeUndefined();
   });
 
-  it('gives a slot mill and an endmill the same carving shape', () => {
-    // They differ in flutes and in what they can plunge, not in the surface
-    // they leave — and the sim should not pretend otherwise.
-    const a = cutterGeometry({ cutter: 'slot', diameter: 6 });
-    const b = cutterGeometry({ cutter: 'endmill', diameter: 6 });
-    expect(a).toEqual(b);
+  it('hands on a STATED cutting-body length, and only that', () => {
+    // Only the voxel carver can use it — a height-field column has nothing
+    // below its own top — and only a measurement should cap a cut. The implied
+    // thickness is a drawing default; silently capping every cut at 3x the
+    // diameter is not something a guess has earned.
+    expect(cutterGeometry({ cutter: 'slot', diameter: 12, thickness: 8 }))
+      .toEqual({ radius: 6, type: 'flat', thickness: 8 });
+    expect(cutterGeometry({ cutter: 'slot', diameter: 12 }).thickness).toBeUndefined();
+    expect(cutterGeometry({ cutter: 'endmill', diameter: 6, thickness: 8 }).thickness)
+      .toBeUndefined();
+  });
+});
+
+describe('cutFootprint — the shape under the tool', () => {
+  it('cares only how far out the cell is, not which way', () => {
+    // Every cutter is a solid of revolution about the spindle axis.
+    for (const type of ['flat', 'ball', 'cone']) {
+      const tool = { radius: 5, type, angle: 90 };
+      expect(cutFootprint(tool, 3, 0)).toBeCloseTo(cutFootprint(tool, 0, 3), 9);
+    }
+  });
+
+  it('is the tool radius that bounds it', () => {
+    expect(cutFootprint({ radius: 5, type: 'flat' }, 4.9, 0)).toBe(0);
+    expect(cutFootprint({ radius: 5, type: 'flat' }, 5.1, 0)).toBeNull();
+    expect(cutFootprint({ radius: 5, type: 'flat' }, 4, 4)).toBeNull();   // 5.66 out
+  });
+
+  it('agrees with profileRise on the shape it leaves', () => {
+    // It is the same surface — the carvers just hand it two offsets, because
+    // that is what a cell's position naturally is.
+    const ball = { radius: 5, type: 'ball' };
+    expect(cutFootprint(ball, 3, 0)).toBeCloseTo(profileRise(ball, 3), 9);
+    expect(cutFootprint(ball, 3, 4)).toBeCloseTo(profileRise(ball, 5), 9);
+  });
+
+  it('is symmetric in both offsets', () => {
+    const ball = { radius: 10, type: 'ball' };
+    expect(cutFootprint(ball, -6, 1)).toBeCloseTo(cutFootprint(ball, 6, -1), 9);
   });
 });
 
@@ -166,5 +200,57 @@ describe('cutterWarning advises, never blocks', () => {
   it('is silent for an ordinary combination', () => {
     expect(cutterWarning({ cutter: 'face', diameter: 50 })).toBeNull();
     expect(cutterWarning({ cutter: 'endmill', diameter: 2 })).toBeNull();
+  });
+});
+
+describe('the cutting body\'s thickness', () => {
+  it('follows the diameter through bodyRatio when nothing is stated', () => {
+    expect(defaultThickness('slot', 10)).toBe(30);        // ratio 3
+    expect(defaultThickness('face', 50)).toBe(17.5);      // a shallow disc
+  });
+
+  it('is never zero, whatever the diameter', () => {
+    // A cutting body of no length is not a thin tool, it is an invisible one.
+    expect(defaultThickness('face', 0)).toBeGreaterThan(0);
+    expect(defaultThickness('slot', -5)).toBeGreaterThan(0);
+    expect(defaultThickness('nope', 6)).toBeGreaterThan(0);
+  });
+
+  it('offers a shank diameter alongside it, on the same one type', () => {
+    // A necked slot mill is wide where it cuts and narrow where the holder
+    // grips it. Every other type's shank is its own diameter.
+    const asks = CUTTERS.filter((c) => c.shankAdjustable).map((c) => c.id);
+    expect(asks).toEqual(['slot']);
+  });
+
+  it('implies a shank just under the cutting diameter', () => {
+    // Drawn a hair under so the flutes read as flutes and not as more shank.
+    expect(defaultShank('slot', 20)).toBeLessThan(20);
+    expect(defaultShank('slot', 20)).toBeGreaterThan(17);
+    expect(defaultShank('endmill', 6)).toBeGreaterThan(0);
+    expect(defaultShank('endmill', 0)).toBeGreaterThan(0);
+  });
+
+  it('clamps a shank to what the type is made in, and passes null through', () => {
+    const [lo, hi] = cutterById('slot').shankRange;
+    expect(clampShank('slot', 0)).toBe(lo);
+    expect(clampShank('slot', 1e6)).toBe(hi);
+    expect(clampShank('slot', 8)).toBe(8);
+    expect(clampShank('slot', NaN)).toBeNull();
+  });
+
+  it('is offered only where the diameter cannot imply it', () => {
+    // A slot cutter is bought as Ø x thickness; every other type's body follows
+    // its diameter closely enough not to ask.
+    const asks = CUTTERS.filter((c) => c.thicknessAdjustable).map((c) => c.id);
+    expect(asks).toEqual(['slot']);
+  });
+
+  it('clamps to what the type is made in, and passes null through', () => {
+    const [lo, hi] = cutterById('slot').thicknessRange;
+    expect(clampThickness('slot', 0)).toBe(lo);
+    expect(clampThickness('slot', 1000)).toBe(hi);
+    expect(clampThickness('slot', 4)).toBe(4);
+    expect(clampThickness('slot', NaN)).toBeNull();
   });
 });

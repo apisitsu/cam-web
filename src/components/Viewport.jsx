@@ -96,13 +96,16 @@ function CameraRig({ bounds, sketchFit, view, viewNonce, controlsRef, mode }) {
  * the collet face, so the stick-out is shown to scale; otherwise a sensible
  * default is used.
  */
-function EndMill({ radius = 3, type = 'flat', cutter, angle, length = 0, arbor = true }) {
+function EndMill({
+  radius = 3, type = 'flat', cutter, angle, thickness, shankDiameter, length = 0,
+  arbor = true,
+}) {
   // All the stacking arithmetic lives in engine/view/millTool.js, where it is
   // tested — a wrong offset here draws a tool floating off its own tip. The
   // cutter TYPE changes the whole silhouette, not just the tip: a face mill is
   // a wide shallow disc, an endmill a long stick.
   const { nose, flutes, shank, arbor: holder } = endMillGeometry({
-    radius, type, cutter, angle, length, arbor,
+    radius, type, cutter, angle, thickness, shank: shankDiameter, length, arbor,
   });
 
   return (
@@ -364,7 +367,8 @@ const DEG = Math.PI / 180;
  * at `pos` because every rotation is about the group origin.
  */
 function Tool({
-  pos, rotary, radius, type, cutter, angle, length, insert, mode, showArbor = true,
+  pos, rotary, radius, type, cutter, angle, thickness, shank, length, insert, mode,
+  showArbor = true,
   rotaryFrame = 'part',
 }) {
   if (!pos) return null;
@@ -374,7 +378,18 @@ function Tool({
       <group rotation={[tilt.a, 0, 0]}>
         {mode === 'turn'
           ? <LatheTool radius={Math.min(radius, 1.6)} shape={insert} />
-          : <EndMill radius={radius} type={type} cutter={cutter} angle={angle} length={length} arbor={showArbor} />}
+          : (
+            <EndMill
+              radius={radius}
+              type={type}
+              cutter={cutter}
+              angle={angle}
+              thickness={thickness}
+              shankDiameter={shank}
+              length={length}
+              arbor={showArbor}
+            />
+          )}
       </group>
     </group>
   );
@@ -448,7 +463,8 @@ function SpindleAxis({ bounds }) {
  */
 export function SceneContents({
   bounds, turnChuck, showStock, toolPos, toolRotary, toolRadius, toolType,
-  toolCutter, toolAngle, toolLength, turnInsert, bufVer, drawVer, partVer, showPart = true,
+  toolCutter, toolAngle, toolThickness, toolShank, toolLength, turnInsert, bufVer, drawVer, partVer,
+  showPart = true,
   mode = 'mill', sketching = false, showArbor = true,
   rotaryFrame = 'part', rotaryCenter, simFrameA = 0, stockSolid = null,
 }) {
@@ -506,6 +522,8 @@ export function SceneContents({
             type={toolType}
             cutter={toolCutter}
             angle={toolAngle}
+            thickness={toolThickness}
+            shank={toolShank}
             length={toolLength}
             insert={turnInsert}
             mode={mode}
@@ -520,7 +538,8 @@ export function SceneContents({
 
 export default function Viewport({
   bounds, fitBounds, sketchFit, turnChuck, showStock, toolPos, toolRotary, toolRadius, toolType,
-  toolCutter, toolAngle, toolLength, turnInsert, bufVer, playhead, partVer, showPart = true,
+  toolCutter, toolAngle, toolThickness, toolShank, toolLength, turnInsert, bufVer, playhead, partVer,
+  showPart = true,
   mode = 'mill', sketching = false, view = 'iso', viewNonce = 0, showArbor = true,
   rotaryFrame = 'part', rotaryCenter, simFrameA = 0, stockSolid = null,
 }) {
@@ -555,7 +574,7 @@ export default function Viewport({
   // `rotaryFrame`/`simFrameA` belong here for the same reason `showArbor` does:
   // the canvas is frameloop="demand", so flipping the frame would not appear on
   // screen until some other input happened to change.
-  }, [drawVer, showStock, toolPos, toolRotary, toolRadius, toolType, toolLength, turnInsert, mode, partVer, showPart, showArbor, rotaryFrame, simFrameA, stockSolid, toolCutter, toolAngle]);
+  }, [drawVer, showStock, toolPos, toolRotary, toolRadius, toolType, toolLength, turnInsert, mode, partVer, showPart, showArbor, rotaryFrame, simFrameA, stockSolid, toolCutter, toolAngle, toolThickness, toolShank]);
 
   return (
     <Canvas
@@ -574,6 +593,8 @@ export default function Viewport({
         toolType={toolType}
         toolCutter={toolCutter}
         toolAngle={toolAngle}
+        toolThickness={toolThickness}
+        toolShank={toolShank}
         toolLength={toolLength}
         turnInsert={turnInsert}
         bufVer={bufVer}

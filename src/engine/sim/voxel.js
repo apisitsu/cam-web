@@ -17,7 +17,8 @@
  * Pure JS, no three / no DOM — it runs and tests under Node like the rest.
  */
 
-import { profileRise } from '../cam/cutters.js';
+import { cutFootprint } from '../cam/cutters.js';
+import { CUT, RAW } from './stockColors.js';
 
 const DEG = Math.PI / 180;
 
@@ -51,35 +52,44 @@ export function toolAxisFor(aDeg = 0, bDeg = 0) {
 
 /**
  * Solid rectangular billet of voxels covering `bounds` + margin.
+ *
+ * The cells may be **shorter than they are wide**: `cellSizeZ` sets the height,
+ * `cellSize` the footprint. That is not a detail — a cut is rounded out to whole
+ * voxels, so a 3 mm cutting body on a 1 mm grid can render a 4 mm groove, and
+ * the dimension it is wrong in is always Z. Refining Z alone costs cells in
+ * proportion; refining all three costs the cube of it, which is why an isotropic
+ * grid fine enough for a thin cutter is a browser tab that never comes back.
+ *
  * @param {{min:number[],max:number[]}} bounds  part-frame cutting bounds
  */
-export function createVoxelStock(bounds, { margin = 3, cellSize = 1 } = {}) {
+export function createVoxelStock(bounds, { margin = 3, cellSize = 1, cellSizeZ } = {}) {
   const cs = cellSize;
+  const csz = cellSizeZ > 0 ? cellSizeZ : cellSize;
   const ox = bounds.min[0] - margin;
   const oy = bounds.min[1] - margin;
   const oz = bounds.min[2] - margin;
   const nx = Math.max(1, Math.ceil((bounds.max[0] + margin - ox) / cs));
   const ny = Math.max(1, Math.ceil((bounds.max[1] + margin - oy) / cs));
-  const nz = Math.max(1, Math.ceil((bounds.max[2] + margin - oz) / cs));
+  const nz = Math.max(1, Math.ceil((bounds.max[2] + margin - oz) / csz));
   const solid = new Uint8Array(nx * ny * nz).fill(1);
-  return { ox, oy, oz, cs, nx, ny, nz, solid, count: nx * ny * nz };
+  return { ox, oy, oz, cs, csz, nx, ny, nz, solid, count: nx * ny * nz };
 }
 
 /**
  * Clear the oriented tool's swept solid at one tip position `p`.
  *
- * A voxel is inside the tool when it is within the cutter radius of the axis,
- * below the flute length, and **above the cutter's own surface** at that
- * distance out — which is exactly `profileRise`, the same function the height
- * field stamps with. Expressing it that way replaced three hand-written cases
- * (straight flute / hemispherical nose / flat bottom) with one test that is
- * right for all of them, and got cones for free: a chamfer mill now carves a
- * cone here as well as in the dexel field, instead of the two simulators
- * quietly disagreeing about what the tool is.
+ * A voxel is inside the tool when it is under the cutter's footprint, below the
+ * cutting length, and **above the cutter's own surface** there — which is
+ * exactly `cutFootprint`, the same function the height field stamps with.
+ * Expressing it that way replaced three hand-written cases (straight flute /
+ * hemispherical nose / flat bottom) with one test that is right for all of
+ * them, and got cones for free: a chamfer mill carves a cone here as well as in
+ * the dexel field, instead of the two simulators quietly disagreeing about what
+ * the tool is.
  */
 function stampVoxel(v, px, py, pz, ax, ay, az, tool, length) {
   const r = tool.radius;
-  const { ox, oy, oz, cs, nx, ny, nz, solid } = v;
+  const { ox, oy, oz, cs, csz, nx, ny, nz, solid } = v;
   // AABB bounding the cylinder from p to p + axis·length, fattened by r.
   const ex = px + ax * length;
   const ey = py + ay * length;
@@ -95,13 +105,12 @@ function stampVoxel(v, px, py, pz, ax, ay, az, tool, length) {
   const i1 = Math.min(nx - 1, Math.floor((hiX - ox) / cs));
   const j0 = Math.max(0, Math.floor((loY - oy) / cs));
   const j1 = Math.min(ny - 1, Math.floor((hiY - oy) / cs));
-  const k0 = Math.max(0, Math.floor((loZ - oz) / cs));
-  const k1 = Math.min(nz - 1, Math.floor((hiZ - oz) / cs));
+  const k0 = Math.max(0, Math.floor((loZ - oz) / csz));
+  const k1 = Math.min(nz - 1, Math.floor((hiZ - oz) / csz));
 
-  const r2 = r * r;
   let removed = 0;
   for (let k = k0; k <= k1; k++) {
-    const cz = oz + (k + 0.5) * cs - pz;
+    const cz = oz + (k + 0.5) * csz - pz;
     const kBase = k * nx * ny;
     for (let j = j0; j <= j1; j++) {
       const cy = oy + (j + 0.5) * cs - py;
@@ -110,12 +119,13 @@ function stampVoxel(v, px, py, pz, ax, ay, az, tool, length) {
         const cx = ox + (i + 0.5) * cs - px;
         const idx = rowBase + i;
         if (!solid[idx]) continue;
-        // Split the offset from the tip into along-axis and perpendicular parts.
+        // Split the offset from the tip into along-axis and perpendicular
+        // parts; the perpendicular distance is what the footprint is measured
+        // against, exactly as the height field measures it.
         const axial = cx * ax + cy * ay + cz * az;
-        const perp2 = cx * cx + cy * cy + cz * cz - axial * axial;
-        const inside = perp2 <= r2
-          && axial <= length
-          && axial >= profileRise(tool, Math.sqrt(Math.max(0, perp2)));
+        const perp = Math.sqrt(Math.max(0, cx * cx + cy * cy + cz * cz - axial * axial));
+        const rise = cutFootprint(tool, perp, 0);
+        const inside = rise !== null && axial <= length && axial >= rise;
         if (inside) {
           solid[idx] = 0;
           removed++;
@@ -128,20 +138,28 @@ function stampVoxel(v, px, py, pz, ax, ay, az, tool, length) {
 
 /**
  * Carve one straight move a→b with a tool pointing along `axis` (part frame).
- * @param {object} tool  { radius, type:'flat'|'ball'|'cone', angle?, length? }
+ * @param {object} tool  { radius, type:'flat'|'ball'|'cone', angle?, thickness?, length? }
  */
 export function carveVoxelMove(v, a, b, axis, tool) {
   const r = tool.radius;
-  // Flute reach: the detected length, else clear through the whole block.
-  const gridDiag = (v.nx + v.ny + v.nz) * v.cs;
-  const length = tool.length > 0 ? tool.length : gridDiag;
+  // How far up the tool actually cuts. A stated cutting-body thickness is the
+  // tightest and truest answer — a slot cutter that only cuts for its first few
+  // mm leaves material standing above that, which is the one place a voxel
+  // block can show something the height field never could. Failing that, the
+  // gauge length, and failing that, clear through the whole block.
+  const gridDiag = (v.nx + v.ny) * v.cs + v.nz * v.csz;
+  const length = tool.thickness > 0
+    ? tool.thickness
+    : (tool.length > 0 ? tool.length : gridDiag);
   const [ax, ay, az] = axis;
 
   const dx = b[0] - a[0];
   const dy = b[1] - a[1];
   const dz = b[2] - a[2];
   const len = Math.hypot(dx, dy, dz);
-  const step = Math.max(v.cs * 0.5, 1e-6);
+  // Never step further than half the SHORTEST cell, or a fine Z grid would be
+  // skipped over by a move that only travels in XY.
+  const step = Math.max(Math.min(v.cs, v.csz) * 0.5, 1e-6);
   const n = Math.max(1, Math.ceil(len / step));
   let removed = 0;
   for (let s = 0; s <= n; s++) {
@@ -166,7 +184,7 @@ export function carveVoxels(v, segments, resolveTool) {
     if (!axis) { axis = toolAxisFor(s.a4 || 0, s.b4 || 0); axisCache.set(key, axis); }
     removed += carveVoxelMove(v, s.a, s.b, axis, resolveTool(s));
   }
-  return { removedVolume: removed * v.cs * v.cs * v.cs };
+  return { removedVolume: removed * v.cs * v.cs * v.csz };
 }
 
 // Face directions: [di,dj,dk, nx,ny,nz] — the neighbour to test and the normal.
@@ -182,23 +200,24 @@ const FACES = [
  * with an outward normal. Returns transferable typed arrays.
  */
 export function voxelSurfaceMesh(v) {
-  const { ox, oy, oz, cs, nx, ny, nz, solid } = v;
+  const { ox, oy, oz, cs, csz, nx, ny, nz, solid } = v;
   const at = (i, j, k) => (i < 0 || j < 0 || k < 0 || i >= nx || j >= ny || k >= nz)
     ? 0 : solid[k * nx * ny + j * nx + i];
 
   const positions = [];
   const normals = [];
   const indices = [];
+  const colors = [];
   let vert = 0;
 
   // Unit-quad corner offsets for each of the 6 face directions.
-  const quad = (i, j, k, f) => {
+  const quad = (i, j, k, f, col) => {
     const x0 = ox + i * cs;
     const y0 = oy + j * cs;
-    const z0 = oz + k * cs;
+    const z0 = oz + k * csz;
     const x1 = x0 + cs;
     const y1 = y0 + cs;
-    const z1 = z0 + cs;
+    const z1 = z0 + csz;
     const [, , , fnx, fny, fnz] = FACES[f];
     let corners;
     if (f === 0) corners = [[x1, y0, z0], [x1, y1, z0], [x1, y1, z1], [x1, y0, z1]]; // +X
@@ -207,7 +226,11 @@ export function voxelSurfaceMesh(v) {
     else if (f === 3) corners = [[x0, y0, z0], [x1, y0, z0], [x1, y0, z1], [x0, y0, z1]]; // -Y
     else if (f === 4) corners = [[x0, y0, z1], [x1, y0, z1], [x1, y1, z1], [x0, y1, z1]]; // +Z
     else corners = [[x0, y0, z0], [x0, y1, z0], [x1, y1, z0], [x1, y0, z0]]; // -Z
-    for (const c of corners) { positions.push(c[0], c[1], c[2]); normals.push(fnx, fny, fnz); }
+    for (const c of corners) {
+      positions.push(c[0], c[1], c[2]);
+      normals.push(fnx, fny, fnz);
+      colors.push(col[0], col[1], col[2]);
+    }
     indices.push(vert, vert + 1, vert + 2, vert, vert + 2, vert + 3);
     vert += 4;
   };
@@ -218,7 +241,16 @@ export function voxelSurfaceMesh(v) {
         if (!solid[k * nx * ny + j * nx + i]) continue;
         for (let f = 0; f < 6; f++) {
           const [di, dj, dk] = FACES[f];
-          if (!at(i + di, j + dj, k + dk)) quad(i, j, k, f);
+          const ni = i + di;
+          const nj = j + dj;
+          const nk = k + dk;
+          if (at(ni, nj, nk)) continue;
+          // The block starts solid, so an exposed face is either the blank's
+          // own outside (still off the grid edge) or a face the tool made by
+          // taking its neighbour away. That is the whole cut/raw distinction,
+          // and it costs one bounds test.
+          const outside = ni < 0 || nj < 0 || nk < 0 || ni >= nx || nj >= ny || nk >= nz;
+          quad(i, j, k, f, outside ? RAW : CUT);
         }
       }
     }
@@ -227,6 +259,7 @@ export function voxelSurfaceMesh(v) {
   return {
     positions: new Float32Array(positions),
     normals: new Float32Array(normals),
+    colors: new Float32Array(colors),
     indices: new Uint32Array(indices),
     quads: vert / 4,
   };

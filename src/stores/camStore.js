@@ -107,6 +107,12 @@ export const useCamStore = create((set, get) => ({
   // see `engine/sim/method.js`.
   voxelSizeUsed: null,
   voxelLimited: false,
+  // What the last height-field run actually carved at, and whether a budget
+  // rather than the tooling decided it. The cell size in the box is a ceiling:
+  // a round feature is only as round as the grid under it, so the smallest
+  // cutter in the cut pulls it finer — see `engine/sim/method.js`.
+  cellSizeUsed: null,
+  cellLimited: false,
   simMethod: 'height', // 'height' (dexel) | 'voxel' (undercut) | 'turning' (revolved)
   // ---- Turning ----
   turnTool: 'mvjnr',   // selected OD toolholder type (marker appearance)
@@ -545,6 +551,10 @@ export const useCamStore = create((set, get) => ({
           playhead: get().playhead,
         }),
         totalFeeds: init.totalFeeds,
+        // The grid the height field actually used — refined to the smallest
+        // cutter, bounded by what it costs to scan and to stamp.
+        cellSizeUsed: init.cellSize ?? null,
+        cellLimited: !!init.cellSizeLimited,
         aIndex: init.aIndex, // the engine's pick, if we didn't make one
         // The height field carves in the machine frame at exactly this index,
         // so the stock it returns is already turned that far.

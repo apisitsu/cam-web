@@ -63,6 +63,111 @@ export function simMethodFor({
 }
 
 /**
+ * The smallest and largest cutter actually **in the cut**, as diameters.
+ *
+ * The small end is what the height field's XY resolution has to answer to: a
+ * round feature is only as round as the grid under it, so a Ø2 centre drill on
+ * a ½ mm grid comes out a four-sided hole — which is what "the chamfer, the
+ * centre drill, the drill and the tap all look rough" turned out to be. Every
+ * one of those is a small round tool.
+ *
+ * The large end is what the *cost* answers to: a stamp covers (2r/cs)² cells, so
+ * it is the biggest cutter that decides how expensive a fine grid is.
+ *
+ * Only tools that cut count. A tool table listing a Ø1 engraver that the program
+ * never calls must not drive the whole grid — `feeds` is how many cutting moves
+ * a tool actually made, straight from the interpreter.
+ *
+ * @param {{tools?:object[], fallbackTool?:object, overrides?:object}} args
+ * @returns {{min:number, max:number}} diameters in mm; zeros when nothing says.
+ */
+export function cutterSpan({ tools = [], fallbackTool = null, overrides = null } = {}) {
+  const ov = overrides || {};
+  const used = (tools || []).filter((t) => (t?.feeds ?? 0) > 0 || (tools || []).length === 1);
+  const diameters = [];
+  for (const t of used) {
+    const o = ov[t.n] || {};
+    const d = o.diameter ?? t.diameter ?? (t.radius > 0 ? t.radius * 2 : null);
+    if (d > 0) diameters.push(d);
+  }
+  // Overrides for tools the program never described still count — the operator
+  // typed them precisely so those moves would carve at that size.
+  for (const o of Object.values(ov)) if (o?.diameter > 0) diameters.push(o.diameter);
+  // The fallback picker covers every move whose tool nothing else knows about.
+  if (fallbackTool?.radius > 0) diameters.push(fallbackTool.radius * 2);
+  if (diameters.length === 0) return { min: 0, max: 0 };
+  return { min: Math.min(...diameters), max: Math.max(...diameters) };
+}
+
+/** Cells across the smallest cutter's diameter — what makes a bore look round. */
+export const CIRCLE_CELLS = 24;
+/** No finer than this, whatever the tool: past here the grid is a memory leak. */
+export const MIN_CELL = 0.02;
+/**
+ * Ceiling on the grid itself. Every mesh build scans it once, and a mesh is
+ * built per playback tick — this is that scan, not memory, which would allow
+ * far more.
+ */
+export const MAX_CELLS = 1.2e6;
+/**
+ * Ceiling on the **carving**, in cell-stamps: the sweep steps every half cell
+ * and each stamp touches the cells under the cutter, so halving the cell size
+ * is eight times the work. This is the budget that actually binds — a grid fine
+ * enough to draw a Ø2 drill is free to render and ruinous to carve a facing
+ * pass on, and the difference between those two jobs is exactly this number.
+ *
+ * Calibrated at roughly 30k stamps per millisecond, so the ceiling is a couple
+ * of seconds of carving on the machine this was measured on.
+ */
+export const MAX_STAMPS = 7e7;
+
+/**
+ * The cell size to actually carve the height field at.
+ *
+ * The operator's setting is a **ceiling**, not the answer: it says "no coarser
+ * than this", and the sim refines below it when the tooling needs it and the
+ * budgets allow. Refining is what makes a drilled hole round; the budgets are
+ * what stop a hole program's resolution being applied to a facing job and
+ * turning Simulate into a thirty-second wait.
+ *
+ * The budgets bound the **refinement only**. A setting that is already
+ * expensive for the tooling in the program is left exactly as it is: that is
+ * the operator's call, and quietly simulating coarser than they asked would be
+ * the app overruling a number they typed.
+ *
+ * @param {{requested?:number, span?:{min:number,max:number},
+ *   bounds?:{min:number[],max:number[]}|null, cutLength?:number}} args
+ * @returns {{size:number, limited:boolean, wanted:number}} `limited` = a budget,
+ *   not the tooling, decided the answer — and the caller should say so.
+ */
+export function cellSizeFor({
+  requested = 0.5, span = null, bounds = null, cutLength = 0,
+} = {}) {
+  const asked = requested > 0 ? requested : 0.5;
+  const minD = span?.min > 0 ? span.min : 0;
+  const maxR = span?.max > 0 ? span.max / 2 : 0;
+  const wanted = Math.max(minD > 0 ? Math.min(asked, minD / CIRCLE_CELLS) : asked, MIN_CELL);
+
+  const spanX = bounds ? Math.max(bounds.max[0] - bounds.min[0], 0) : 0;
+  const spanY = bounds ? Math.max(bounds.max[1] - bounds.min[1], 0) : 0;
+  const cells = (cs) => (spanX > 0 && spanY > 0
+    ? Math.ceil(spanX / cs) * Math.ceil(spanY / cs) : 0);
+  // Stamps every half cell along the cut, each covering the disc of the cutter.
+  const stamps = (cs) => (cutLength > 0 && maxR > 0
+    ? (cutLength / (cs / 2)) * Math.PI * (maxR / cs) * (maxR / cs) : 0);
+
+  let size = wanted;
+  let limited = false;
+  // Coarsen in steps rather than solving for it: two ceilings on different
+  // powers of the cell size have no closed form worth writing down.
+  while (size < asked && (cells(size) > MAX_CELLS || stamps(size) > MAX_STAMPS)) {
+    size = Math.min(asked, size * 1.15);
+    limited = true;
+  }
+  return { size, limited, wanted };
+}
+
+/**
  * The thinnest stated cutting body among every tool in play, or 0 when none
  * says. This is what the voxel grid has to be able to hold: the tool table can
  * state a thickness per tool, and looking only at the fallback picker left a

@@ -4,6 +4,175 @@ Notable fixes and changes, newest first. Dates are absolute.
 
 ---
 
+## 2026-08-05
+
+### Fix — a drilled hole is round, and so is everything else small
+
+"The chamfer is still not smooth, and so are the centre drill, the drill and the
+tap." Every one of those is a small **round** tool, and that is the whole story:
+a round feature is only as round as the grid under it. On the ½ mm cells the
+setting asks for, a Ø6 bore is twelve cells across and a Ø3 centre drill is six —
+a hexagon. Smoothing the slope (below) fixed the chamfer's *flank*; its rim, and
+every hole beside it, was still a staircase in plan.
+
+So the cell size is now a **ceiling** rather than the answer. `cellSizeFor` takes
+the grid down to `CIRCLE_CELLS` (24) across the smallest cutter that actually
+cuts — the same reasoning `voxelSizeFor` has always applied to the voxel block —
+and two budgets pull it back:
+
+- the **grid**, which every mesh build scans once per playback tick;
+- the **carving**, which is what really binds. A stamp covers (2r/cs)² cells and
+  the sweep steps every half cell, so halving the cell is eight times the work.
+  A hole program has almost no cutting length and gets a very fine grid; a facing
+  job with a Ø50 cutter keeps the coarse one it always had. The budgets bound the
+  *refinement* only — a setting that is already expensive is left alone, because
+  it is the operator's.
+
+That was affordable only because the mesh stopped scaling with the grid.
+`heightmapToSolidMesh` now **merges flat runs along a row**: a billet is mostly
+untouched top and flat floor, and those cells are one rectangle however many
+there are, while anywhere the surface does something — a slope, a wall, the rim
+of a bore — every cell is still drawn in full. On a plate with four holes that is
+121,593 quads down to 1,989, and the drilling job now simulates on a 0.125 mm
+grid with a smaller mesh than the 0.5 mm one produced.
+
+Merging leaves T-junctions where a long run meets a row subdivided differently.
+They are exactly coplanar, so nothing shows; `merge:false` turns it off for
+anything that wants edge-matched geometry, and the hole-free construction is
+still checked that way.
+
+### Add — a twist drill has a point
+
+A drill was the one common tool with no shape in `cutters.js`, so it carved as a
+flat-bottomed disc: a blind hole came out with a square floor, which is the one
+thing every machinist knows a drill does not leave. `drill` is now a cutter of
+its own — a 118° cone, adjustable to 135° for split points, on a body five
+diameters long — and `T2(DRILL 9)` resolves to it. Reamers, taps and boring bars
+still claim no shape: they cut no bore of their own, and the plain flat at their
+own diameter is what they leave.
+
+### Change — the library is a place in the sidebar
+
+Saving to a **file** has gone from the sidebar rail: Save project, Open project
+and the quick Save to library are all off it. The library keeps the same session
+in the browser under a name with no dialog and no folder to find again, and a
+rail carrying both ways to do one job is a rail on which nobody is sure which one
+they used. What is left is one row of two glyphs — keep it, or hand the program
+on — and the library opens **inside the sidebar** rather than in a popover:
+saving something, looking through what is there, opening one and deleting two is
+a session, and a layer that shuts when you click near its edge is the wrong
+container for one.
+
+Nothing is lost: a `.camweb.json` dropped on the window now opens as a project
+(it would previously have been handed to the G-code parser), and the Sketch
+page — which has no sidebar — keeps its own popover.
+
+### Add — Simulate runs itself once the setup says what to simulate
+
+A program, a stated billet and an origin are the three things that make "what
+will this make?" answerable, and the moment all three are there the operator has
+already asked. `engine/view/autoSim.js` describes the setup as a **key** rather
+than a boolean, which is what makes this safe: a boolean stays true and re-carves
+on every render, while a key changes only when the stock, the origin, the program
+or the rotary face does. It holds off while a program is playing (a re-carve
+would pull the block out from under the playhead) and while a run is going, so
+typing a billet dimension digit by digit costs one run, not three.
+
+### Add — a library, so work can be kept without being filed
+
+Saving has meant writing a file since there was anything to save: a project to
+`.camweb.json`, a program to `.nc`, and the browser's save dialog decides where.
+That is the right way to *hand work on* and the wrong way to keep it. A file the
+operator has to find again is a file they will open the wrong version of, and on
+a tablet at the machine it may be a file they cannot find at all.
+
+So the app now keeps its own store — names in, names out, no dialog, surviving a
+reload. **Save to library** keeps the whole session under the name the work
+already has; the **Library** panel saves under a name you choose and lists what
+is there, with what each one holds (`412 blocks · 3 ops · a part`), how big it is
+and when it was saved, plus Open and Delete on every row.
+
+- `engine/savedWork.js` is the pure half: the record shape, the naming rules,
+  the ordering. Keyed by **kind and name**, so re-saving replaces rather than
+  piling up eight identical rows, and a program and a project may share a name.
+  The name offered for a fresh save is made unique first, so pressing Save twice
+  keeps two saves — overwriting is something you type, not something you get.
+- `lib/workDb.js` is IndexedDB and nothing else. Two object stores: a small
+  `meta` row per item, and the `data` payload beside it. Drawing the list from
+  the payloads would deserialize every megabyte in the library — a project
+  carries its STL as base64 — to show a column of names. Meta and data are
+  written in one transaction, so the list can never show a row whose payload was
+  never written. Not `localStorage`: 5 MB, strings only, and synchronous on the
+  thread the viewport is drawing on.
+- Opening a saved project goes through the same `applyProject` an opened
+  `.camweb.json` does — split out of `openProjectFile` for exactly that. Two
+  doors, one room: a session restored from the database and one restored from a
+  file cannot come back differently.
+- The Sketch page gets it too, on its own rail button. That page hides the
+  sidebar, so without it a sketch could be saved to a file and never to the
+  library that keeps it.
+
+### Change — Export G-code downloads, rather than opening a save dialog
+
+`Save G-code` used the File System Access API where it exists and fell through to
+a download everywhere else. The picker is nicer on a desktop, and it does not
+exist where this app is actually used from: served over the LAN to a tablet at
+the machine, `showSaveFilePicker` needs a secure context and is simply absent, so
+that path was already the fallback. One behaviour everywhere beats two that
+differ by browser, and it matches the CAM panel's own Download NC button, which
+has always worked this way. The project file keeps its Save-As — a project is
+filed away, a program is handed on.
+
+The exported name is now `programFileName`: keep the name the program arrived
+with **only** when it already ends in a G-code extension (`.NC` stays `.NC` —
+shop programs are uppercase), and otherwise put `.nc` on it. A session planned
+from a model is named after the model, so exporting it used to hand back
+`bracket.stl` with G-code inside.
+
+### Fix — a chamfer is a face, not a flight of stairs
+
+A chamfer simulated as a staircase. The height field was right: a chamfer mill
+stamps a cone, and the heights it leaves across the cut ARE a ramp. The
+triangulation threw that away — since the leaning-wall fix, every cell was drawn
+as a flat tread over its own footprint with a vertical riser closing the step to
+its neighbour, which is honest for a wall and a lie for a 45° face.
+
+Both readings now come out of one test, made once per grid **node**: the up-to-
+four cells meeting there either agree to within `SLOPE_CELLS` (2) cell widths —
+one surface, and the node takes their mean height, which all four then share —
+or they do not, and each cell keeps its own height there while a riser closes
+the gap. The threshold is drawn where the cutters are: a 45° chamfer flank rises
+exactly one cell per cell and a 60° one √3, while a wall rises by the depth of
+cut, which at a ½ mm grid is many cells. A Z-level step is nowhere near it.
+
+Averaging is exact on a plane, so the cone comes back as the flat face it is
+rather than an approximation of one. A ramped floor and a ball nose's bowl come
+right with it — both were staircases for the same reason. `meshSquare.test.js`
+still holds the wall square; `meshSlope.test.js` holds the slope sloped, checks
+the shell has no crack where the two meet, and can reproduce the old staircase
+on demand by setting `slopeLimit` to nothing.
+
+### Add — the position page says what is cutting and how fast
+
+The readout posted a bare `T3`, which is the one thing on the panel an operator
+cannot check against the machine by eye: every other number is a position. Two
+programs in, `T3` is a Ø7 endmill in one and a Ø9 drill in the other.
+
+It now names the tool, and posts the **feed** and **spindle speed** beside the
+position. The name is the tool that actually cuts — `cam/effectiveTool.js`, the
+same resolution the marker draws and the carvers carve with — falling back to
+the program's own comment, and to nothing rather than to a guess.
+
+Feed and speed are stamped on each segment by the interpreter (`f`, `rpm`, `fm`)
+rather than divided back out of a distance and a time, which a dwell folded into
+the same segment would quietly falsify. Both are posted the way they were
+programmed: a lathe's `F0.15` is a feed per **rev**, so it is converted back
+through the rpm it was multiplied by instead of appearing as the 180 mm/min
+nobody typed, and under G96 the speed shown is the rpm the control is actually
+chasing at that diameter, not the surface-speed S word.
+
+---
+
 ## 2026-08-04
 
 ### Fix — the stale height-field mesh check now describes what is built

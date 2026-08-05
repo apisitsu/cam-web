@@ -116,6 +116,22 @@ export const CUTTERS = [
     angleAdjustable: true,
     bodyRatio: 1.5,
   },
+  {
+    id: 'drill',
+    label: 'Twist drill',
+    // A drill was the one common tool with no shape here, so it carved as a
+    // flat-bottomed disc: a blind hole came out with a square floor, which is
+    // the one thing every machinist knows a drill does not leave. The point
+    // angle is the cone it leaves, and 118° is what general-purpose drills are
+    // ground to — 135° for split points in harder material, so it is adjustable.
+    note: 'Point angle 118° as standard, 135° for split points. Leaves a cone in the bottom of a blind hole.',
+    profile: 'cone',
+    flutes: 2,
+    fluteRange: [2, 3],
+    angle: 118,
+    angleAdjustable: true,
+    bodyRatio: 5,
+  },
 ];
 
 export const DEFAULT_CUTTER = 'endmill';
@@ -135,11 +151,15 @@ export function cutterById(id) {
  * detected tool draws and carves as itself instead of as whatever the fallback
  * picker happens to hold.
  *
- * Returns `null` — not the endmill — for the types that are **not** milling
- * cutters at all (drill, reamer, tap, bore). None of the six shapes describes a
- * twist drill, and claiming one would be a worse lie than the neutral stick the
- * marker already draws for them. Callers treat `null` as "keep the plain
- * flat/ball".
+ * A **twist drill** now has a shape of its own, and it earns it: the cone it
+ * leaves in the bottom of a blind hole is the difference between a hole that
+ * looks drilled and one that looks bored square. A **centre drill** is spotting
+ * a cone too, and the chamfer mill's is the same shape.
+ *
+ * Still `null` for the types that cut no new bore of their own — a reamer sizes
+ * a hole that is already there, a tap cuts threads into one, a boring bar opens
+ * one out. Those keep the plain flat/ball at their own diameter, which is what
+ * they leave behind. Callers treat `null` as "keep the plain flat/ball".
  */
 const CUTTER_FOR_TYPE = {
   endmill: 'endmill',
@@ -151,6 +171,7 @@ const CUTTER_FOR_TYPE = {
   facemill: 'face',
   ballmill: 'ball',
   chamfer: 'chamfer',
+  drill: 'drill',
 };
 
 export function cutterFromType(type) {

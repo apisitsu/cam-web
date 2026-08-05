@@ -20,6 +20,8 @@
  * Pure. No React, no store, no three.js.
  */
 
+import { cutterById } from '../cam/cutters.js';
+
 /** Decimal places a metric control posts — microns, same as the program. */
 export const COORD_DECIMALS = 3;
 
@@ -149,4 +151,106 @@ export function showDro({ sketching = false, count = 0 } = {}) {
  */
 export function droXNote({ mode = 'mill', diameterMode = true } = {}) {
   return mode === 'turn' && diameterMode ? '⌀' : null;
+}
+
+/** A dimension with its trailing zeros dropped: 7, 6.35, 12.7 — never 7.000. */
+function trim(value, decimals = 3) {
+  return String(Number(Number(value).toFixed(decimals)));
+}
+
+/** Longest tool name the panel can hold before it starts pushing N— off the row. */
+const NAME_MAX = 24;
+
+/**
+ * The tool in the spindle, as the readout names it: the T number, and beside it
+ * what that tool actually **is**.
+ *
+ * A bare `T3` is what the position page used to say, and it is the one thing on
+ * the panel an operator cannot check against the machine — every other number
+ * is a position they can eyeball. Two programs in, `T3` is a Ø7 endmill in one
+ * and a Ø9 drill in the other, and the difference is a scrapped part.
+ *
+ * The name is the tool that is **cutting**, resolved the same way the marker and
+ * the carvers resolve it (`cam/effectiveTool.js`), so what the readout says, the
+ * screen draws and the simulation removes. Failing that it falls back to the
+ * program's own comment, which is at least what the programmer wrote, and
+ * failing that to nothing — a made-up tool name would be worse than none.
+ *
+ * @param {{number?:number, cutter?:string|null, radius?:number,
+ *   desc?:string, holder?:{label?:string}|null}} args
+ *   `holder` is the lathe toolholder (`sim/turning.js`), which is what a turned
+ *   tool is: an insert in a holder, with no diameter to post.
+ * @returns {{number:string, name:string|null}}
+ */
+export function droTool({
+  number = 0, cutter = null, radius = 0, desc = '', holder = null,
+} = {}) {
+  const label = number > 0 ? `T${number}` : 'T—';
+  // A holder's catalogue label is `MVJNR · 93° OD (insert adj.)` — the part
+  // before the dot is the designation, and the rest is picker prose.
+  if (holder?.label) return { number: label, name: holder.label.split('·')[0].trim() };
+
+  const size = radius > 0 ? `Ø${trim(radius * 2)}` : '';
+  if (cutter) {
+    const name = `${cutterById(cutter).label}${size ? ` ${size}` : ''}`;
+    return { number: label, name };
+  }
+  if (size) return { number: label, name: size };
+  // The program's own comment: `ENDMILL D7 L48-54 - ROUGH B2` names the tool in
+  // its head and the operation in its tail, and only the head is a tool name.
+  const head = String(desc || '').split(/\s+-\s+|--/)[0].trim();
+  if (head) return { number: label, name: head.slice(0, NAME_MAX) };
+  return { number: label, name: null };
+}
+
+/**
+ * The FEED field: the rate the move in progress is running at.
+ *
+ * Posted in the units it was **programmed** in, which is the whole difficulty.
+ * The interpreter converts everything to mm/min because that is what a cycle
+ * time is built from, but a lathe under G95/G99 is programmed in mm per rev —
+ * `F0.15` — and posting the 180 mm/min that works out to at 1200 rpm would be a
+ * number nobody typed and nobody can check against the program. So a per-rev
+ * feed is converted back through the rpm it was multiplied by.
+ *
+ * @param {{feed?:number, rpm?:number, feedMode?:number}} running from `runningAt`
+ * @returns {{text:string, unit:string}} `—` before the program's first F word,
+ *   the same as a control that has not been told a feed yet.
+ */
+export function droFeed({ feed = 0, rpm = 0, feedMode = 0 } = {}) {
+  if (!(feed > 0)) return { text: '—', unit: '' };
+  if (feedMode === 95 && rpm > 0) {
+    return { text: trim(feed / rpm, 4), unit: 'mm/rev' };
+  }
+  return { text: trim(feed, feed < 10 ? 2 : 0), unit: 'mm/min' };
+}
+
+/**
+ * The SPEED field: how fast the spindle is actually turning.
+ *
+ * "Actually" is not pedantry on a lathe. Under constant surface speed the S
+ * word is a surface speed in m/min and the rpm chases the diameter, so the only
+ * honest thing to post beside a position is the rpm the machine is at *there* —
+ * which is what `interpret` works out and hands along, clamp included.
+ */
+export function droSpindle({ rpm = 0 } = {}) {
+  return rpm > 0 ? { text: trim(rpm, 0), unit: 'rpm' } : { text: '—', unit: '' };
+}
+
+/**
+ * The whole footer strip: what is cutting, how fast, and where in the program.
+ *
+ * @param {{toolNumber?:number, tool?:object|null, running?:object|null,
+ *   line?:number}} args `tool` is the `droTool` description, `running` is
+ *   `runningAt` from `gcode/path.js`.
+ */
+export function droFooter({
+  toolNumber = 0, tool = null, running = null, line = 0,
+} = {}) {
+  return {
+    tool: droTool({ ...(tool || {}), number: toolNumber }),
+    feed: droFeed(running || {}),
+    spindle: droSpindle(running || {}),
+    line: line > 0 ? `N${line}` : 'N—',
+  };
 }

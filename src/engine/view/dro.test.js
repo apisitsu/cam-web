@@ -1,7 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import {
   usesRotary, droAxisLabels, formatCoord, absoluteValue, distToGo, droRows,
-  showDro, droXNote,
+  showDro, droXNote, droTool, droFeed, droSpindle, droFooter,
 } from './dro.js';
 
 describe('usesRotary', () => {
@@ -212,5 +212,99 @@ describe('droXNote', () => {
   it('says nothing when it would be noise', () => {
     expect(droXNote({ mode: 'turn', diameterMode: false })).toBe(null);
     expect(droXNote({ mode: 'mill', diameterMode: true })).toBe(null);
+  });
+});
+
+describe('droTool — what is in the spindle', () => {
+  it('names the cutter and its size, not just the T number', () => {
+    expect(droTool({ number: 3, cutter: 'endmill', radius: 3.5 }))
+      .toEqual({ number: 'T3', name: 'Endmill Ø7' });
+  });
+
+  it('drops trailing zeros from the diameter', () => {
+    expect(droTool({ number: 1, cutter: 'face', radius: 25 }).name).toBe('Face mill Ø50');
+    expect(droTool({ number: 1, cutter: 'ball', radius: 3.175 }).name).toBe('Ball nose Ø6.35');
+  });
+
+  it('names a lathe tool by its holder designation, which has no diameter', () => {
+    const holder = { id: 'mvjnr', label: 'MVJNR · 93° OD (insert adj.)' };
+    expect(droTool({ number: 101, holder }))
+      .toEqual({ number: 'T101', name: 'MVJNR' });
+  });
+
+  it('falls back to the program comment, minus its operation tail', () => {
+    expect(droTool({ number: 2, desc: 'DRILL 9 CB - PRE-DRILL' }).name).toBe('DRILL 9 CB');
+  });
+
+  it('posts a size alone when that is all that is known', () => {
+    expect(droTool({ number: 4, radius: 4 }).name).toBe('Ø8');
+  });
+
+  it('invents nothing when the program never said', () => {
+    expect(droTool({ number: 7 })).toEqual({ number: 'T7', name: null });
+    expect(droTool()).toEqual({ number: 'T—', name: null });
+  });
+});
+
+describe('droFeed — the rate in the units it was programmed in', () => {
+  it('posts a milling feed in mm/min', () => {
+    expect(droFeed({ feed: 850, feedMode: 94 })).toEqual({ text: '850', unit: 'mm/min' });
+  });
+
+  it('converts a lathe feed back to the mm/rev the programmer typed', () => {
+    // F0.15 at 1200 rpm is stored as 180 mm/min; posting 180 would be a number
+    // that appears nowhere in the program.
+    expect(droFeed({ feed: 0.15 * 1200, rpm: 1200, feedMode: 95 }))
+      .toEqual({ text: '0.15', unit: 'mm/rev' });
+  });
+
+  it('stays in mm/min under G95 with the spindle stopped — nothing to divide by', () => {
+    expect(droFeed({ feed: 100, rpm: 0, feedMode: 95 }).unit).toBe('mm/min');
+  });
+
+  it('keeps the decimals of a slow feed and drops them from a fast one', () => {
+    expect(droFeed({ feed: 7.5, feedMode: 94 }).text).toBe('7.5');
+    expect(droFeed({ feed: 2499.6, feedMode: 94 }).text).toBe('2500');
+  });
+
+  it('dashes before the program has stated a feed', () => {
+    expect(droFeed({ feed: 0 })).toEqual({ text: '—', unit: '' });
+    expect(droFeed()).toEqual({ text: '—', unit: '' });
+  });
+});
+
+describe('droSpindle — the rpm the machine is actually at', () => {
+  it('posts a whole number of rev/min', () => {
+    expect(droSpindle({ rpm: 8000 })).toEqual({ text: '8000', unit: 'rpm' });
+    // Constant surface speed gives a fractional ideal rpm; a control posts none.
+    expect(droSpindle({ rpm: 2122.07 }).text).toBe('2122');
+  });
+
+  it('dashes with the spindle stopped', () => {
+    expect(droSpindle({ rpm: 0 })).toEqual({ text: '—', unit: '' });
+    expect(droSpindle()).toEqual({ text: '—', unit: '' });
+  });
+});
+
+describe('droFooter', () => {
+  it('assembles the strip a control posts under the position', () => {
+    const foot = droFooter({
+      toolNumber: 3,
+      tool: { cutter: 'chamfer', radius: 5 },
+      running: { feed: 400, rpm: 6000, feedMode: 94 },
+      line: 1234,
+    });
+    expect(foot.tool).toEqual({ number: 'T3', name: 'Chamfer mill Ø10' });
+    expect(foot.feed).toEqual({ text: '400', unit: 'mm/min' });
+    expect(foot.spindle).toEqual({ text: '6000', unit: 'rpm' });
+    expect(foot.line).toBe('N1234');
+  });
+
+  it('says nothing definite with no program running', () => {
+    const foot = droFooter();
+    expect(foot.tool).toEqual({ number: 'T—', name: null });
+    expect(foot.feed.text).toBe('—');
+    expect(foot.spindle.text).toBe('—');
+    expect(foot.line).toBe('N—');
   });
 });

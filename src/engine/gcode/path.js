@@ -36,6 +36,12 @@ export function buildPath(segments) {
   const rotary = new Float32Array(n);
   const rotaryB = new Float32Array(n);
   const tools = new Uint16Array(n);
+  // What the control is posting alongside the position: the feed in effect
+  // (mm/min), the spindle speed, and the feed mode that says how to read the
+  // first of them. See `interpret`'s emit().
+  const rates = new Float32Array(n);
+  const rpms = new Float32Array(n);
+  const feedModes = new Uint8Array(n);
   let feeds = 0;
   let elapsed = 0;
   for (let i = 0; i < n; i++) {
@@ -52,9 +58,13 @@ export function buildPath(segments) {
     rotary[i] = s.a4 || 0;
     rotaryB[i] = s.b4 || 0;
     tools[i] = s.tool || 0;
+    rates[i] = s.f || 0;
+    rpms[i] = s.rpm || 0;
+    feedModes[i] = s.fm || 0;
   }
   return {
     positions, types, feedPrefix, lines, timePrefix, rotary, rotaryB, tools,
+    rates, rpms, feedModes,
     feedPrefixAt: feedPrefixByIndex(types, rotary, n),
     blockEnd: blockEnds(lines, n),
     totalTime: elapsed,
@@ -158,6 +168,28 @@ export function toolAt(path, k) {
   if (!path || k <= 0 || path.count === 0 || !path.tools) return 0;
   const i = Math.min(k, path.count) - 1;
   return path.tools[i] || 0;
+}
+
+/**
+ * What the control is running at after `k` segments — the feed rate, the
+ * spindle speed, and the feed mode to read the rate in.
+ *
+ * One accessor rather than three because the three are one reading: a lathe's
+ * `feed` only means anything next to its `feedMode`, and the rpm is what turns
+ * the first into the mm/rev the programmer typed (see `view/dro.js`). Zeroes
+ * for a path built before these existed, or hand-made in a test — the readout
+ * posts a dash then, as a control does before the first F word.
+ */
+export function runningAt(path, k) {
+  const none = { feed: 0, rpm: 0, feedMode: 0, rapid: false };
+  if (!path || k <= 0 || path.count === 0 || !path.rates) return none;
+  const i = Math.min(k, path.count) - 1;
+  return {
+    feed: path.rates[i] || 0,
+    rpm: path.rpms ? path.rpms[i] || 0 : 0,
+    feedMode: path.feedModes ? path.feedModes[i] || 0 : 0,
+    rapid: path.types[i] === 0,
+  };
 }
 
 /** 1-based source line that is executing after `k` segments have run (0 = none). */

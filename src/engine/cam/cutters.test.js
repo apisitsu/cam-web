@@ -3,13 +3,14 @@ import {
   CUTTERS, cutterById, simTypeOf, clampFlutes, defaultFlutes,
   profileRise, cutterGeometry, cutterWarning, DEFAULT_CUTTER,
   defaultThickness, clampThickness, defaultShank, clampShank, cutFootprint,
+  cutterFromType,
 } from './cutters.js';
 import { millingSpeeds } from './feeds.js';
 
 describe('the catalogue covers the tools a mill actually holds', () => {
-  it('has the six types the shop asks for', () => {
+  it('has the seven types the shop asks for', () => {
     expect(CUTTERS.map((c) => c.id)).toEqual(
-      ['endmill', 'shoulder', 'face', 'slot', 'ball', 'chamfer'],
+      ['endmill', 'shoulder', 'face', 'slot', 'ball', 'chamfer', 'drill'],
     );
   });
 
@@ -252,5 +253,41 @@ describe('the cutting body\'s thickness', () => {
     expect(clampThickness('slot', 1000)).toBe(hi);
     expect(clampThickness('slot', 4)).toBe(4);
     expect(clampThickness('slot', NaN)).toBeNull();
+  });
+});
+
+describe('a twist drill leaves a point, not a flat floor', () => {
+  it('is a cone at the angle it was ground to', () => {
+    const drill = cutterGeometry({ cutter: 'drill', diameter: 6 });
+    expect(drill.type).toBe('cone');
+    expect(drill.angle).toBe(118);
+    // 118° included → 59° half angle. At the outer corner of a Ø6 drill the
+    // flute is 3 mm out and the point stands 3/tan(59°) ≈ 1.80 mm above the tip,
+    // which is the depth every drilling chart calls the point length.
+    expect(profileRise(drill, 3)).toBeCloseTo(3 / Math.tan((59 * Math.PI) / 180), 6);
+  });
+
+  it('takes a split point when the operator says so', () => {
+    expect(cutterGeometry({ cutter: 'drill', diameter: 6, angle: 135 }).angle).toBe(135);
+  });
+
+  it('is what a program calling a drill now carves with', () => {
+    // `T2(DRILL 9 CB - PRE-DRILL)` used to resolve to no shape at all and carve
+    // as a flat disc, so a blind hole came out with a square floor.
+    expect(cutterFromType('drill')).toBe('drill');
+  });
+
+  it('still claims no shape for the tools that cut no bore of their own', () => {
+    // A reamer sizes a hole that is already there, a tap threads one, a boring
+    // bar opens one out. None of them leaves a drill point.
+    for (const type of ['reamer', 'tap', 'bore']) {
+      expect(cutterFromType(type), type).toBe(null);
+    }
+  });
+
+  it('is drawn as the long stick it is, not a stubby mill', () => {
+    // 5x diameter of flute: a drill reaching into a deep hole has to look like
+    // it can, or the marker says the holder will crash when it will not.
+    expect(defaultThickness('drill', 6)).toBe(30);
   });
 });

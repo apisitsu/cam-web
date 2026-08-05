@@ -198,6 +198,18 @@ export const ChamferMillIcon = glyph(
   </>,
 );
 
+/**
+ * Twist drill: a long body, the two helical flutes running up it, and the point
+ * ground on the end. Told from the chamfer mill beside it by the flutes and by
+ * how far it reaches — the two share a cone and are not remotely the same tool.
+ */
+export const DrillIcon = glyph(
+  <>
+    <path d="M9 2h6v13l-3 5-3-5z" />
+    <path d="M9.6 5.5 14.4 8M9.6 10.5l4.8 2.5" opacity="0.55" />
+  </>,
+);
+
 /** Icon per cutter id, for the type picker. */
 export const CUTTER_ICONS = {
   endmill: EndmillIcon,
@@ -206,4 +218,5 @@ export const CUTTER_ICONS = {
   slot: SlotMillIcon,
   ball: BallMillIcon,
   chamfer: ChamferMillIcon,
+  drill: DrillIcon,
 };

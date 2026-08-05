@@ -8,12 +8,14 @@
  * neighbours, so the step between a full cell and a cut one was drawn as a
  * single sloped face spanning the gap between the two centres.
  *
- * The invariant that fixes it is easy to state and easy to check: a height
- * field has flat tops and vertical walls, so **every triangle in the mesh is
- * axis-aligned**. Any sloped facet is the bug coming back.
+ * The invariant that fixes it: where the field **steps**, the mesh steps — a
+ * wall is vertical and the floor either side of it is flat, so a pocket has no
+ * sloped facet anywhere. Where the field genuinely slopes (a chamfer cone, a
+ * ramp, a ball nose) the mesh now slopes with it; that is `meshSlope.test.js`,
+ * and the two together are the whole rule.
  */
 import { describe, it, expect } from 'vitest';
-import { createStock, stamp, cutSegment } from './dexel.js';
+import { createStock, stamp } from './dexel.js';
 import { heightmapToSolidMesh } from './mesh.js';
 
 /** A block with a square pocket cut 5 mm into it. */
@@ -65,23 +67,15 @@ describe('the carved surface is square to the tool', () => {
     expect(bad).toHaveLength(0);
   });
 
-  it('holds for a sloped RAMP cut, where the steps are real', () => {
-    // A ramped move genuinely leaves a staircase in a height field. Each tread
-    // is still flat and each riser still vertical — the steps are the honest
-    // resolution limit, not a smoothed-over wall.
+  it('holds for a step far deeper than the grid — that is a wall, not a slope', () => {
+    // The one thing a slope must never swallow: a 5 mm step at a ½ mm grid is a
+    // machined wall, and it stays square however finely it is sampled.
     const s = createStock({
       xMin: 0, yMin: 0, xMax: 20, yMax: 20, top: 0, base: -10, cellSize: 0.5,
     });
-    cutSegment(s, [2, 10, -1], [18, 10, -8], { radius: 2, type: 'flat' });
-    const bad = normals(heightmapToSolidMesh(s)).filter((n) => !axisAligned(n));
-    expect(bad).toHaveLength(0);
-  });
-
-  it('holds for a ball nose, whose surface is genuinely curved', () => {
-    const s = createStock({
-      xMin: 0, yMin: 0, xMax: 20, yMax: 20, top: 0, base: -10, cellSize: 0.5,
-    });
-    cutSegment(s, [4, 10, -4], [16, 10, -4], { radius: 3, type: 'ball' });
+    for (let x = 6; x <= 14; x += 0.1) {
+      for (let y = 6; y <= 14; y += 0.1) stamp(s, x, y, -5, { radius: 0.1, type: 'flat' });
+    }
     const bad = normals(heightmapToSolidMesh(s)).filter((n) => !axisAligned(n));
     expect(bad).toHaveLength(0);
   });

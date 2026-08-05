@@ -9,7 +9,7 @@ import { cuttingBounds } from './removal.js';
 import { cutterGeometry } from '../cam/cutters.js';
 import { heightmapToSolidMesh } from './mesh.js';
 import { dominantIndex, boundsOf, feedTopZ, toolResolver } from './session.js';
-import { voxelSizeFor, thinnestCut } from './method.js';
+import { voxelSizeFor, thinnestCut, cellSizeFor, cutterSpan } from './method.js';
 import { createVoxelStock, carveVoxels, voxelSurfaceMesh } from './voxel.js';
 import {
   createTurningStock, carveTurning, carveTurningMove, resetTurningStock,
@@ -22,7 +22,9 @@ export {
   createSession, carveTo, createVoxelSession, carveVoxelSessionTo,
   dominantIndex, boundsOf, feedTopZ, toolResolver,
 } from './session.js';
-export { simMethodFor, undercutting, voxelSizeFor, thinnestCut } from './method.js';
+export {
+  simMethodFor, undercutting, voxelSizeFor, thinnestCut, cellSizeFor, cutterSpan,
+} from './method.js';
 export { removalDiagnosis, cuttingBounds } from './removal.js';
 export { createVoxelStock, carveVoxels, voxelSurfaceMesh, toolAxisFor } from './voxel.js';
 export {
@@ -49,11 +51,6 @@ export function runSimulation(text, opts = {}) {
   // Centred on the cutting, not on a clearance rapid — see `billet.js`.
   const fit = cuttingBounds(segments) ?? bounds;
   const autoTop = top ?? feedTopZ(segments, bounds.max[2]);
-  // A stated billet — size, and the corner it sits on — wins per axis; anything
-  // left blank still falls back to wrapping the toolpath. See `billet.js`.
-  const stock = stockFromBounds(fit, {
-    margin, cellSize, top: autoTop, base, size: stockSize, origin: stockOrigin,
-  });
   // Carve each move with its cutter — user tool-table edits win over detection,
   // UI slider as the last fallback.
   // The fallback cutter, for moves whose tool the program never described. A
@@ -67,6 +64,20 @@ export function runSimulation(text, opts = {}) {
       thickness: opts.thickness,
     })
     : { radius, type: toolType };
+  // The grid is refined to the smallest cutter in the cut and bounded by what
+  // it costs — the same rule the playback session uses, so pressing Simulate
+  // and scrubbing the playhead cannot show two different parts.
+  const grid = cellSizeFor({
+    requested: cellSize,
+    span: cutterSpan({ tools: stats.tools, fallbackTool, overrides: opts.toolOverrides }),
+    bounds: fit,
+    cutLength: stats.feedLength,
+  });
+  // A stated billet — size, and the corner it sits on — wins per axis; anything
+  // left blank still falls back to wrapping the toolpath. See `billet.js`.
+  const stock = stockFromBounds(fit, {
+    margin, cellSize: grid.size, top: autoTop, base, size: stockSize, origin: stockOrigin,
+  });
   const resolve = toolResolver(stats.tools, fallbackTool, opts.toolOverrides);
   const { removedVolume } = simulate(stock, segments, resolve);
   const mesh = heightmapToSolidMesh(stock);
@@ -79,6 +90,10 @@ export function runSimulation(text, opts = {}) {
     ny: mesh.ny,
     removedVolume,
     stockTop: stock.top,
+    // What the grid came out at, and whether a budget rather than the tooling
+    // decided it — see `cellSizeFor`.
+    cellSize: grid.size,
+    cellSizeLimited: grid.limited,
   };
 }
 

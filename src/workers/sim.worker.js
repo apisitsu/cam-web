@@ -104,6 +104,11 @@ const api = {
     // of leaving a solid block to speak for itself — see `sim/removal.js`.
     result.cutBounds = session.cutBounds;
     result.box = session.box;
+    // The grid this session settled on — refined to the smallest cutter, and
+    // held back if a budget said so. The store reports it: a run that simulates
+    // at something other than the number in the box owes the operator that.
+    result.cellSize = session.cellSize;
+    result.cellSizeLimited = session.cellSizeLimited;
     return Comlink.transfer(result,
       [result.positions.buffer, result.colors.buffer, result.indices.buffer]);
   },

@@ -23,7 +23,7 @@ import PositionReadout from './PositionReadout.jsx';
 import { interpret } from '../engine/gcode/interpreter.js';
 import {
   buildPath, toolPointAt, blockTargetAt, timeAt, segmentAtTime, rotaryAt,
-  toolAt, lineAt,
+  toolAt, lineAt, runningAt,
 } from '../engine/gcode/path.js';
 import { perTick } from '../engine/view/playback.js';
 
@@ -56,6 +56,12 @@ function readoutProps(path, stats, playT, playing, view = {}) {
     rotary: playhead > 0 ? rotaryAt(path, playhead) : null,
     aIndices: stats?.aIndices ?? [0],
     toolNumber: toolAt(path, playhead),
+    // The footer's own two memos: what the control is running at, and what the
+    // tool in the spindle is. App builds the description from `effectiveTool`;
+    // here the program's own comment is all there is, which is the case the
+    // fallback exists for.
+    running: runningAt(path, playhead),
+    tool: { desc: stats?.tools?.find((x) => x.n === toolAt(path, playhead))?.desc ?? '' },
     line: lineAt(path, playhead),
     count: path.count,
     ...view,
@@ -73,6 +79,11 @@ function axisText(label) {
   const rows = [...container.querySelectorAll('[data-testid="position-readout"] > div')];
   const row = rows.find((r) => r.firstChild?.textContent?.startsWith(label));
   return row ? row.children[1].textContent : null;
+}
+
+/** A footer field by its data-dro name. */
+function field(name) {
+  return container.querySelector(`[data-dro="${name}"]`)?.textContent ?? null;
 }
 
 /** The distance-to-go cell of an axis row, as a number. */
@@ -102,6 +113,7 @@ async function play(path, stats, view = {}, speed = 100) {
       X: axisText('X'), Y: axisText('Y'), Z: axisText('Z'), A: axisText('A'),
       line: lineAt(path, segmentAtTime(path, t)),
       dX: dtg('X'), dY: dtg('Y'), dZ: dtg('Z'),
+      feed: field('feed'), spindle: field('spindle'), toolName: field('toolName'),
       text: container.textContent,
     });
     if (!playing) break;
@@ -316,5 +328,61 @@ describe('PositionReadout during a real turning run', () => {
     const { path, stats } = load(TURN, { mode: 'turn', diameterMode: true });
     const frames = await play(path, stats, { mode: 'turn', diameterMode: true });
     expect(frames.every((f) => f.text.includes('⌀'))).toBe(true);
+  });
+});
+
+describe('the footer during a real run', () => {
+  const NAMED = [
+    'G21 G90 G17',
+    'T3(ENDMILL D7 - ROUGH B2)',
+    'S6000 M03',
+    'G0 X0 Y0 Z10',
+    'G1 Z-2 F200',
+    'G1 X50 F400',
+    'G0 Z10',
+  ].join('\n');
+
+  it('follows the feed as the program changes it', async () => {
+    const { path, stats } = load(NAMED);
+    const frames = await play(path, stats);
+    const feeds = [...new Set(frames.map((f) => f.feed))];
+    // The plunge runs at F200 and the cut at F400, and both are posted.
+    expect(feeds).toContain('200');
+    expect(feeds).toContain('400');
+    // The rapid out at the end keeps the last feed — G00 does not clear F.
+    expect(frames[frames.length - 1].feed).toBe('400');
+  });
+
+  it('posts the spindle speed the program commanded', async () => {
+    const { path, stats } = load(NAMED);
+    const frames = await play(path, stats);
+    // Parked at t=0 nothing has run yet and the fields dash, exactly as the
+    // position rows read 0.000 there. From the first move on, S is the S word.
+    expect(frames[0].spindle).toBe('—');
+    expect(frames.slice(1).every((f) => f.spindle === '6000')).toBe(true);
+  });
+
+  it('names the tool from the program comment when nothing else knows better', async () => {
+    const { path, stats } = load(NAMED);
+    const frames = await play(path, stats);
+    expect(frames[frames.length - 1].toolName).toBe('ENDMILL D7');
+  });
+
+  it('posts a lathe feed per rev and the rpm CSS is chasing', async () => {
+    // G96 S200 at Ø30 is ~2122 rpm, and F0.2 is a feed per rev under G99. A
+    // readout that posted S200 and 424 mm/min would be showing two numbers the
+    // programmer never typed.
+    const CSS = [
+      'G21 G90 G18 G99',
+      'G96 S200 M03',
+      'G0 X30 Z2',
+      'G1 Z-20 F0.2',
+    ].join('\n');
+    const { path, stats } = load(CSS, { mode: 'turn', diameterMode: true });
+    const frames = await play(path, stats, { mode: 'turn', diameterMode: true });
+    const last = frames[frames.length - 1];
+    expect(last.feed).toBe('0.2');
+    expect(Number(last.spindle)).toBeCloseTo(2122, 0);
+    expect(last.text).toContain('mm/rev');
   });
 });

@@ -194,15 +194,50 @@ describe('PositionReadout — where it sits', () => {
 });
 
 describe('PositionReadout — the footer', () => {
+  /** The text of one footer field, by its data-dro name. */
+  const field = (name) => container.querySelector(`[data-dro="${name}"]`)?.textContent ?? null;
+
   it('names the tool and line in effect', async () => {
     await render({ count: 500, point: [1, 2, 3], toolNumber: 5, line: 1234 });
-    expect(container.textContent).toContain('T5');
-    expect(container.textContent).toContain('N1234');
+    expect(field('tool')).toBe('T5');
+    expect(field('line')).toBe('N1234');
   });
 
-  it('says nothing definite before a tool or line is known', async () => {
+  it('says what that tool IS, not just its number', async () => {
+    await render({
+      count: 500, point: [1, 2, 3], toolNumber: 5,
+      tool: { cutter: 'chamfer', radius: 5 },
+    });
+    expect(field('toolName')).toBe('Chamfer mill Ø10');
+  });
+
+  it('posts the feed and the spindle speed beside the position', async () => {
+    await render({
+      count: 500, point: [1, 2, 3], toolNumber: 5,
+      running: { feed: 850, rpm: 6000, feedMode: 94 },
+    });
+    expect(field('feed')).toBe('850');
+    expect(field('spindle')).toBe('6000');
+    expect(container.textContent).toContain('mm/min');
+    expect(container.textContent).toContain('rpm');
+  });
+
+  it('posts a lathe feed per rev, the way it was programmed', async () => {
+    await render({
+      count: 500, mode: 'turn', point: [12.5, 0, -30], toolNumber: 101,
+      running: { feed: 180, rpm: 1200, feedMode: 95 },
+    });
+    expect(field('feed')).toBe('0.15');
+    expect(container.textContent).toContain('mm/rev');
+  });
+
+  it('says nothing definite before a tool, feed or line is known', async () => {
     await render({ count: 500, point: null, toolNumber: 0, line: 0 });
-    expect(container.textContent).toContain('T—');
-    expect(container.textContent).toContain('N—');
+    expect(field('tool')).toBe('T—');
+    expect(field('line')).toBe('N—');
+    expect(field('feed')).toBe('—');
+    expect(field('spindle')).toBe('—');
+    // No name is a blank, never an invented one.
+    expect(field('toolName')).toBe(null);
   });
 });

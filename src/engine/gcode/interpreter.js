@@ -178,6 +178,9 @@ export function interpret(text, opts = {}) {
 
   let rapidLength = 0;
   let feedLength = 0;
+  // The feed rate in effect, carried across rapids — see `emit`. Zero until the
+  // program's first cutting move, which is exactly when a control has none.
+  let modalFeed = 0;
   let rapidTime = 0;
   let feedTime = 0;
   let dwellTime = 0;
@@ -266,7 +269,12 @@ export function interpret(text, opts = {}) {
       rapidLength += d;
       rapidTime += t;
     } else {
-      t = (d / effectiveFeed()) * 60;
+      // The rate this move actually runs at — the same number the cycle time is
+      // built from, so the readout and the estimate cannot disagree. Kept as the
+      // modal feed across the rapids that follow, which is what a control's F
+      // field does: G00 does not clear the F word.
+      modalFeed = effectiveFeed();
+      t = (d / modalFeed) * 60;
       feedLength += d;
       feedTime += t;
       const tc = toolCut.get(state.tool) || { feeds: 0, cutLength: 0 };
@@ -275,7 +283,17 @@ export function interpret(text, opts = {}) {
       toolCut.set(state.tool, tc);
     }
     if (state.aAxis) aIndices.add(state.aAxis);
-    segments.push({ type, a: a2, b: b2, line, t, a4: state.aAxis, b4: state.bAxis, tool: state.tool });
+    segments.push({
+      type, a: a2, b: b2, line, t, a4: state.aAxis, b4: state.bAxis, tool: state.tool,
+      // What the control would be posting while this move runs: the feed in
+      // mm/min, the spindle in rev/min (G96's chased rpm, not its S word), and
+      // which feed mode is active — a lathe's F0.15 is a feed per REV, and
+      // posting the 180 mm/min it works out to would be a number the programmer
+      // never typed. `dro.js` turns the three back into one line.
+      f: modalFeed,
+      rpm: currentRpm(),
+      fm: state.feedMode,
+    });
   };
 
   /**

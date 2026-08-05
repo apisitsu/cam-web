@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import {
-  buildProject, serializeProject, parseProject, projectFileName,
+  buildProject, serializeProject, parseProject, projectFileName, programFileName,
   encodeFloat32, decodeFloat32,
   PROJECT_KIND, PROJECT_VERSION,
 } from './projectFile.js';
@@ -167,5 +167,32 @@ describe('project file — a real sketch survives the round trip', () => {
     expect(back.constraints.find((c) => c.kind === 'distanceX').value).toBe(30);
     // The origin flag must survive, or the restored sketch loses its datum.
     expect(back.entities.get(o).origin).toBe(true);
+  });
+});
+
+describe('programFileName — what the exported .nc is called', () => {
+  it('keeps a name that already says it is a program', () => {
+    expect(programFileName('OR35128_OP20.NC')).toBe('OR35128_OP20.NC');
+    expect(programFileName('shaft.tap')).toBe('shaft.tap');
+    expect(programFileName('roughing.ngc')).toBe('roughing.ngc');
+  });
+
+  it('puts .nc on anything else — a program exported as .stl is a renaming job', () => {
+    // The planner names the session after the model it is cutting, so this is
+    // the ordinary case, not the odd one.
+    expect(programFileName('bracket.stl')).toBe('bracket.nc');
+    expect(programFileName('ring.camweb.json')).toBe('ring.camweb.nc');
+    expect(programFileName('untitled')).toBe('untitled.nc');
+  });
+
+  it('drops any directory the name came with', () => {
+    expect(programFileName('C:\\jobs\\OP10.nc')).toBe('OP10.nc');
+    expect(programFileName('/mnt/jobs/OP10.nc')).toBe('OP10.nc');
+  });
+
+  it('falls back when nothing is loaded', () => {
+    expect(programFileName(null)).toBe('program.nc');
+    expect(programFileName('')).toBe('program.nc');
+    expect(programFileName('   ')).toBe('program.nc');
   });
 });

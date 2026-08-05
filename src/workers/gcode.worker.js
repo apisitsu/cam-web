@@ -27,6 +27,10 @@ const api = {
       result.path.rotary.buffer,
       result.path.rotaryB.buffer,
       result.path.tools.buffer,
+      // What the control posts beside the position — feed, spindle, feed mode.
+      result.path.rates.buffer,
+      result.path.rpms.buffer,
+      result.path.feedModes.buffer,
     ]);
   },
 };

@@ -137,3 +137,25 @@ export function projectFileName(fileName) {
   const base = (fileName || 'untitled').replace(/\.[^.\\/]*$/, '') || 'untitled';
   return `${base}.camweb.json`;
 }
+
+/** Extensions that already say "this is a program" — a control reads them all. */
+const GCODE_EXT = ['.nc', '.gcode', '.gc', '.tap', '.cnc', '.ngc', '.txt', '.mpf'];
+
+/**
+ * A filename for the exported program.
+ *
+ * The rule is narrow on purpose: keep the name the program arrived with **only
+ * when it already ends in a G-code extension**, and otherwise put `.nc` on it.
+ * A session whose program came out of the CAM planner is called after the model
+ * it was cut from, so exporting it used to hand back `bracket.stl` with G-code
+ * inside — a file the operator has to rename before any control will look at it,
+ * and one that a CAD program will happily open and fail to read.
+ */
+export function programFileName(fileName) {
+  const raw = String(fileName ?? '').replace(/^.*[\\/]/, '').trim();
+  const base = raw.replace(/\.[^.]*$/, '') || 'program';
+  // Matched case-insensitively, kept as typed: shop programs are `.NC`, and an
+  // operator looking for the file they just exported is looking for that.
+  const ext = raw.slice(base.length);
+  return GCODE_EXT.includes(ext.toLowerCase()) ? `${base}${ext}` : `${base}.nc`;
+}

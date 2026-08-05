@@ -7,7 +7,7 @@
  * appear at all) comes from `engine/view/dro.js`, which is tested. This file only
  * maps those rows onto JSX and styles them like a readout.
  */
-import { droRows, showDro, droXNote } from '../engine/view/dro.js';
+import { droRows, showDro, droXNote, droFooter } from '../engine/view/dro.js';
 
 /** Width of the distance-to-go column, wide enough for -1234.567. */
 const DTG_W = 74;
@@ -50,8 +50,27 @@ const DTG = {
 const UNIT = { color: '#475569', fontSize: 10, width: 22 };
 
 const FOOTER = {
-  display: 'flex', gap: 10, marginTop: 6, paddingTop: 5,
+  display: 'flex', alignItems: 'baseline', gap: 8, marginTop: 6, paddingTop: 5,
   borderTop: '1px solid #1e293b', color: '#64748b', fontSize: 11,
+};
+
+// The tool's own name, one step brighter than the rest of the footer: it is the
+// only line on the panel that cannot be checked against the machine by eye.
+const TOOL_NAME = {
+  color: '#cbd5e1', flex: 1, overflow: 'hidden',
+  textOverflow: 'ellipsis', whiteSpace: 'nowrap',
+};
+
+// Feed and speed sit on their own row, read as a pair, and are laid out as one:
+// a letter, the number right-aligned under the position column above it, then
+// the unit — so F and S line up with each other and with the axes.
+const RATES = {
+  display: 'flex', alignItems: 'baseline', gap: 8, marginTop: 3,
+  color: '#64748b', fontSize: 11,
+};
+
+const RATE_VALUE = {
+  color: '#e2e8f0', fontSize: 13, fontVariantNumeric: 'tabular-nums',
 };
 
 /**
@@ -63,18 +82,22 @@ const FOOTER = {
  * @param {{a:number,b:number}|null} props.rotary index at the playhead
  * @param {number[]} props.aIndices distinct A values in the program
  * @param {number} props.toolNumber tool in effect (0 = none stated)
+ * @param {object|null} props.tool what that tool is — see `droTool`
+ * @param {object|null} props.running feed/rpm at the playhead — see `runningAt`
  * @param {number} props.line 1-based source line executing
  * @param {boolean} props.sketching
  * @param {number} props.count segments in the program
  */
 export default function PositionReadout({
   point = null, target = null, mode = 'mill', diameterMode = true, rotary = null,
-  aIndices = null, toolNumber = 0, line = 0, sketching = false, count = 0,
+  aIndices = null, toolNumber = 0, tool = null, running = null, line = 0,
+  sketching = false, count = 0,
 }) {
   if (!showDro({ sketching, count })) return null;
 
   const rows = droRows(point, { mode, diameterMode, rotary, aIndices, target });
   const xNote = droXNote({ mode, diameterMode });
+  const foot = droFooter({ toolNumber, tool, running, line });
 
   return (
     <div style={PANEL} data-testid="position-readout">
@@ -99,8 +122,23 @@ export default function PositionReadout({
         </div>
       ))}
       <div style={FOOTER}>
-        <span>{toolNumber > 0 ? `T${toolNumber}` : 'T—'}</span>
-        <span style={{ marginLeft: 'auto' }}>{line > 0 ? `N${line}` : 'N—'}</span>
+        <span data-dro="tool">{foot.tool.number}</span>
+        {foot.tool.name ? (
+          <span style={TOOL_NAME} data-dro="toolName">{foot.tool.name}</span>
+        ) : <span style={{ flex: 1 }} />}
+        <span data-dro="line">{foot.line}</span>
+      </div>
+      <div style={RATES}>
+        <span>F</span>
+        <span style={{ ...RATE_VALUE, flex: 1, textAlign: 'right' }} data-dro="feed">
+          {foot.feed.text}
+        </span>
+        <span style={{ width: 46 }}>{foot.feed.unit}</span>
+        <span>S</span>
+        <span style={{ ...RATE_VALUE, width: 52, textAlign: 'right' }} data-dro="spindle">
+          {foot.spindle.text}
+        </span>
+        <span style={{ width: 22 }}>{foot.spindle.unit}</span>
       </div>
     </div>
   );

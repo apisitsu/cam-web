@@ -12,11 +12,12 @@ import { Button, Tooltip, Popover, InputNumber, Space, Tag, Typography, Divider,
 import {
   UndoOutlined, RedoOutlined, DeleteOutlined, ThunderboltOutlined,
   NodeIndexOutlined, EllipsisOutlined, BulbOutlined, ClearOutlined,
-  SaveOutlined, FolderOpenOutlined, ExportOutlined,
+  SaveOutlined, FolderOpenOutlined, ExportOutlined, DatabaseOutlined,
 } from '@ant-design/icons';
 import { useState, useEffect, useCallback } from 'react';
 import { useSketchStore } from '../stores/sketchStore.js';
 import { saveProject, openProjectFile, exportSketchDxf } from '../lib/projectIO.js';
+import LibraryPanel from './LibraryPanel.jsx';
 // The helper this rail introduced now serves the whole app — see `glyph.jsx`.
 import { glyph } from './glyph.jsx';
 
@@ -633,6 +634,18 @@ export default function SketchToolbar() {
       <Tooltip title="Delete selection (Del)" placement="bottom">
         <Button type="text" danger icon={<DeleteOutlined />} disabled={!selection.length} onClick={() => deleteSelected()} style={railBtn()} />
       </Tooltip>
+
+      {/* The library, on its own trigger rather than inside the menu below: a
+          popover nested in a popover closes the outer one as you reach for it.
+          The Sketch page hides the sidebar, so without this a sketch could be
+          saved to a file and never to the library that keeps it. */}
+      <LibraryPanel
+        trigger={(
+          <Tooltip title="Library — everything saved in this browser" placement="bottom">
+            <Button type="text" icon={<DatabaseOutlined />} style={{ ...railBtn(), color: '#cbd5e1' }} />
+          </Tooltip>
+        )}
+      />
 
       <Popover
         trigger="click"

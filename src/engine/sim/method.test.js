@@ -1,6 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import {
   simMethodFor, undercutting, voxelSizeFor, thinnestCut, VOXEL_LAYERS, MAX_VOXELS,
+  cutterSpan, cellSizeFor, CIRCLE_CELLS, MIN_CELL, MAX_CELLS, MAX_STAMPS,
 } from './method.js';
 
 describe('undercutting — what a height field cannot hold', () => {
@@ -165,5 +166,124 @@ describe('thinnestCut — what the grid has to be able to hold', () => {
       fallbackTool: { thickness: 6 },
       overrides: { 1: { thickness: 1.5 }, 2: { thickness: 4 } },
     })).toBe(1.5);
+  });
+});
+
+describe('cutterSpan — the smallest and largest cutter in the cut', () => {
+  const tool = (n, diameter, feeds = 10) => ({ n, diameter, feeds });
+
+  it('reads both ends off the tools that actually cut', () => {
+    expect(cutterSpan({ tools: [tool(1, 50), tool(2, 6), tool(3, 3)] }))
+      .toEqual({ min: 3, max: 50 });
+  });
+
+  it('ignores a tool the program never calls', () => {
+    // A tool table listing a Ø1 engraver that never cuts must not drive the
+    // whole grid down to a tenth of a millimetre.
+    expect(cutterSpan({ tools: [tool(1, 6), tool(2, 1, 0)] }).min).toBe(6);
+  });
+
+  it('takes the diameter the operator typed over the detected one', () => {
+    expect(cutterSpan({
+      tools: [tool(1, 20)],
+      overrides: { 1: { diameter: 4 } },
+    }).min).toBe(4);
+  });
+
+  it('counts an override for a tool the program never described', () => {
+    expect(cutterSpan({ tools: [], overrides: { 7: { diameter: 2 } } }))
+      .toEqual({ min: 2, max: 2 });
+  });
+
+  it('falls back to the picker, which covers every unnamed move', () => {
+    expect(cutterSpan({ tools: [], fallbackTool: { radius: 1.5 } }))
+      .toEqual({ min: 3, max: 3 });
+  });
+
+  it('says nothing rather than guessing when nothing is known', () => {
+    expect(cutterSpan()).toEqual({ min: 0, max: 0 });
+    expect(cutterSpan({ tools: [{ n: 1, diameter: null, feeds: 3 }] }))
+      .toEqual({ min: 0, max: 0 });
+  });
+});
+
+describe('cellSizeFor — how fine the height field is carved', () => {
+  const bounds = { min: [0, 0, 0], max: [100, 100, 20] };
+
+  it('refines to the smallest cutter, so a small bore comes out round', () => {
+    // A Ø3 centre drill on the ½ mm grid the setting asks for is six cells
+    // across — a hexagon. This is the whole fix.
+    const { size } = cellSizeFor({
+      requested: 0.5, span: { min: 3, max: 3 }, bounds, cutLength: 50,
+    });
+    expect(size).toBeCloseTo(3 / CIRCLE_CELLS, 6);
+  });
+
+  it('treats the setting as a ceiling, never as a floor to climb to', () => {
+    // A Ø50 face mill needs nothing finer than what was asked for.
+    const { size, limited } = cellSizeFor({
+      requested: 0.5, span: { min: 50, max: 50 }, bounds, cutLength: 2000,
+    });
+    expect(size).toBe(0.5);
+    expect(limited).toBe(false);
+  });
+
+  it('respects a setting finer than the tooling needs — that is a choice', () => {
+    const { size } = cellSizeFor({
+      requested: 0.1, span: { min: 50, max: 50 }, bounds, cutLength: 10,
+    });
+    expect(size).toBe(0.1);
+  });
+
+  it('coarsens back when the grid would be too big to scan', () => {
+    const big = { min: [0, 0, 0], max: [400, 400, 20] };
+    const { size, limited, wanted } = cellSizeFor({
+      requested: 0.5, span: { min: 2, max: 2 }, bounds: big, cutLength: 1,
+    });
+    expect(wanted).toBeCloseTo(2 / CIRCLE_CELLS, 6);
+    expect(limited).toBe(true);
+    expect(size).toBeGreaterThan(wanted);
+    const cells = Math.ceil(400 / size) * Math.ceil(400 / size);
+    expect(cells).toBeLessThanOrEqual(MAX_CELLS);
+  });
+
+  it('coarsens back when the CARVING would be too expensive', () => {
+    // A stamp covers (2r/cs)^2 cells, so the biggest tool in the program decides
+    // what a fine grid costs. A Ø3 drill wants 0.125 mm; sharing the job with a
+    // Ø8 cutter and 20 m of cutting, it settles for less.
+    const wanted = 3 / CIRCLE_CELLS;
+    const { size, limited } = cellSizeFor({
+      requested: 0.5, span: { min: 3, max: 8 }, bounds, cutLength: 20000,
+    });
+    expect(limited).toBe(true);
+    expect(size).toBeGreaterThan(wanted);
+    expect(size).toBeLessThan(0.5);
+    const stamps = (20000 / (size / 2)) * Math.PI * (4 / size) ** 2;
+    expect(stamps).toBeLessThanOrEqual(MAX_STAMPS);
+  });
+
+  it('gives the refinement up entirely rather than going past the setting', () => {
+    // A Ø3 drill next to a Ø50 face mill: no grid fine enough for the drill is
+    // affordable with that cutter on it, so the answer is the setting itself.
+    // The budget bounds *refinement* — it does not overrule what was asked for,
+    // which is the operator's call and the behaviour every job had before.
+    const { size, limited } = cellSizeFor({
+      requested: 0.5, span: { min: 3, max: 50 }, bounds, cutLength: 20000,
+    });
+    expect(size).toBe(0.5);
+    expect(limited).toBe(true);
+  });
+
+  it('never goes below the floor, whatever the tool', () => {
+    const { size } = cellSizeFor({
+      requested: 1, span: { min: 0.2, max: 0.2 }, bounds: null, cutLength: 0,
+    });
+    expect(size).toBe(MIN_CELL);
+  });
+
+  it('leaves the setting alone when nothing is known about the tooling', () => {
+    expect(cellSizeFor({ requested: 0.4 }).size).toBe(0.4);
+    expect(cellSizeFor({}).size).toBe(0.5);
+    expect(cellSizeFor({ requested: 0 }).size).toBe(0.5);
   });
 });

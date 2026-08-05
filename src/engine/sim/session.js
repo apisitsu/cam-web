@@ -19,7 +19,7 @@ import { stockFromBounds, resetStock, cutSegment } from './dexel.js';
 import { heightmapToSolidMesh } from './mesh.js';
 import { cutterGeometry } from '../cam/cutters.js';
 import { billetBox } from './billet.js';
-import { voxelSizeFor, thinnestCut } from './method.js';
+import { voxelSizeFor, thinnestCut, cellSizeFor, cutterSpan } from './method.js';
 import {
   createVoxelStock, carveVoxelMove, voxelSurfaceMesh, toolAxisFor,
 } from './voxel.js';
@@ -164,24 +164,42 @@ export function createSession(text, opts = {}) {
   // out to X200 would otherwise drag the blank off the part it belongs to.
   const fit = cuttingBounds(feeds) ?? bounds;
   const autoTop = top ?? feedTopZ(feeds, bounds.max[2]);
+  // A chosen cutter TYPE wins over the bare flat/ball for anything the program
+  // never described — see `cam/cutters.js`.
+  const fallbackTool = opts.cutter
+    ? cutterGeometry({
+      cutter: opts.cutter,
+      diameter: radius * 2,
+      angle: opts.angle,
+      thickness: opts.thickness,
+    })
+    : { radius, type: toolType };
+  // How fine to carve. The operator's cell size is a ceiling: a round feature is
+  // only as round as the grid under it, so the smallest cutter in the cut pulls
+  // it finer — bounded by what the grid costs to scan and the cut costs to
+  // stamp. See `cellSizeFor`.
+  const grid = cellSizeFor({
+    requested: cellSize,
+    span: cutterSpan({
+      tools: stats.tools, fallbackTool, overrides: opts.toolOverrides,
+    }),
+    bounds: fit,
+    cutLength: stats.feedLength,
+  });
   const stock = stockFromBounds(fit, {
-    margin, cellSize, top: autoTop, base, size: stockSize, origin: stockOrigin,
+    margin, cellSize: grid.size, top: autoTop, base, size: stockSize, origin: stockOrigin,
   });
   return {
     stock,
     feeds,
+    // What the grid actually came out at, and whether a budget decided it — a
+    // run that quietly simulates coarser than it was asked to owes a sentence.
+    cellSize: grid.size,
+    cellSizeAsked: cellSize,
+    cellSizeLimited: grid.limited,
     // Each feed carves with its own cutter — user tool-table edits win over
-    // detection; the UI slider is the fallback for tools never described.
-    // A chosen cutter TYPE wins over the bare flat/ball for anything the
-    // program never described — see `cam/cutters.js`.
-    tool: toolResolver(stats.tools, opts.cutter
-      ? cutterGeometry({
-        cutter: opts.cutter,
-        diameter: radius * 2,
-        angle: opts.angle,
-        thickness: opts.thickness,
-      })
-      : { radius, type: toolType }, opts.toolOverrides),
+    // detection; the fallback above covers tools never described.
+    tool: toolResolver(stats.tools, fallbackTool, opts.toolOverrides),
     cursor: 0,   // whole feed moves already carved
     partial: 0,  // how far into the NEXT one — see `advanceCut`
     removed: 0,

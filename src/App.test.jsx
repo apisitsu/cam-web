@@ -35,6 +35,7 @@ const { useCamStore } = await import('./stores/camStore.js');
 const { interpret } = await import('./engine/gcode/interpreter.js');
 const { buildPath, nextBlockEnd } = await import('./engine/gcode/path.js');
 const { setBuffers, clearBuffers, getBuf } = await import('./engine/bufferCache.js');
+const { useCamPlanStore } = await import('./stores/camPlanStore.js');
 
 let container;
 let root;
@@ -106,7 +107,7 @@ describe('the sidebar while setting up', () => {
   it('offers the file, project and setup controls', async () => {
     await mount();
     expect(siderCommands()).toEqual(
-      expect.arrayContaining(['parse', 'saveProject', 'simulate']),
+      expect.arrayContaining(['parse', 'openLibrary', 'exportGcode', 'simulate']),
     );
   });
 
@@ -132,7 +133,7 @@ describe('pressing Play collapses the sidebar to the program', () => {
     await setStore({ playing: true });
     const cmds = siderCommands();
     expect(cmds).not.toContain('parse');
-    expect(cmds).not.toContain('saveProject');
+    expect(cmds).not.toContain('openLibrary');
     expect(cmds).not.toContain('openProgram');
   });
 
@@ -823,10 +824,137 @@ describe('the cutter type of a tool the program named', () => {
     expect(marker()).toMatchObject({ cutter: 'slot', radius: 25, shank: '16' });
   });
 
-  it('leaves a drill on the plain flat stick — no shape here is a drill', async () => {
+  it('gives a drill its point — a blind hole does not have a square floor', async () => {
+    // This used to assert the opposite: no shape here was a drill, so one
+    // carved as a flat-bottomed disc. `drill` is now a cutter of its own, at
+    // the 118° every general-purpose drill is ground to.
     await mount();
     await loadProgramWithTools('T2(DRILL 9)\nM6\nG0 X0 Y0 Z5\nG1 Z-2 F200\nG1 X60 F400');
-    expect(marker()).toMatchObject({ cutter: '', type: 'flat', radius: 4.5 });
+    expect(marker()).toMatchObject({ cutter: 'drill', type: 'cone', radius: 4.5 });
+    expect(pressed(rowBtn(2, 'drill'))).toBe(true);
     expect(pressed(rowBtn(2, 'endmill'))).toBe(false);
+  });
+
+  it('still leaves a tap on the plain stick — a tap cuts no bore of its own', async () => {
+    await mount();
+    await loadProgramWithTools('T4(TAP D8)\nM6\nG0 X0 Y0 Z5\nG1 Z-2 F200\nG1 X60 F400');
+    expect(marker()).toMatchObject({ cutter: '', type: 'flat', radius: 4 });
+  });
+});
+
+describe('the library is a place in the sidebar, not a menu over it', () => {
+  it('offers one row: the library, and exporting the program', async () => {
+    await mount();
+    const ids = siderCommands();
+    expect(ids).toContain('openLibrary');
+    expect(ids).toContain('exportGcode');
+    // Saving to a file, and opening one back, have gone from this rail — the
+    // library keeps the same session without a dialog, and two ways to do one
+    // job is two ways to be unsure which one was used.
+    expect(ids).not.toContain('saveProject');
+    expect(ids).not.toContain('openProject');
+    expect(ids).not.toContain('saveToLibrary');
+  });
+
+  it('stays shut until the library button is pressed', async () => {
+    await mount();
+    expect(container.querySelector('[data-testid="library-panel"]')).toBeNull();
+  });
+
+  it('opens inside the sidebar, and stays open', async () => {
+    await mount();
+    await act(async () => { cmd('openLibrary').click(); });
+    const panel = sider().querySelector('[data-testid="library-panel"]');
+    expect(panel).not.toBeNull();
+    // In the sidebar itself, not portalled out to a floating layer.
+    expect(document.body.contains(panel)).toBe(true);
+    // A second press closes it again.
+    await act(async () => { cmd('openLibrary').click(); });
+    expect(container.querySelector('[data-testid="library-panel"]')).toBeNull();
+  });
+});
+
+describe('simulating on its own, once the setup says what to simulate', () => {
+  /** Watch `simulate` without a worker to run it in. */
+  function spySimulate() {
+    const spy = vi.fn(async () => {});
+    useCamStore.setState({ simulate: spy });
+    return spy;
+  }
+
+  beforeEach(() => {
+    useCamPlanStore.setState({
+      datum: { planeNormal: null, point: null, rotaryCenter: null, rotaryZero: null, reverseX: false, axesSet: [false, false, false] },
+    });
+    useCamStore.setState({
+      stockEnabled: false, stockSize: { x: null, y: null, z: null },
+      stockOrigin: { x: null, y: null, z: null }, simStatus: 'idle',
+    });
+  });
+
+  it('does not run with a program alone — there is no billet and no datum', async () => {
+    const spy = spySimulate();
+    await mount();
+    expect(spy).not.toHaveBeenCalled();
+  });
+
+  it('does not run on a stated billet with no origin', async () => {
+    const spy = spySimulate();
+    await mount();
+    await setStore({ stockEnabled: true, stockSize: { x: 100, y: 60, z: 20 } });
+    expect(spy).not.toHaveBeenCalled();
+  });
+
+  it('runs the moment both are stated', async () => {
+    const spy = spySimulate();
+    await mount();
+    await setStore({ stockEnabled: true, stockSize: { x: 100, y: 60, z: 20 } });
+    await act(async () => {
+      useCamPlanStore.setState({
+        datum: { planeNormal: null, point: [0, 0, 0], rotaryCenter: null, rotaryZero: null, reverseX: false, axesSet: [true, true, true] },
+      });
+    });
+    expect(spy).toHaveBeenCalledTimes(1);
+  });
+
+  it('runs once per setup, not once per render', async () => {
+    const spy = spySimulate();
+    await mount();
+    await setStore({ stockEnabled: true, stockSize: { x: 100, y: 60, z: 20 } });
+    await act(async () => {
+      useCamPlanStore.setState({
+        datum: { planeNormal: null, point: [0, 0, 0], rotaryCenter: null, rotaryZero: null, reverseX: false, axesSet: [true, true, true] },
+      });
+    });
+    // Something unrelated changes and the component re-renders.
+    await setStore({ showArbor: false });
+    await setStore({ showArbor: true });
+    expect(spy).toHaveBeenCalledTimes(1);
+  });
+
+  it('runs again when the billet is resized — the answer on screen went stale', async () => {
+    const spy = spySimulate();
+    await mount();
+    await setStore({ stockEnabled: true, stockSize: { x: 100, y: 60, z: 20 } });
+    await act(async () => {
+      useCamPlanStore.setState({
+        datum: { planeNormal: null, point: [0, 0, 0], rotaryCenter: null, rotaryZero: null, reverseX: false, axesSet: [true, true, true] },
+      });
+    });
+    await setStore({ stockSize: { x: 120, y: 60, z: 20 } });
+    expect(spy).toHaveBeenCalledTimes(2);
+  });
+
+  it('holds off while a program is playing', async () => {
+    const spy = spySimulate();
+    await mount();
+    await setStore({ playing: true });
+    await setStore({ stockEnabled: true, stockSize: { x: 100, y: 60, z: 20 } });
+    await act(async () => {
+      useCamPlanStore.setState({
+        datum: { planeNormal: null, point: [0, 0, 0], rotaryCenter: null, rotaryZero: null, reverseX: false, axesSet: [true, true, true] },
+      });
+    });
+    expect(spy).not.toHaveBeenCalled();
   });
 });

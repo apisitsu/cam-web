@@ -2,7 +2,7 @@ import { describe, it, expect } from 'vitest';
 import {
   buildPath, feedsBefore, feedsBeforeAt, timeAt, segmentAtTime, sliceUpTo,
   rotaryAt, toolAt, lineAt, segmentIndexAt, toolPointAt, blockTargetAt,
-  nextBlockEnd, prevBlockStart, feedProgressAt,
+  nextBlockEnd, prevBlockStart, feedProgressAt, runningAt,
 } from './path.js';
 import { interpret } from './interpreter.js';
 
@@ -17,6 +17,9 @@ function seg(type, opts = {}) {
     b4: opts.b4 ?? 0,
     line: opts.line ?? 0,
     tool: opts.tool ?? 0,
+    f: opts.f ?? 0,
+    rpm: opts.rpm ?? 0,
+    fm: opts.fm ?? 0,
   };
 }
 
@@ -321,5 +324,40 @@ describe('feedProgressAt — how far the cut has really got', () => {
     expect(feedProgressAt(path, -5)).toBe(0);
     expect(feedProgressAt(path, end * 10)).toBe(2);
     expect(feedProgressAt(null, 5)).toBe(0);
+  });
+});
+
+describe('runningAt — the feed and speed the control is posting', () => {
+  const path = () => buildPath([
+    seg('rapid', { f: 0, rpm: 6000, fm: 94 }),
+    seg('feed', { f: 850, rpm: 6000, fm: 94 }),
+    seg('feed', { f: 400, rpm: 3000, fm: 94 }),
+  ]);
+
+  it('reports the rate and speed of the move in effect', () => {
+    expect(runningAt(path(), 2)).toEqual({
+      feed: 850, rpm: 6000, feedMode: 94, rapid: false,
+    });
+    expect(runningAt(path(), 3).feed).toBe(400);
+  });
+
+  it('marks a rapid as one, so the readout need not guess from the number', () => {
+    expect(runningAt(path(), 1).rapid).toBe(true);
+    expect(runningAt(path(), 2).rapid).toBe(false);
+  });
+
+  it('carries the lathe feed mode through, since 0.15 only means anything with it', () => {
+    const turn = buildPath([seg('feed', { f: 180, rpm: 1200, fm: 95 })]);
+    expect(runningAt(turn, 1)).toEqual({
+      feed: 180, rpm: 1200, feedMode: 95, rapid: false,
+    });
+  });
+
+  it('reads nothing before the program starts, or from a path built without it', () => {
+    expect(runningAt(path(), 0).feed).toBe(0);
+    expect(runningAt(null, 3).feed).toBe(0);
+    // A path from an older build (or a hand-made one) simply has no rates.
+    expect(runningAt({ count: 2, types: new Uint8Array(2) }, 2))
+      .toEqual({ feed: 0, rpm: 0, feedMode: 0, rapid: false });
   });
 });

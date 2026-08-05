@@ -14,8 +14,8 @@ import {
   ThunderboltOutlined, BulbOutlined,
   PlayCircleFilled, PauseCircleFilled, UploadOutlined, StepBackwardOutlined,
   StepForwardOutlined, FastBackwardOutlined, RollbackOutlined,
-  ExpandOutlined, SaveOutlined, FolderOpenOutlined, DownloadOutlined,
-  PlusOutlined, ColumnWidthOutlined,
+  ExpandOutlined, DownloadOutlined,
+  PlusOutlined, ColumnWidthOutlined, DatabaseOutlined,
 } from '@ant-design/icons';
 import CommandButton from './components/CommandButton.jsx';
 import {
@@ -31,17 +31,21 @@ import { useCamPlanStore } from './stores/camPlanStore.js';
 import { PART_FORMATS } from './engine/mesh/import.js';
 import CamPanel from './components/CamPanel.jsx';
 import { useSketchStore } from './stores/sketchStore.js';
-import { saveProject, saveGcode, openProjectFile } from './lib/projectIO.js';
+import { exportGcode, openProjectFile } from './lib/projectIO.js';
+import LibraryPanel from './components/LibraryPanel.jsx';
+import { useLibraryStore } from './stores/libraryStore.js';
 import { fitBoundsFor, fitBoundsForPart, chuckFromBounds } from './engine/view/setup.js';
 import { unionBounds } from './engine/view/camera.js';
 import { simMethodFor } from './engine/sim/method.js';
 import { SPEEDS, PLAY_BASE_SECONDS, perTick } from './engine/view/playback.js';
 import { sidebarSections } from './engine/view/sidebar.js';
+import { autoSimKey, shouldAutoSimulate } from './engine/view/autoSim.js';
 import { offerArborToggle, parkedTip } from './engine/view/millTool.js';
 import { sweptFitBox } from './engine/view/rotaryFrame.js';
 import { sketchBounds } from './engine/sketch/edit.js';
 import {
   lineAt, timeAt, rotaryAt, toolAt, segmentAtTime, toolPointAt, blockTargetAt,
+  runningAt,
 } from './engine/gcode/path.js';
 import { STANDARD_TURN_TOOLS } from './engine/sim/turning.js';
 import {
@@ -510,6 +514,8 @@ export default function App() {
   const toolThickness = useCamStore((s) => s.toolThickness);
   const toolShank = useCamStore((s) => s.toolShank);
   const cellSize  = useCamStore((s) => s.cellSize);
+  const cellSizeUsed = useCamStore((s) => s.cellSizeUsed);
+  const cellLimited = useCamStore((s) => s.cellLimited);
   const voxelSize = useCamStore((s) => s.voxelSize);
   const voxelSizeUsed = useCamStore((s) => s.voxelSizeUsed);
   const voxelLimited = useCamStore((s) => s.voxelLimited);
@@ -570,6 +576,7 @@ export default function App() {
   // touched off on rather than the part's own zero. Subscribe to the function,
   // not its result — it builds a fresh array every call.
   const displayedRotaryCenter = useCamPlanStore((s) => s.displayedRotaryCenter);
+  const partDatum     = useCamPlanStore((s) => s.datum);
   const [showPart, setShowPart] = useState(true);
   // The sim's fallback cutter is collapsed until asked for — see `ToolFallback`.
   const [toolFallbackOpen, setToolFallbackOpen] = useState(false);
@@ -634,19 +641,35 @@ export default function App() {
       useCamStore.setState({ error: err?.message || String(err) });
     }
   }, []);
-  const onSaveProject = useCallback(
-    () => report(saveProject, (n) => `Saved project ${n}`), [report],
+  const onExportGcode = useCallback(
+    () => report(exportGcode, (n) => `Downloaded ${n}`), [report],
   );
-  const onSaveGcode = useCallback(
-    () => report(saveGcode, (n) => `Saved ${n}`), [report],
-  );
-  const onOpenProject = useCallback(
-    (file) => report(async () => {
-      await openProjectFile(file);
-      return file.name;
-    }, (n) => `Opened project ${n}`),
-    [report],
-  );
+  // Whether the library is open in the sidebar. It is a place to work, not a
+  // menu, so it stays put until it is closed again.
+  const [libraryOpen, setLibraryOpen] = useState(false);
+  // ---- Simulate on its own, once the setup says what to simulate ----------
+  //
+  // A program, a stated billet and an origin are the three things that make
+  // "what will this make?" answerable, and the moment they are all there the
+  // operator has already asked the question. `autoSimKey` describes the setup as
+  // a string so the run happens once per setup rather than once per render —
+  // see `engine/view/autoSim.js`.
+  const autoKey = autoSimKey({
+    gcode, stockEnabled, stockSize, stockOrigin, datum: partDatum, aIndex,
+  });
+  const lastAutoKey = useRef(null);
+  useEffect(() => {
+    if (!shouldAutoSimulate({
+      key: autoKey,
+      last: lastAutoKey.current,
+      playing,
+      running: simStatus === 'running',
+      sketching,
+    })) return;
+    lastAutoKey.current = autoKey;
+    simulate();
+  }, [autoKey, playing, simStatus, sketching, simulate]);
+
   // Let a save confirmation fade rather than linger.
   useEffect(() => {
     if (!saveMsg) return undefined;
@@ -665,11 +688,20 @@ export default function App() {
       // to the planner rather than the interpreter. Routing on the extension
       // keeps one drop target for both — and the planner re-checks the bytes,
       // so a mislabelled file still lands in the right place.
-      if (PART_FORMATS.some((f) => f.extensions.some((e) => file.name.toLowerCase().endsWith(e)))) {
+      const name = file.name.toLowerCase();
+      if (PART_FORMATS.some((f) => f.extensions.some((e) => name.endsWith(e)))) {
         loadPart(file);
+      } else if (name.endsWith('.json')) {
+        // A project file. This is the only way in now that the sidebar's Open
+        // project button has gone, so it must not be handed to the G-code
+        // parser — which would read a JSON document as a program and fail.
+        report(async () => {
+          await openProjectFile(file);
+          return file.name;
+        }, (n) => `Opened project ${n}`);
       } else loadFile(file);
     },
-    [loadFile, loadPart]
+    [loadFile, loadPart, report]
   );
 
   // Read large buffers from cache (not from React state). Viewport slices the
@@ -817,6 +849,19 @@ export default function App() {
         angle: baseTurnTool.adjustable ? (currentOverride.insertAngle ?? baseTurnTool.angle) : baseTurnTool.angle,
       }
     : null;
+  // Feed and spindle speed at the playhead, and what the tool in the spindle
+  // is, for the position page's footer. The tool description is the one the
+  // marker draws and the carvers cut with (`effectiveTool` above), not the
+  // program's comment on its own — the readout must name the tool that is
+  // actually making the cut on screen.
+  const running = useMemo(() => runningAt(path, playhead), [path, playhead, bufVer]);
+  const droToolDesc = useMemo(() => ({
+    cutter: turning ? null : marker.cutter ?? null,
+    radius: turning ? 0 : marker.radius ?? 0,
+    desc: currentTool?.desc ?? '',
+    holder: turnInsert,
+  }), [turning, marker.cutter, marker.radius, currentTool, turnInsert]);
+
   // Which tools cut at each rotary index — so the "pick which" selector can say
   // what you'll actually see carved at 0° / 90° / 270° instead of leaving you to
   // guess. Feeds only; one pass over the path, memoised on the buffer version.
@@ -957,29 +1002,39 @@ export default function App() {
               </Space>
               )}
 
-              {/* Saving. A project keeps the program, the machine setup and the
-                  sketch in one file — the sketch had no way to survive a reload
-                  before. Saving G-code alone is for handing the program on. */}
+              {/* Keeping and handing on work. Saving to a **file** — the
+                  project as .camweb.json, and opening one back — has moved out
+                  of here: the library keeps the same thing in the browser under
+                  a name, with no dialog and no folder to find again, and two
+                  ways to do one job on one rail is two ways to be unsure which
+                  one you used. A file still opens by dropping it on the window.
+                  What is left is one row: keep it, or hand the program on. */}
               {show.project && <>
               <Space wrap>
-                <CommandButton id="saveProject" icon={<SaveOutlined />} onClick={onSaveProject} />
-                <Upload
-                  accept=".json,.camweb.json"
-                  showUploadList={false}
-                  beforeUpload={(file) => { onOpenProject(file); return false; }}
-                >
-                  <CommandButton id="openProject" icon={<FolderOpenOutlined />} />
-                </Upload>
                 <CommandButton
-                  id="saveGcode"
+                  id="openLibrary"
+                  icon={<DatabaseOutlined />}
+                  type={libraryOpen ? 'primary' : 'default'}
+                  ghost={libraryOpen}
+                  onClick={() => setLibraryOpen((v) => !v)}
+                />
+                <CommandButton
+                  id="exportGcode"
                   icon={<DownloadOutlined />}
                   disabled={!gcode}
-                  onClick={onSaveGcode}
+                  onClick={onExportGcode}
                 />
               </Space>
 
+              {/* The library works *in* the sidebar rather than in a popover:
+                  saving, looking through what is there, opening one and deleting
+                  two is a session, and a layer that shuts when you click near
+                  its edge is the wrong container for one. */}
+              <LibraryPanel inline open={libraryOpen} onDone={setSaveMsg} />
+
               <Text style={{ color: '#475569', fontSize: 12 }}>
-                …or drag &amp; drop a .nc / .gcode / .tap program — or an .stl / .obj / .ply to machine
+                …or drag &amp; drop a .nc / .gcode / .tap program, a .camweb.json project,
+                or an .stl / .obj / .ply to machine
               </Text>
 
               {saveMsg && <Alert type="success" showIcon message={saveMsg} />}
@@ -1427,13 +1482,20 @@ export default function App() {
                         loading={simStatus === 'running'}
                         onClick={() => simulate()}
                       />
-                      <Tooltip title="Height-field cell size — smaller mm is finer and slower">
+                      <Tooltip title={cellSizeUsed && cellSizeUsed !== cellSize
+                        ? `The coarsest the height field may be. The last run carved at ${cellSizeUsed.toFixed(3)} mm${cellLimited ? ' — as fine as this program can afford' : ', refined to the smallest cutter so its holes come out round'}.`
+                        : 'The coarsest the height field may be — a small cutter refines it further, so its holes come out round'}
+                      >
                         <InputNumber controls={false}
-                          min={0.1}
+                          min={0.05}
                           step={0.1}
                           value={cellSize}
                           onChange={(v) => setTool({ cellSize: v || 0.5 })}
                           style={{ width: 70 }}
+                          // A run that carved at something other than this
+                          // number says so, rather than leaving the operator to
+                          // wonder why a 0.5 mm grid drew a Ø3 hole round.
+                          status={cellSizeUsed && cellSizeUsed !== cellSize ? 'warning' : ''}
                         />
                       </Tooltip>
                       <span className="ant-input-group-addon" style={addonStyle('right')}>mm</span>
@@ -1536,6 +1598,8 @@ export default function App() {
               rotary={toolRotary}
               aIndices={rotaryIndices}
               toolNumber={currentToolNum}
+              tool={droToolDesc}
+              running={running}
               line={activeLine}
               sketching={sketching}
               count={count}

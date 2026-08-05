@@ -59,18 +59,20 @@ export const COMMANDS = [
     hint: 'Replace the editor with a worked example for this machine mode',
   },
 
-  // ---- Project: the whole session in one file -----------------------------
+  // ---- Keeping and handing on work ---------------------------------------
+  //
+  // Saving to a FILE is not on this rail. The library keeps the same session in
+  // the browser under a name, with no dialog and no folder to find again, and a
+  // rail carrying both ways to do one job is a rail on which nobody is sure
+  // which one they used. A .camweb.json still opens by dropping it on the
+  // window, which is how every other file gets in.
   {
-    id: 'saveProject', group: 'project', label: 'Save project',
-    hint: 'Program, machine setup and sketch together as one .camweb.json',
+    id: 'openLibrary', group: 'project', label: 'Library',
+    hint: 'Everything saved in this browser — save, open, re-save or delete it',
   },
   {
-    id: 'openProject', group: 'project', label: 'Open project',
-    hint: 'Restore a saved .camweb.json — part, setup, operations and sketch',
-  },
-  {
-    id: 'saveGcode', group: 'project', label: 'Save G-code',
-    hint: 'Write just the program text out, to hand on to a machine',
+    id: 'exportGcode', group: 'project', label: 'Export G-code',
+    hint: 'Download the program on its own as a .nc, to hand on to a machine',
   },
 
   // ---- Material removal ---------------------------------------------------

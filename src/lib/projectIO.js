@@ -10,8 +10,31 @@ import { useSketchStore } from '../stores/sketchStore.js';
 import { serialize as serializeSketch } from '../engine/sketch/model.js';
 import { sketchToDxf, sketchHasGeometry } from '../engine/sketch/dxf.js';
 import {
-  buildProject, serializeProject, parseProject, projectFileName,
+  buildProject, serializeProject, parseProject, projectFileName, programFileName,
 } from '../engine/projectFile.js';
+
+/**
+ * Hand `text` to the browser as a download, named `suggestedName`.
+ *
+ * No dialog, no picker: it lands in the Downloads folder and the operator knows
+ * where that is. This is what "export" should mean on a shop-floor tablet, and
+ * it is the only path that exists at all when the page is served over plain HTTP
+ * on the LAN — `showSaveFilePicker` requires a secure context, so on
+ * `http://10.x.x.x:3100` it is simply not there.
+ */
+export function downloadTextFile(suggestedName, text, type = 'text/plain') {
+  const blob = new Blob([text], { type });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = suggestedName;
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  // Revoke on the next tick so the download has taken the URL.
+  setTimeout(() => URL.revokeObjectURL(url), 0);
+  return suggestedName;
+}
 
 /**
  * Write `text` to a file the user picks. Uses the File System Access API where
@@ -36,17 +59,7 @@ export async function saveTextFile(suggestedName, text, { description = 'File', 
       throw err;
     }
   }
-  const blob = new Blob([text], { type: 'application/octet-stream' });
-  const url = URL.createObjectURL(blob);
-  const a = document.createElement('a');
-  a.href = url;
-  a.download = suggestedName;
-  document.body.appendChild(a);
-  a.click();
-  a.remove();
-  // Revoke on the next tick so the download has taken the URL.
-  setTimeout(() => URL.revokeObjectURL(url), 0);
-  return suggestedName;
+  return downloadTextFile(suggestedName, text, 'application/octet-stream');
 }
 
 /** Everything the app currently holds, as a project document. */
@@ -77,14 +90,24 @@ export async function saveProject() {
   );
 }
 
-/** Save just the G-code, for handing the program to a machine or another CAM. */
-export async function saveGcode() {
+/**
+ * Export the program as a downloaded `.nc` — for handing it to a machine, a
+ * USB stick, or another CAM.
+ *
+ * A **download**, not a save dialog. The picker is nicer on a desktop when it
+ * exists, and it does not exist where this app is actually used from: served
+ * over the LAN to a tablet at the machine, `window.showSaveFilePicker` is absent
+ * (it needs a secure context) and the picker path was already falling through to
+ * this one. One behaviour everywhere beats two that differ by browser, and it
+ * matches the CAM panel's own Download NC button, which has always worked this
+ * way. The project file keeps its Save-As: a project is filed away, a program is
+ * handed on.
+ */
+export async function exportGcode() {
   const cam = useCamStore.getState();
-  const name = cam.fileName && /\.[^.\\/]+$/.test(cam.fileName) ? cam.fileName : `${cam.fileName || 'program'}.nc`;
-  return saveTextFile(name, cam.gcode || '', {
-    description: 'G-code program',
-    accept: { 'text/plain': ['.nc', '.gcode', '.tap', '.ngc', '.txt'] },
-  });
+  const text = cam.gcode || '';
+  if (!text.trim()) throw new Error('There is no program to export yet.');
+  return downloadTextFile(programFileName(cam.fileName), text);
 }
 
 /**
@@ -105,11 +128,21 @@ export async function exportSketchDxf() {
 }
 
 /**
- * Apply a project file to the app: program, setup, then sketch. Throws with a
- * user-facing message if the file isn't one of ours (see `parseProject`).
+ * Apply a project document to the app: settings, setup, sketch, then program.
+ *
+ * Split out of `openProjectFile` so the library (`stores/libraryStore.js`) opens
+ * a saved project through exactly this path. Two doors, one room: a project
+ * restored from the database and one restored from a file cannot come back
+ * differently, because there is only one piece of code that restores anything.
+ *
+ * `project` is a **parsed** document — `parseProject`'s output shape, or a raw
+ * document from our own database, which is run back through `parseProject` so a
+ * record written by an older build is validated the same way a file is.
  */
-export async function openProjectFile(file) {
-  const project = parseProject(await file.text());
+export async function applyProject(doc) {
+  const project = doc && typeof doc.settings === 'object' && !doc.kind
+    ? doc                                       // already parsed
+    : parseProject(typeof doc === 'string' ? doc : JSON.stringify(doc));
   const cam = useCamStore.getState();
   // Settings first, so the parse below runs with the right machine mode.
   if (Object.keys(project.settings).length) cam.setTool(project.settings);
@@ -121,4 +154,12 @@ export async function openProjectFile(file) {
   // Land on the machine page that actually shows the restored part.
   if (camMode) await useCamStore.getState().setPage(camMode);
   return project;
+}
+
+/**
+ * Apply a project file to the app. Throws with a user-facing message if the file
+ * isn't one of ours (see `parseProject`).
+ */
+export async function openProjectFile(file) {
+  return applyProject(parseProject(await file.text()));
 }

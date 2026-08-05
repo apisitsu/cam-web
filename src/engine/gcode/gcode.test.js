@@ -371,6 +371,55 @@ describe('interpreter — constant surface speed (G96 / G97 / G50)', () => {
   });
 });
 
+describe('interpreter — what the control would be posting', () => {
+  // Every segment carries the feed, the spindle speed and the feed mode in
+  // effect while it runs, so the position page can post them beside the
+  // coordinates without re-deriving a rate from a distance and a time — which
+  // a dwell folded into the same segment would quietly falsify.
+  it('stamps each cutting move with its feed and rpm', () => {
+    const { segments } = interpret('G21 G90 G94\nS6000 M03\nG0 X10\nG1 X50 F850');
+    const cut = segments[segments.length - 1];
+    expect(cut.f).toBe(850);
+    expect(cut.rpm).toBe(6000);
+    expect(cut.fm).toBe(94);
+  });
+
+  it('keeps the feed modal across a rapid — G00 does not clear the F word', () => {
+    const { segments } = interpret('G21 G90\nG1 X10 F250\nG0 X50\nG1 X60');
+    expect(segments.map((s) => s.f)).toEqual([250, 250, 250]);
+  });
+
+  it('has no feed to report before the program states one', () => {
+    const { segments } = interpret('G21 G90\nS1000 M03\nG0 X50');
+    expect(segments[0].f).toBe(0);
+    expect(segments[0].rpm).toBe(1000);
+  });
+
+  it('reports a lathe feed in mm/min but says it was programmed per rev', () => {
+    // F0.15 at 1200 rpm: the stored rate is what the time is built from, and
+    // `fm` is what lets the readout turn it back into the 0.15 that was typed.
+    const src = 'G21 G18 G99\nG97 S1200 M03\nG00 X30. Z2.\nG01 Z-10. F0.15';
+    const { segments } = interpret(src, { mode: 'turn', diameterMode: true });
+    const cut = segments[segments.length - 1];
+    expect(cut.fm).toBe(95);
+    expect(cut.rpm).toBe(1200);
+    expect(cut.f).toBeCloseTo(0.15 * 1200, 6);
+  });
+
+  it('posts the rpm G96 is actually chasing, not its S word', () => {
+    const src = 'G21 G18 G99\nG96 S200 M03\nG00 X30. Z2.\nG01 Z-10. F0.2';
+    const { segments } = interpret(src, { mode: 'turn', diameterMode: true });
+    // Ø30 at 200 m/min: 1000·200/(π·30) ≈ 2122 rpm.
+    expect(segments[segments.length - 1].rpm).toBeCloseTo(2122, 0);
+  });
+
+  it('agrees with the cycle time it was measured from', () => {
+    const { segments } = interpret('G21 G90\nG1 X100 F400');
+    const cut = segments[segments.length - 1];
+    expect(cut.t).toBeCloseTo((100 / cut.f) * 60, 9);
+  });
+});
+
 describe('parseToolTable — the tool a program says it is using', () => {
   it('reads the comment on the tool-change line', () => {
     const t = parseToolTable('T3(ENDMILL D7 L48-54 - ROUGH B2)\nM6');

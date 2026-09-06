@@ -1001,6 +1001,7 @@ describe('camPlanStore — saving and restoring the whole setup', () => {
     // Either it decodes to garbage that weld survives, or it errors — but it
     // must never throw out of the store. A null return with an error status is
     // the contract.
+    // eslint-disable-next-line jest/no-conditional-expect
     if (mode === null) expect(store().status).toBe('error');
   });
 });

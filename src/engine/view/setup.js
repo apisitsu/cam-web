@@ -58,7 +58,12 @@ export function fitBoundsForPart(mode, partBounds) {
   const min = [...partBounds.min];
   const max = [...partBounds.max];
   if (mode === 'turn') {
-    const r = Math.max(Math.abs(max[TURN_RADIAL]), Math.abs(min[TURN_RADIAL]), 1) * 1.4;
+    // Symmetric about the spindle, with a little air — no more. The 40% the
+    // padding used to add was unexplained and it showed: a short fat part
+    // filled 71% of the height it was framed to and read as zoomed too far out.
+    // A *program* keeps its wider padding (`fitBoundsFor`), where the tool
+    // genuinely moves outside the part; a model on its own has no tool yet.
+    const r = Math.max(Math.abs(max[TURN_RADIAL]), Math.abs(min[TURN_RADIAL]), 1) * 1.05;
     min[0] = -r; max[0] = r;
     min[1] = -r; max[1] = r;
   }

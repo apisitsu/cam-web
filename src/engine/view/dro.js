@@ -206,23 +206,34 @@ export function droTool({
 /**
  * The FEED field: the rate the move in progress is running at.
  *
- * Posted in the units it was **programmed** in, which is the whole difficulty.
- * The interpreter converts everything to mm/min because that is what a cycle
- * time is built from, but a lathe under G95/G99 is programmed in mm per rev —
- * `F0.15` — and posting the 180 mm/min that works out to at 1200 rpm would be a
- * number nobody typed and nobody can check against the program. So a per-rev
- * feed is converted back through the rpm it was multiplied by.
+ * **Always mm/min**, milling and turning alike, because that is the number an
+ * operator can compare with anything else on the screen — the cycle time, the
+ * other operations, the feed the machine beside it is running. A lathe under
+ * G95/G99 is *programmed* in mm per rev (`F0.15`), and this used to post that
+ * unit on turning; the trouble is that 0.15 and 850 sitting in the same field on
+ * different jobs are not comparable quantities, and the field gives no warning
+ * which one it is holding.
+ *
+ * The programmed figure is not thrown away, because it is the only one that can
+ * be checked against the program text: it comes back as `note`, which the
+ * readout prints under the rate. So both questions are answerable — *what is it
+ * doing* from the field, *what was it told* from the note.
  *
  * @param {{feed?:number, rpm?:number, feedMode?:number}} running from `runningAt`
- * @returns {{text:string, unit:string}} `—` before the program's first F word,
- *   the same as a control that has not been told a feed yet.
+ * @returns {{text:string, unit:string, note:string|null}} `—` before the
+ *   program's first F word, the same as a control that has not been told a feed
+ *   yet. `note` is the programmed per-rev feed, or null when there isn't one.
  */
 export function droFeed({ feed = 0, rpm = 0, feedMode = 0 } = {}) {
-  if (!(feed > 0)) return { text: '—', unit: '' };
-  if (feedMode === 95 && rpm > 0) {
-    return { text: trim(feed / rpm, 4), unit: 'mm/rev' };
-  }
-  return { text: trim(feed, feed < 10 ? 2 : 0), unit: 'mm/min' };
+  if (!(feed > 0)) return { text: '—', unit: '', note: null };
+  // Only under G95/G99 with the spindle turning is there a per-rev feed to
+  // report: `feed` is already mm/min, having been multiplied by that same rpm.
+  const perRev = feedMode === 95 && rpm > 0 ? `${trim(feed / rpm, 4)} mm/rev` : null;
+  return {
+    text: trim(feed, feed < 10 ? 2 : 0),
+    unit: 'mm/min',
+    note: perRev,
+  };
 }
 
 /**

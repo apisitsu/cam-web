@@ -9,17 +9,35 @@
  */
 import { useMemo, useEffect, useRef } from 'react';
 import { Line, Html } from '@react-three/drei';
-import { invalidate, useFrame } from '@react-three/fiber';
+import { invalidate, useFrame, useThree } from '@react-three/fiber';
 import * as THREE from 'three';
 import { useSketchStore } from '../stores/sketchStore.js';
 import { dimensionAnnotations } from '../engine/sketch/annotations.js';
+import { polygonPreview, slotPreview, axisDistance } from '../engine/sketch/shapes.js';
+import { tessellateArc, CHORD_TOL } from '../engine/sketch/loops.js';
+import { planeMatrix } from '../engine/sketch/plane.js';
+import { CAD } from '../theme.js';
+
+/**
+ * A preview only when there is something to draw.
+ *
+ * A drei `<Line>` with fewer than two points throws: `LineGeometry.setPositions`
+ * sizes a `Float32Array` at `count - 6` and asks for a negative length. An empty
+ * array is *truthy*, so `{preview && <Line …/>}` does not catch it — and the
+ * slot preview is legitimately empty whenever the cursor sits on the slot's own
+ * axis, which is most of the time while the third click is being aimed.
+ */
+const drawable = (pts) => (Array.isArray(pts) && pts.length >= 2 ? pts : null);
 
 const noRaycast = () => null;
 const Z = 0.05; // lift a hair above the Z=0 pick plane to avoid z-fighting
-const PREVIEW = '#f59e0b'; // amber rubber-band while drawing
-const SNAP_COLOR = '#f0abfc'; // magenta snap indicator (vertex / rim)
-const TANGENT_COLOR = '#34d399'; // green — tangent snap indicator
-const AXIS_COLOR = '#22d3ee'; // cyan — angle-lock guide axis
+const PREVIEW = CAD.skPreview; // amber rubber-band while drawing
+const SNAP_COLOR = CAD.skSnap; // magenta snap indicator (vertex / rim)
+const TANGENT_COLOR = CAD.skTangent; // green — tangent snap indicator
+const INTERSECT_COLOR = CAD.skIntersect; // gold — two curves crossing
+const QUADRANT_COLOR = CAD.skQuadrant; // violet — circle/arc quadrant (high point)
+const MIDPOINT_COLOR = CAD.skMidpoint; // blue — line-segment midpoint
+const AXIS_COLOR = CAD.skAxis; // cyan — angle-lock guide axis
 
 // Unit circle in the XY plane (local coords), for the screen-scaled snap ring.
 const UNIT_RING = (() => {
@@ -46,42 +64,78 @@ function ScreenRing({ x, y, color, pixels = 10 }) {
     </group>
   );
 }
-const CONSTRUCTION = '#94a3b8'; // slate — construction (reference) geometry, drawn dashed
-const HOVER = '#fbbf24'; // amber pre-select highlight (the entity a click will pick)
-const SELECTED = '#f43f5e'; // red selected highlight
-const GEOM = '#38bdf8'; // default geometry colour
-const ANGLE_BASE = '#22d3ee'; // cyan — the fixed reference line of an angle dimension
-const ANGLE_ROTATE = '#f59e0b'; // amber — the line the angle rotates
+
+// Vertex marker radius in *screen pixels*, so a dot reads about as heavy as a
+// line (drei `<Line lineWidth>` is pixels too) at any zoom. The dots used to be
+// a fixed model-space sphere — 0.8 mm radius — which on a ~15 mm profile drew a
+// blob that buried the geometry. `pixels / zoom` world units, rescaled per frame
+// like ScreenRing, keeps them constant on screen. Emphasised (selected / hover /
+// pending / origin) a bit larger so a point stays easy to grab for a drag.
+const VERTEX_PX = 2.2;
+const VERTEX_PX_EMPH = 3.6;
+
+/** A sketch vertex dot at a constant on-screen size (see VERTEX_PX). */
+function Vertex({ x, y, color, pixels, pickable, onPointerDown, onClick }) {
+  const ref = useRef();
+  useFrame(({ camera }) => {
+    if (ref.current) ref.current.scale.setScalar(pixels / (camera.zoom || 1));
+  });
+  return (
+    <mesh
+      ref={ref}
+      position={[x, y, Z]}
+      raycast={pickable ? undefined : noRaycast}
+      onPointerDown={onPointerDown}
+      onClick={onClick}
+    >
+      <sphereGeometry args={[1, 16, 16]} />
+      <meshBasicMaterial color={color} />
+    </mesh>
+  );
+}
+const CONSTRUCTION = CAD.skConstruction; // slate — construction (reference) geometry, drawn dashed
+const HOVER = CAD.skHover; // amber pre-select highlight (the entity a click will pick)
+const SELECTED = CAD.skSelected; // green selected highlight (SolidWorks' own)
+const GEOM = CAD.skUnder; // default geometry colour
+const ANGLE_BASE = CAD.skAxis; // cyan — the fixed reference line of an angle dimension
+const ANGLE_ROTATE = CAD.skPreview; // amber — the line the angle rotates
 
 const TWO_PI = Math.PI * 2;
-const norm = (a) => ((a % TWO_PI) + TWO_PI) % TWO_PI;
-
-/** Polyline sweeping counter-clockwise from angle a0 to a1 (planegcs arc order). */
-function arcRing(cx, cy, r, a0, a1, segs = 48) {
-  const span = norm(a1 - a0) || TWO_PI;
+/**
+ * Polyline sweeping counter-clockwise from a0 to a1 (planegcs arc order), lifted
+ * to the sketch layer's Z.
+ *
+ * Delegates to the **same** `tessellateArc` the geometry uses, rather than
+ * splitting the sweep into a fixed number of segments as this did before. Two
+ * copies at different fidelities meant the screen and the solid disagreed, and
+ * they disagreed most where it matters: at R200 a fixed 64 segments strays
+ * 0.24 mm from the true arc while the geometry stays within 0.01 mm. The
+ * operator decides from the picture, so the picture has to be the thing that
+ * gets cut.
+ */
+function arcRing(cx, cy, r, a0, a1, chordTol = CHORD_TOL) {
+  const flat = tessellateArc(cx, cy, r, a0, a1, chordTol);
   const pts = [];
-  for (let i = 0; i <= segs; i++) {
-    const a = a0 + (span * i) / segs;
-    pts.push([cx + r * Math.cos(a), cy + r * Math.sin(a), Z]);
-  }
+  for (let i = 0; i < flat.length; i += 2) pts.push([flat[i], flat[i + 1], Z]);
   return pts;
 }
 
-const DIM_COLOR = '#facc15'; // yellow — placed dimensions (witness/dimension lines)
+const DIM_COLOR = CAD.skDim; // near-black — placed dimensions (witness/dimension lines)
 const dimLabelStyle = {
-  color: '#fde68a', background: 'rgba(15,23,42,0.85)', border: '1px solid #a16207',
+  color: CAD.skDim, background: CAD.glassSolid, border: `1px solid ${CAD.border}`,
   borderRadius: 4, font: '600 11px monospace', padding: '0 4px',
   whiteSpace: 'nowrap', userSelect: 'none',
-  // Pointer events on so a dimension label is double-clickable to edit its value;
-  // the label is small and stood off from the geometry, so picking is unaffected.
-  pointerEvents: 'auto', cursor: 'pointer',
+  // Pointer events on so a dimension label is double-clickable to edit its value
+  // and can be dragged to reposition the whole dimension; the label is small and
+  // stood off from the geometry, so picking the sketch under it is unaffected.
+  pointerEvents: 'auto', cursor: 'move',
 };
 
 /** Live angle/length readout shown at the line rubber-band's tip while drawing. */
 const angleReadoutStyle = (locked) => ({
-  color: locked ? '#0f172a' : '#e2e8f0',
-  background: locked ? AXIS_COLOR : 'rgba(15,23,42,0.9)',
-  border: `1px solid ${locked ? AXIS_COLOR : '#475569'}`,
+  color: locked ? CAD.surface : CAD.text,
+  background: locked ? AXIS_COLOR : CAD.glassSolid,
+  border: `1px solid ${locked ? AXIS_COLOR : CAD.border}`,
   borderRadius: 4, font: '600 11px monospace', padding: '1px 5px',
   whiteSpace: 'nowrap', userSelect: 'none', pointerEvents: 'none',
   transform: 'translate(12px, -18px)',
@@ -98,12 +152,15 @@ const angleReadoutStyle = (locked) => ({
  *   - angle             → an arc swept between the two legs + the degree value;
  *   - radius / lockX / lockY → a value tag on the geometry.
  * Non-dimensional constraints (horizontal, coincident, …) are not drawn here —
- * they remove DOF but aren't "sizes". Purely visual: labels use
- * `pointerEvents:none` and the lines opt out of raycasting, so picking is
- * unaffected.
+ * they remove DOF but aren't "sizes". The dimension *lines* opt out of
+ * raycasting so they never intercept a sketch pick; the *labels* do take pointer
+ * events — double-click edits the value, drag slides the whole dimension — but
+ * they are small and stood off the geometry, so picking under them still works.
  */
 function DimensionAnnotations({ sk, version }) {
   const beginEditConstraint = useSketchStore((s) => s.beginEditConstraint);
+  const setDimensionOffset = useSketchStore((s) => s.setDimensionOffset);
+  const camera = useThree((s) => s.camera);
   // The geometry is built by a pure module (`engine/sketch/annotations.js`) so
   // it can be tested without a renderer; this component only maps it to drei.
   const { segs, labels } = useMemo(
@@ -111,6 +168,43 @@ function DimensionAnnotations({ sk, version }) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
     [sk, version],
   );
+
+  // Drag a dimension label to slide the whole dimension (line + value) clear of
+  // the geometry. The pointer delta is in CSS pixels; for the orthographic
+  // sketch camera, world units = pixels / zoom (the same factor `ScreenRing`
+  // uses), and screen-Y is inverted. This holds while the sketch is viewed
+  // face-on, which is when dimensions are placed. `snapshot` only on the first
+  // move so the whole drag is one undo step; a sub-3px twitch is a mis-click and
+  // ignored, leaving the double-click-to-edit behaviour intact.
+  const drag = useRef(null);
+  const onLabelDown = (e, ci) => {
+    e.stopPropagation();
+    const base = sk.constraints[ci]?.labelOffset;
+    drag.current = {
+      ci, x: e.clientX, y: e.clientY,
+      base: Array.isArray(base) ? base : [0, 0],
+      moved: false,
+    };
+    e.currentTarget.setPointerCapture?.(e.pointerId);
+  };
+  const onLabelMove = (e) => {
+    const d = drag.current;
+    if (!d) return;
+    const dxPx = e.clientX - d.x;
+    const dyPx = e.clientY - d.y;
+    if (!d.moved && Math.hypot(dxPx, dyPx) < 3) return;
+    const z = camera?.zoom || 1;
+    setDimensionOffset(
+      d.ci,
+      [d.base[0] + dxPx / z, d.base[1] - dyPx / z],
+      { snapshot: !d.moved },
+    );
+    d.moved = true;
+  };
+  const onLabelUp = (e) => {
+    if (drag.current) e.currentTarget.releasePointerCapture?.(e.pointerId);
+    drag.current = null;
+  };
 
 
   return (
@@ -126,9 +220,13 @@ function DimensionAnnotations({ sk, version }) {
           <Html key={b.key} position={b.pos} center zIndexRange={[2, 0]}>
             <div
               style={driven
-                ? { ...dimLabelStyle, color: '#c4b5fd', borderColor: '#7c3aed', fontStyle: 'italic' }
+                ? { ...dimLabelStyle, color: CAD.skDriven, borderColor: CAD.skDriven, fontStyle: 'italic' }
                 : dimLabelStyle}
-              title={driven ? 'Driven (reference) — double-click to edit' : 'Double-click to edit'}
+              title={driven ? 'Driven (reference) — drag to move, double-click to edit' : 'Drag to move · double-click to edit'}
+              onPointerDown={(e) => onLabelDown(e, b.ci)}
+              onPointerMove={onLabelMove}
+              onPointerUp={onLabelUp}
+              onPointerCancel={onLabelUp}
               onDoubleClick={(e) => { e.stopPropagation(); beginEditConstraint(b.ci); }}
             >
               {driven ? `(${b.text})` : b.text}
@@ -140,9 +238,26 @@ function DimensionAnnotations({ sk, version }) {
   );
 }
 
+/**
+ * Sketch coordinates from a pointer event.
+ *
+ * `event.point` is in **world** space. That used to be the same thing as sketch
+ * space, because the sketch was always the Z=0 plane; now the layer sits under
+ * the active sketch's plane matrix, so a click on the front plane arrives as
+ * (x, 0, z) and reading `.x` / `.y` off it would drop the sketch's whole second
+ * axis. Asking the picked object to convert undoes exactly the transform that
+ * was applied to draw it, whatever plane that is.
+ */
+const localPoint = (e) => {
+  const p = e.point.clone();
+  return e.object?.parent ? e.object.worldToLocal(p) : p;
+};
+
 export default function SketchLayer() {
   const version = useSketchStore((s) => s.version);
   const sk = useSketchStore((s) => s.sk);
+  const sketches = useSketchStore((s) => s.sketches);
+  const activeId = useSketchStore((s) => s.activeId);
   const tool = useSketchStore((s) => s.tool);
   const selection = useSketchStore((s) => s.selection);
   const pending = useSketchStore((s) => s.pending);
@@ -155,6 +270,7 @@ export default function SketchLayer() {
   const dofState = useSketchStore((s) => s.dofState);
   const solveResult = useSketchStore((s) => s.solveResult);
   const dimensionPending = useSketchStore((s) => s.dimensionPending);
+  const polygonSides = useSketchStore((s) => s.polygonSides);
   const clickAt = useSketchStore((s) => s.clickAt);
   const hover = useSketchStore((s) => s.hover);
   const clearHover = useSketchStore((s) => s.clearHover);
@@ -167,6 +283,11 @@ export default function SketchLayer() {
   const deleteSelected = useSketchStore((s) => s.deleteSelected);
   const undo = useSketchStore((s) => s.undo);
   const redo = useSketchStore((s) => s.redo);
+  const boxSelect = useSketchStore((s) => s.boxSelect);
+  const beginBoxSelect = useSketchStore((s) => s.beginBoxSelect);
+  const updateBoxSelect = useSketchStore((s) => s.updateBoxSelect);
+  const endBoxSelect = useSketchStore((s) => s.endBoxSelect);
+  const cancelBoxSelect = useSketchStore((s) => s.cancelBoxSelect);
 
   const { points, lines, circles, arcs } = useMemo(() => {
     const pts = [];
@@ -202,7 +323,7 @@ export default function SketchLayer() {
   // Redraw on geometry change and on every pointer move (rubber-band + hover).
   useEffect(() => {
     invalidate();
-  }, [version, cursor, snap, axisSnap, lineAngle, hoverId]);
+  }, [version, cursor, snap, axisSnap, lineAngle, hoverId, boxSelect]);
 
   // Keep the pick/snap tolerance a constant ~9 px on screen (SolidWorks picks by
   // pixels, not model units): world tol = pixels / zoom, updated when zoom shifts.
@@ -222,14 +343,23 @@ export default function SketchLayer() {
   const swallowClick = useRef(false); // eat the synthetic click after a no-move grab
   useEffect(() => {
     const onUp = () => {
-      if (dragId.current == null) return;
-      const moved = endDrag();
-      if (!moved) { toggleSelect(dragId.current); swallowClick.current = true; }
-      dragId.current = null;
+      if (dragId.current != null) {
+        const moved = endDrag();
+        if (!moved) { toggleSelect(dragId.current); swallowClick.current = true; }
+        dragId.current = null;
+        return;
+      }
+      // A marquee release lands here (the drag was on the pick plane, so it never
+      // set `dragId`). `endBoxSelect` commits the selection and reports whether a
+      // real box happened, so we can eat the trailing click.
+      const st = useSketchStore.getState();
+      if (st._boxStart || st.boxSelect) {
+        if (endBoxSelect()) swallowClick.current = true;
+      }
     };
     window.addEventListener('pointerup', onUp);
     return () => window.removeEventListener('pointerup', onUp);
-  }, [endDrag, toggleSelect]);
+  }, [endDrag, toggleSelect, endBoxSelect]);
 
   // Keyboard: Esc cancels a pending draw, Delete removes the selection,
   // Ctrl/Cmd+Z undoes and Ctrl/Cmd+Y (or Shift+Z) redoes. Ignore while typing.
@@ -239,6 +369,7 @@ export default function SketchLayer() {
       if (tag === 'INPUT' || tag === 'TEXTAREA') return;
       if (e.key === 'Escape') {
         cancelPending();
+        cancelBoxSelect();
       } else if (e.key === 'Delete' || e.key === 'Backspace') {
         deleteSelected();
       } else if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'z') {
@@ -251,10 +382,10 @@ export default function SketchLayer() {
     };
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
-  }, [cancelPending, deleteSelected, undo, redo]);
+  }, [cancelPending, cancelBoxSelect, deleteSelected, undo, redo]);
 
   const drawing = tool === 'point' || tool === 'line' || tool === 'rectangle'
-    || tool === 'circle' || tool === 'arc';
+    || tool === 'circle' || tool === 'arc' || tool === 'slot' || tool === 'polygon';
   // Geometry is clickable in select/dimension (pick), trim (cut) and chamfer
   // (pick two lines) modes.
   const picking = tool === 'select' || tool === 'dimension' || tool === 'trim' || tool === 'chamfer';
@@ -262,11 +393,12 @@ export default function SketchLayer() {
   // selection — not while trimming/chamfering (both act on lines).
   const selecting = tool === 'select' || tool === 'dimension';
   const selected = new Set(selection);
-  // SolidWorks-style solve-state colouring of the geometry: under-defined stays
-  // blue (still has freedom), fully defined goes light grey (SW's "black" — done),
-  // and an over-defined/conflicting sketch goes rose. Selection/hover still win.
+  // SolidWorks' solve-state colouring of the geometry, now literally its three
+  // colours on a light ground: under-defined stays blue (still has freedom),
+  // fully defined goes black (done), and an over-defined/conflicting sketch goes
+  // red. Selection/hover still win.
   const overDefined = dofState?.state === 'over' || (solveResult && !solveResult.success && solveResult.conflicting?.length > 0);
-  const baseGeom = overDefined ? '#fb7185' : dofState?.state === 'full' ? '#d1d5db' : GEOM;
+  const baseGeom = overDefined ? CAD.skOver : dofState?.state === 'full' ? CAD.skFull : GEOM;
   // While an angle dimension is being entered, colour its base (fixed reference)
   // and rotating line distinctly so it's clear which one moves to the set angle.
   const angleBase = dimensionPending?.angular ? dimensionPending.refs[0] : null;
@@ -294,7 +426,19 @@ export default function SketchLayer() {
     }
     if (tool === 'circle') {
       const r = Math.hypot(tip.x - anchor.x, tip.y - anchor.y);
-      return arcRing(anchor.x, anchor.y, r, 0, TWO_PI, 64);
+      return arcRing(anchor.x, anchor.y, r, 0, TWO_PI);
+    }
+    if (tool === 'polygon') {
+      return drawable(polygonPreview(anchor.x, anchor.y, tip.x, tip.y, polygonSides)
+        .map(([px, py]) => [px, py, Z]));
+    }
+    if (tool === 'slot') {
+      // Click 1 done (one end of the axis): show the axis to the cursor. Click 2
+      // done: show the whole slot, its radius following the cursor off the axis.
+      if (!arcStart) return [[anchor.x, anchor.y, Z], [tip.x, tip.y, Z]];
+      const r = axisDistance(tip.x, tip.y, anchor, arcStart);
+      return drawable(slotPreview(anchor.x, anchor.y, arcStart.x, arcStart.y, r)
+        .map(([px, py]) => [px, py, Z]));
     }
     if (tool === 'arc') {
       // Click 1 done (centre = anchor): show the radius as a spoke to the cursor.
@@ -303,39 +447,63 @@ export default function SketchLayer() {
       const r = Math.hypot(arcStart.x - anchor.x, arcStart.y - anchor.y);
       const a0 = Math.atan2(arcStart.y - anchor.y, arcStart.x - anchor.x);
       const a1 = Math.atan2(tip.y - anchor.y, tip.x - anchor.x);
-      return arcRing(anchor.x, anchor.y, r, a0, a1, 48);
+      return arcRing(anchor.x, anchor.y, r, a0, a1);
     }
     return null;
-  }, [anchor, arcStart, tip, tool]);
+  }, [anchor, arcStart, tip, tool, polygonSides]);
+
+  // The whole layer is drawn in sketch coordinates and then placed by the active
+  // sketch's plane, so nothing below this line had to learn about planes: local
+  // (x, y, 0) lands wherever the plane puts it. `matrixAutoUpdate={false}` is
+  // required — three.js would otherwise recompose the matrix from the group's
+  // (untouched) position/rotation/scale on the next frame and wipe it out.
+  const planeMat = useMemo(() => {
+    const entry = sketches.find((s) => s.id === activeId) || sketches[0];
+    return new THREE.Matrix4().fromArray(planeMatrix(entry?.plane));
+  }, [sketches, activeId]);
 
   return (
-    <group>
+    <group matrix={planeMat} matrixAutoUpdate={false}>
       <DimensionAnnotations sk={sk} version={version} />
 
       {/* Pick plane. In draw mode it takes pointer-downs immediately and tracks
-          moves for the rubber-band. In pick mode (select/dimension) it handles
-          `onClick` only — a tap, not a drag — so OrbitControls still rotates the
-          view, while a tap routes through `clickAt`'s tolerant hit-tests
-          (point → line → circle within SNAP) instead of the razor-thin line ray. */}
+          moves for the rubber-band. In pick mode a tap routes through `clickAt`'s
+          tolerant hit-tests (point → line → circle within SNAP) instead of the
+          razor-thin line ray; in the Select tool a *drag* on empty space is a
+          marquee (`Viewport` turns OrbitControls' left-drag rotate off while
+          Select is active so the drag is ours). */}
       {(drawing || picking) && (
         <mesh
           onPointerDown={(e) => {
-            if (!drawing) return;
-            e.stopPropagation();
-            clickAt(e.point.x, e.point.y);
-          }}
-          onPointerMove={(e) => {
-            // A drag in progress steers the pinned point; check the store live so
-            // we never miss a move to a stale render.
-            if (useSketchStore.getState().dragging) { dragTo(e.point.x, e.point.y); return; }
-            // Track the cursor for the rubber-band (draw) and the snap indicator
-            // (both). In pick modes don't stopPropagation, so OrbitControls still
-            // rotates the view while snapping shows which point a click will grab.
             if (drawing) {
               e.stopPropagation();
-              hover(e.point.x, e.point.y);
+              const p = localPoint(e);
+              clickAt(p.x, p.y);
+              return;
+            }
+            // Arm a marquee. No stopPropagation: a bare press must still reach
+            // `onClick` for a tap-select.
+            if (tool === 'select') {
+              const p = localPoint(e);
+              beginBoxSelect(p.x, p.y);
+            }
+          }}
+          onPointerMove={(e) => {
+            const p = localPoint(e);
+            // A drag in progress steers the pinned point; check the store live so
+            // we never miss a move to a stale render.
+            if (useSketchStore.getState().dragging) { dragTo(p.x, p.y); return; }
+            // A marquee in progress grows to the cursor and owns the drag.
+            if (useSketchStore.getState()._boxStart != null) {
+              e.stopPropagation();
+              updateBoxSelect(p.x, p.y);
+              return;
+            }
+            if (drawing) {
+              e.stopPropagation();
+              hover(p.x, p.y);
             } else if (picking) {
-              hover(e.point.x, e.point.y);
+              hover(p.x, p.y);
             }
           }}
           onPointerLeave={() => clearHover()}
@@ -343,7 +511,8 @@ export default function SketchLayer() {
             if (!picking) return;
             e.stopPropagation();
             if (swallowClick.current) { swallowClick.current = false; return; }
-            clickAt(e.point.x, e.point.y);
+            const p = localPoint(e);
+            clickAt(p.x, p.y);
           }}
         >
           {/* Large enough that clicks still land on the plane when zoomed far out. */}
@@ -355,6 +524,31 @@ export default function SketchLayer() {
       {preview && (
         <Line points={preview} color={PREVIEW} lineWidth={1.5} dashed dashSize={0.8} gapSize={0.5} raycast={noRaycast} />
       )}
+
+      {/* Marquee: solid cyan for a left→right (enclose) drag, dashed green for a
+          right→left (crossing) drag — the SolidWorks convention. */}
+      {boxSelect && (() => {
+        const cross = boxSelect.x1 < boxSelect.x0;
+        return (
+          <Line
+            points={[
+              [boxSelect.x0, boxSelect.y0, Z],
+              [boxSelect.x1, boxSelect.y0, Z],
+              [boxSelect.x1, boxSelect.y1, Z],
+              [boxSelect.x0, boxSelect.y1, Z],
+              [boxSelect.x0, boxSelect.y0, Z],
+            ]}
+            color={cross ? TANGENT_COLOR : AXIS_COLOR}
+            lineWidth={1}
+            dashed={cross}
+            dashSize={1.2}
+            gapSize={0.8}
+            transparent
+            opacity={0.9}
+            raycast={noRaycast}
+          />
+        );
+      })()}
 
       {/* Angle-lock guide: a cyan axis through the anchor along the locked
           standard direction, so it's obvious the line snapped to 0/45/90/…°. */}
@@ -390,23 +584,35 @@ export default function SketchLayer() {
 
       {/* Snap indicator: a constant-screen-size ring on the point a click will
           snap to. Magenta for a vertex / rim landing; green for a tangent target
-          (drawing a line), with a small "Tangent" tag so it's unmistakable. */}
-      {(drawing || picking) && snap && (
-        <>
-          <ScreenRing x={snap.x} y={snap.y} color={snap.tangent ? TANGENT_COLOR : SNAP_COLOR} />
-          {snap.tangent && (
-            <Html position={[snap.x, snap.y, Z]} zIndexRange={[3, 0]}>
-              <div style={{
-                color: '#0f172a', background: TANGENT_COLOR, borderRadius: 4,
-                font: '600 10px monospace', padding: '0 4px', whiteSpace: 'nowrap',
-                userSelect: 'none', pointerEvents: 'none', transform: 'translate(10px, 6px)',
-              }}>
-                Tangent
-              </div>
-            </Html>
-          )}
-        </>
-      )}
+          (drawing a line); gold for two curves crossing; violet for a circle
+          quadrant; blue for a line midpoint — each with a small tag so it's
+          unmistakable. */}
+      {(drawing || picking) && snap && (() => {
+        const kind = snap.tangent ? 'Tangent'
+          : snap.intersection ? 'Intersection'
+            : snap.quadrant ? 'Quadrant'
+              : snap.midpoint ? 'Midpoint' : null;
+        const color = snap.tangent ? TANGENT_COLOR
+          : snap.intersection ? INTERSECT_COLOR
+            : snap.quadrant ? QUADRANT_COLOR
+              : snap.midpoint ? MIDPOINT_COLOR : SNAP_COLOR;
+        return (
+          <>
+            <ScreenRing x={snap.x} y={snap.y} color={color} />
+            {kind && (
+              <Html position={[snap.x, snap.y, Z]} zIndexRange={[3, 0]}>
+                <div style={{
+                  color: CAD.surface, background: color, borderRadius: 4,
+                  font: '600 10px monospace', padding: '0 4px', whiteSpace: 'nowrap',
+                  userSelect: 'none', pointerEvents: 'none', transform: 'translate(10px, 6px)',
+                }}>
+                  {kind}
+                </div>
+              </Html>
+            )}
+          </>
+        );
+      })()}
 
       {lines.map((l) => {
         const isBase = l.id === angleBase;
@@ -435,7 +641,7 @@ export default function SketchLayer() {
               if (!picking) return;
               e.stopPropagation();
               // Trim cuts the segment at the click point; select toggles the line.
-              if (tool === 'trim') clickAt(e.point.x, e.point.y);
+              if (tool === 'trim') { const p = localPoint(e); clickAt(p.x, p.y); }
               else toggleSelect(l.id);
             }}
           />
@@ -446,12 +652,7 @@ export default function SketchLayer() {
         // Outline only — the centre point already renders via the points loop.
         const isSel = selected.has(c.id);
         const isHover = picking && !isSel && hoverId === c.id;
-        const segs = 64;
-        const ring = [];
-        for (let i = 0; i <= segs; i++) {
-          const a = (i / segs) * Math.PI * 2;
-          ring.push([c.cx + c.r * Math.cos(a), c.cy + c.r * Math.sin(a), Z]);
-        }
+        const ring = arcRing(c.cx, c.cy, c.r, 0, TWO_PI);
         return (
           <Line
             key={c.id}
@@ -481,7 +682,7 @@ export default function SketchLayer() {
         return (
           <Line
             key={a.id}
-            points={arcRing(a.cx, a.cy, a.r, a.a0, a.a1, 64)}
+            points={arcRing(a.cx, a.cy, a.r, a.a0, a.a1)}
             color={isSel ? SELECTED : isHover ? HOVER : a.construction ? CONSTRUCTION : baseGeom}
             lineWidth={isSel ? 4 : isHover ? 3 : a.construction ? 1.5 : 2}
             dashed={a.construction}
@@ -534,19 +735,19 @@ export default function SketchLayer() {
         // Origin: fixed green reference point (a touch larger); still selectable
         // so you can dimension/constrain from it. Precedence: pending → selected →
         // hover (amber "lock") → origin → plain vertex.
-        const color = isPending ? '#f59e0b' : isSel ? SELECTED : isHover ? HOVER : p.origin ? '#22c55e' : '#e2e8f0';
-        const radius = p.origin ? 1.3 : isSel || isPending || isHover ? 1.3 : 0.8;
+        const color = isPending ? CAD.skPreview : isSel ? SELECTED : isHover ? HOVER : p.origin ? CAD.feed : CAD.text;
+        const pixels = p.origin || isSel || isPending || isHover ? VERTEX_PX_EMPH : VERTEX_PX;
         return (
-          <mesh
+          <Vertex
             key={p.id}
-            position={[p.x, p.y, Z]}
-            raycast={picking ? undefined : noRaycast}
+            x={p.x}
+            y={p.y}
+            color={color}
+            pixels={pixels}
+            pickable={picking}
             onPointerDown={onDown}
             onClick={onClk}
-          >
-            <sphereGeometry args={[radius, 16, 16]} />
-            <meshBasicMaterial color={color} />
-          </mesh>
+          />
         );
       })}
     </group>

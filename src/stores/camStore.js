@@ -149,12 +149,22 @@ export const useCamStore = create((set, get) => ({
   removedVolume: 0,
   totalFeeds: 0,
   cutFollowsPlayback: true, // watch the stock carve as playback runs, by default
+  // Opt-in: when on, the sim re-runs itself the moment the setup (program +
+  // billet + origin) is complete or changes. Off by default so a session that
+  // only wants the backplot never spends a worker carving. Not a saved setting —
+  // it is how you are working right now, like the view toggles below.
+  autoSimEnabled: false,
+  toggleAutoSim: () => set((s) => ({ autoSimEnabled: !s.autoSimEnabled })),
   showStock: true,
   // The arbor is the widest thing on the tool marker, so it is what hides the cut
   // being made — worth being able to drop without losing the cutter itself.
   // Deliberately not a saved setting (see projectFile's SETTING_KEYS): it is how
   // you are looking at the job right now, not part of the job.
   showArbor: true,
+  // The backplot — where the tool went. Worth being able to drop for the same
+  // reason as the arbor: on a dense program the lines cover the very surface
+  // you are trying to judge. Also not a saved setting, for the same reason.
+  showToolpath: true,
   _carving: false,
   // The feed-move target `carveToPlayhead` last actually carved to. Scrubbing
   // ticks every 40ms regardless of whether the playhead crossed a new feed
@@ -286,6 +296,7 @@ export const useCamStore = create((set, get) => ({
     });
   },
   toggleArbor: () => set((s) => ({ showArbor: !s.showArbor })),
+  toggleToolpath: () => set((s) => ({ showToolpath: !s.showToolpath })),
   setCutFollows: (v) => {
     set({ cutFollowsPlayback: v });
     if (v) get().carveToPlayhead();
@@ -538,7 +549,9 @@ export const useCamStore = create((set, get) => ({
       set({
         bufVer: get().bufVer + 1,
         simStatus: 'done',
-        showStock: true,
+        // `showStock` is the operator's view toggle, not ours to set. Forcing it
+        // on here meant auto-simulate — which fires on every program edit and
+        // every Parse — silently re-opened it after a deliberate "off".
         simReady: true,
         removedVolume: full.removedVolume ?? 0,
         removalNote: removalDiagnosis({
@@ -608,7 +621,7 @@ export const useCamStore = create((set, get) => ({
       set({
         bufVer: get().bufVer + 1,
         simStatus: 'done',
-        showStock: true,
+        // Left to the operator's toggle — see the note in `simulate`.
         simReady: true,          // scrub-able, like the height field
         // The one-shot voxel run turned this OFF, and nothing ever turned it
         // back on — so anyone who had used it got a playhead that carved
@@ -659,7 +672,7 @@ export const useCamStore = create((set, get) => ({
       set({
         bufVer: get().bufVer + 1,
         simStatus: 'done',
-        showStock: true,
+        // Left to the operator's toggle — see the note in `simulate`.
         simReady: true,        // enables cut-with-playback
         totalFeeds: init.totalFeeds,
         simMethod: 'turning',

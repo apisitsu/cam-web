@@ -66,6 +66,7 @@ afterEach(async () => {
 });
 
 async function render() {
+  // eslint-disable-next-line testing-library/no-unnecessary-act
   await act(async () => { root.render(React.createElement(CamPanel)); });
   return container;
 }
@@ -79,12 +80,14 @@ async function planned(soup) {
 
 describe('before a part arrives', () => {
   it('shows the import prompt and no machine controls', async () => {
+    // eslint-disable-next-line testing-library/render-result-naming-convention
     const el = await render();
     expect(el.textContent).toMatch(/Import a part to plan a job/);
     expect(el.textContent).not.toMatch(/Machine/);
   });
 
   it('names every format it can read, so nobody has to guess', async () => {
+    // eslint-disable-next-line testing-library/render-result-naming-convention
     const el = await render();
     for (const label of ['STL', 'OBJ', 'PLY']) {
       expect(el.textContent).toContain(label);
@@ -96,6 +99,7 @@ describe('the workflow starts at the part', () => {
   it('offers faces to pick straight after import, with no plan made', async () => {
     // No "analyse & plan" gate between importing a part and pointing at it.
     await store().loadStl(stlFile(box(60, 40, 20)));
+    // eslint-disable-next-line testing-library/render-result-naming-convention
     const el = await render();
     expect(el.textContent).toMatch(/Pick a face or edge/);
     expect(el.textContent).toMatch(/Faces \(6\)/);
@@ -104,6 +108,7 @@ describe('the workflow starts at the part', () => {
 
   it('says there are no operations yet rather than showing an empty table', async () => {
     await store().loadStl(stlFile(box(60, 40, 20)));
+    // eslint-disable-next-line testing-library/render-result-naming-convention
     const el = await render();
     expect(el.textContent).toMatch(/No operations yet/);
     expect(el.querySelector('.ant-table')).toBeNull();
@@ -113,6 +118,7 @@ describe('the workflow starts at the part', () => {
     await store().loadStl(stlFile(box(60, 40, 20)));
     const top = store().features().faces.find((f) => f.facing === 'up');
     await act(async () => { store().selectFeature(top); });
+    // eslint-disable-next-line testing-library/render-result-naming-convention
     const el = await render();
     // The buttons are icon-only now, so the command id is the handle — see
     // `engine/view/commands.js`. The *description* of what was picked is still
@@ -125,6 +131,7 @@ describe('the workflow starts at the part', () => {
   it('offers a depth and a trace button for a picked edge', async () => {
     await store().loadStl(stlFile(box(60, 40, 20)));
     await act(async () => { store().selectFeature(store().features().edges[0]); });
+    // eslint-disable-next-line testing-library/render-result-naming-convention
     const el = await render();
     expect(cmd(el, 'addEdgeOp')).toBeTruthy();
     expect(cmd(el, 'addFaceOp')).toBeNull();
@@ -134,6 +141,7 @@ describe('the workflow starts at the part', () => {
     await store().loadStl(stlFile(box(60, 40, 20)));
     const side = store().features().faces.find((f) => f.facing === 'front');
     await act(async () => { store().selectFeature(side); });
+    // eslint-disable-next-line testing-library/render-result-naming-convention
     const el = await render();
     expect(el.textContent).toMatch(/A 3-axis cutter cannot reach it/);
     expect(cmd(el, 'addFaceOp').disabled).toBe(true);
@@ -143,6 +151,7 @@ describe('the workflow starts at the part', () => {
     await store().loadStl(stlFile(box(60, 40, 20)));
     const top = store().features().faces.find((f) => f.facing === 'up');
     await act(async () => { store().addFaceStep(top.id); });
+    // eslint-disable-next-line testing-library/render-result-naming-convention
     const el = await render();
     expect(el.querySelector('.ant-table')).toBeTruthy();
     expect(el.textContent).toMatch(/Clear the picked face/);
@@ -151,6 +160,7 @@ describe('the workflow starts at the part', () => {
 
   it('keeps auto-plan available but out of the way', async () => {
     await store().loadStl(stlFile(box(60, 40, 20)));
+    // eslint-disable-next-line testing-library/render-result-naming-convention
     const el = await render();
     const auto = cmd(el, 'autoPlan');
     expect(auto).toBeTruthy();
@@ -161,6 +171,7 @@ describe('the workflow starts at the part', () => {
 describe('choosing the machine', () => {
   it('names a real machine, not just "mill" or "lathe"', async () => {
     await store().loadStl(stlFile(box(60, 40, 15)));
+    // eslint-disable-next-line testing-library/render-result-naming-convention
     const el = await render();
     expect(el.textContent).toMatch(/Machine/);
     // The selected value is rendered by make and model.
@@ -170,12 +181,14 @@ describe('choosing the machine', () => {
   it('says which control the program will be posted for', async () => {
     await store().loadStl(stlFile(box(60, 40, 15)));
     useCamPlanStore.setState({ machineId: 'haas-vf2' });
+    // eslint-disable-next-line testing-library/render-result-naming-convention
     const el = await render();
     expect(el.textContent).toMatch(/Haas · VF-2/);
     expect(el.textContent).toMatch(/posts as Haas/);
   });
 
   it('follows the part onto a lathe and shows the lathe', async () => {
+    // eslint-disable-next-line testing-library/render-result-naming-convention
     const el = await planned(turnedShaft());
     expect(store().plan.mode).toBe('turn');
     expect(el.textContent).toMatch(/2-axis CNC lathe/);
@@ -185,6 +198,7 @@ describe('choosing the machine', () => {
 
 describe('the operation table', () => {
   it('gives every operation a tool selector', async () => {
+    // eslint-disable-next-line testing-library/render-result-naming-convention
     const el = await planned(box(60, 40, 15));
     const selects = el.querySelectorAll('.ant-table-tbody .ant-select');
     expect(selects.length).toBe(store().recipe.length);
@@ -192,6 +206,7 @@ describe('the operation table', () => {
   });
 
   it('shows the tool actually in use on each row', async () => {
+    // eslint-disable-next-line testing-library/render-result-naming-convention
     const el = await planned(box(60, 40, 15));
     const rough = store().plan.steps.find((s) => s.kind === 'rough');
     expect(el.textContent).toContain(rough.tool);
@@ -205,6 +220,7 @@ describe('the operation table', () => {
   });
 
   it('offers a switch, reorder and delete on every row', async () => {
+    // eslint-disable-next-line testing-library/render-result-naming-convention
     const el = await planned(box(60, 40, 15));
     const rows = el.querySelectorAll('.ant-table-tbody tr.ant-table-row');
     expect(rows).toHaveLength(store().recipe.length);
@@ -219,12 +235,14 @@ describe('the operation table', () => {
     await planned(box(60, 40, 15));
     const rows = store().recipe.length;
     await act(async () => { store().toggleStep('face', false); });
+    // eslint-disable-next-line testing-library/render-result-naming-convention
     const el = await render();
     expect(el.querySelectorAll('.ant-table-tbody tr.ant-table-row')).toHaveLength(rows);
     expect(el.textContent).toMatch(/skipped/);
   });
 
   it('offers to add an operation and to reset the plan', async () => {
+    // eslint-disable-next-line testing-library/render-result-naming-convention
     const el = await planned(box(60, 40, 15));
     expect(el.textContent).toMatch(/Add operation/);
     // "Edited" only appears once the operator has actually changed something.
@@ -255,6 +273,7 @@ describe('stroke and axes on screen', () => {
   it('shows the chosen machine’s axis count and stroke', async () => {
     await store().loadStl(stlFile(box(60, 40, 15)));
     useCamPlanStore.setState({ machineId: 'haas-vf2' });
+    // eslint-disable-next-line testing-library/render-result-naming-convention
     const el = await render();
     expect(el.textContent).toMatch(/3-axis \(XYZ\)/);
     expect(el.textContent).toMatch(/stroke 762 × 406 × 508 mm/);
@@ -263,6 +282,7 @@ describe('stroke and axes on screen', () => {
   it('shows a lathe’s two strokes and its swing, not a fake Y', async () => {
     await store().loadStl(stlFile(turnedShaft()));
     useCamPlanStore.setState({ machineId: 'haas-st20' });
+    // eslint-disable-next-line testing-library/render-result-naming-convention
     const el = await render();
     expect(el.textContent).toMatch(/2-axis \(XZ\)/);
     expect(el.textContent).toMatch(/stroke 209 × 559 mm/);
@@ -272,11 +292,13 @@ describe('stroke and axes on screen', () => {
   it('counts the spare axes on a 5-axis machine', async () => {
     await store().loadStl(stlFile(box(60, 40, 15)));
     useCamPlanStore.setState({ machineId: 'dmgmori-dmu50' });
+    // eslint-disable-next-line testing-library/render-result-naming-convention
     const el = await render();
     expect(el.textContent).toMatch(/5-axis \(XYZ\+BC\)/);
   });
 
   it('reports what the program itself needs once planned', async () => {
+    // eslint-disable-next-line testing-library/render-result-naming-convention
     const el = await planned(box(60, 40, 15));
     expect(el.textContent).toMatch(/3-axis program \(XYZ\)/);
     // ...and how much of each stroke it eats.
@@ -289,6 +311,7 @@ describe('stroke and axes on screen', () => {
     await store().loadStl(stlFile(box(500, 200, 10)));
     await act(async () => { await store().makePlan(); });
     await act(async () => { store().setMachine('haas-minimill'); });
+    // eslint-disable-next-line testing-library/render-result-naming-convention
     const el = await render();
     expect(el.textContent).toMatch(/travel/);
   });
@@ -368,12 +391,14 @@ describe('indexing and picking, on screen', () => {
   });
 
   it('lists the faces and edges of the part to pick from', async () => {
+    // eslint-disable-next-line testing-library/render-result-naming-convention
     const el = await planned(box(60, 40, 20));
     expect(el.textContent).toMatch(/Faces \(6\)/);
     expect(el.textContent).toMatch(/Edges \(\d+\)/);
   });
 
   it('offers nothing to pick on a lathe job', async () => {
+    // eslint-disable-next-line testing-library/render-result-naming-convention
     const el = await planned(turnedShaft());
     expect(el.textContent).not.toMatch(/Faces \(/);
   });
@@ -407,10 +432,20 @@ describe('indexing and picking, on screen', () => {
     const total = store().features().faces.length;
     expect(total).toBeGreaterThan(FEATURE_LIST_LIMIT);
 
+    // eslint-disable-next-line testing-library/render-result-naming-convention
     const el = await render();
     // The header still reports the true total, so nothing is hidden from the
-    // count — only from the rendered rows.
+    // count — only from the rendered rows. It reads without opening anything,
+    // which is the whole reason the panel can start closed.
     expect(el.textContent).toMatch(new RegExp(`Faces \\(${total}\\)`));
+
+    // The list is collapsed by default now — the model is where picking
+    // happens. Open it: what is inside still has to be capped and still has to
+    // account for the overflow.
+    const facesHeader = [...el.querySelectorAll('.ant-collapse-header')]
+      .find((h) => /^Faces \(/.test(h.textContent.trim()));
+    expect(facesHeader).toBeTruthy();
+    await act(async () => { facesHeader.click(); });
 
     // Every drawn row carries a face tag (F0, F1, …); there must be no more of
     // them than the cap, however many faces the part has.

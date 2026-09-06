@@ -117,10 +117,21 @@ export const EMPTY_VIEW_HALF_SPAN = 80;
  * an out-of-plane dimension (a 4-axis part's rotated retracts) shrink the part to
  * a sliver.
  *
+ * ## The fit is to the *visible* rectangle, not the canvas
+ *
+ * The rail, the readout and the panels float **over** the canvas, so fitting to
+ * the full canvas put geometry underneath them: at a 1.08 margin the box fills
+ * 86–93% of the frame and the overlays cover more than the 4% of edge that
+ * leaves. `inset` is how many pixels each side is covered; the zoom is taken
+ * from what is left, and the look-at point is shifted so the geometry centres in
+ * the *visible* middle rather than the canvas middle — otherwise a left-hand
+ * panel would still clip it, only at a smaller size.
+ *
  * @param {{min:number[],max:number[]}|null} bounds
  * @param {{width:number,height:number}} canvas  canvas size in pixels
+ * @param {{margin?:number, inset?:{left?:number,right?:number,top?:number,bottom?:number}}} [opts]
  */
-export function framing(mode, view, bounds, canvas, { margin = 1.08 } = {}) {
+export function framing(mode, view, bounds, canvas, { margin = 1.08, inset } = {}) {
   const D = EMPTY_VIEW_HALF_SPAN;
   const min = bounds?.min ?? [-D, -D, 0];
   const max = bounds?.max ?? [D, D, 0];
@@ -140,18 +151,43 @@ export function framing(mode, view, bounds, canvas, { margin = 1.08 } = {}) {
       }
     }
   }
+  // What is left of the canvas once the floating chrome is discounted. Never let
+  // the overlays claim so much that nothing is left to fit into — a rail on a
+  // very short viewport would otherwise drive the zoom to nothing.
+  const pad = {
+    left: Math.max(0, inset?.left ?? 0),
+    right: Math.max(0, inset?.right ?? 0),
+    top: Math.max(0, inset?.top ?? 0),
+    bottom: Math.max(0, inset?.bottom ?? 0),
+  };
+  const view0 = {
+    w: Math.max(canvas.width - pad.left - pad.right, canvas.width * 0.35),
+    h: Math.max(canvas.height - pad.top - pad.bottom, canvas.height * 0.35),
+  };
+
   // R3F sizes an ortho frustum to the canvas pixels at zoom 1, so the visible
   // world span is (pixels / zoom). Take the zoom that fits both screen axes.
   const zoom = Math.max(
-    Math.min(canvas.width / (2 * hw * margin), canvas.height / (2 * hh * margin)),
+    Math.min(view0.w / (2 * hw * margin), view0.h / (2 * hh * margin)),
     1e-3,
   );
+
+  // The visible rectangle's middle, in pixels from the canvas middle. Shifting
+  // the look-at point by the same amount the other way puts the geometry there.
+  // `dy` is measured downward, which is why it is subtracted from the up axis.
+  const dx = (pad.left - pad.right) / 2;
+  const dy = (pad.top - pad.bottom) / 2;
+  const target = [0, 1, 2].map((i) => center[i] - right[i] * (dx / zoom) + up[i] * (dy / zoom));
+
   // Distance is irrelevant to ortho scale — only push far enough that the whole
   // scene sits inside a generous [near, far] slab, so zoom/orbit never clips.
   const distance = radius * 3 + 100;
   return {
-    center, dir, right, up, zoom, radius, distance,
-    position: [0, 1, 2].map((i) => center[i] + dir[i] * distance),
+    // `center` is the box's own centre; `target` is where the camera looks, and
+    // they differ by whatever the overlays cover. Callers aiming the camera want
+    // `target`; anything measuring the geometry wants `center`.
+    center, target, dir, right, up, zoom, radius, distance,
+    position: [0, 1, 2].map((i) => target[i] + dir[i] * distance),
     near: 0.1,
     far: distance + radius * 3 + 1000,
   };

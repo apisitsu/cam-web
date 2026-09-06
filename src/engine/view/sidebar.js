@@ -25,7 +25,10 @@ export const SECTIONS = [
   'program',   // the program listing — the live one
   'errors',    // parse failure
   'machine',   // rapid rate, lathe diameter switch
-  'stats',     // cycle time and lengths
+  // 'stats' was here — cycle time and the lengths now float over the viewport
+  // (`engine/view/programStats.js`), because the drawer they lived in covers the
+  // simulation they are read against. Nothing in the sidebar gates on them, so the
+  // name is gone rather than left answering for a block that no longer exists.
   'warnings',  // interpreter warnings
   'tools',     // the tool table
   'removal',   // material-removal / simulate controls

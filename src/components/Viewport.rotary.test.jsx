@@ -40,8 +40,10 @@ function mount(extra = {}) {
   );
 }
 
+// eslint-disable-next-line testing-library/await-async-query
 const group = (r, name) => r.scene.findAllByType('Group')
   .find((g) => g.instance.name === name)?.instance;
+// eslint-disable-next-line testing-library/await-async-query
 const flutes = (r) => r.scene.findAllByType('Mesh')
   .find((m) => m.instance.name === 'tool-flutes')?.instance;
 

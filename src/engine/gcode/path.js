@@ -13,9 +13,11 @@
  *   positions: 6 floats per segment (ax,ay,az,bx,by,bz)
  *   types: 0 = rapid, 1 = feed
  *   feedPrefix: feedPrefix[i] = number of feed segments in [0, i]
- *   feedPrefixAt: Map<aIndex, Uint32Array> — the same running count, split per
- *     rotary index, so `feedsBeforeAt` (called once per playback tick) is a
- *     lookup instead of a rescan — see that function.
+ *   feedPrefixAt: Map<aIndex, Uint32Array> — the segment positions of that
+ *     index's feed moves, ascending, so `feedsBeforeAt` (called once per
+ *     playback tick) is a binary search instead of a rescan. Positions and not a
+ *     running count because a continuously rotating A makes nearly every block
+ *     its own index — see `feedPositionsByIndex`.
  *   lines: lines[i] = 1-based source line number that produced segment i
  *   blockEnd: blockEnd[i] = index of the last segment of the *block* segment i
  *     belongs to — a block being one source line, which an arc or a helix
@@ -65,7 +67,7 @@ export function buildPath(segments) {
   return {
     positions, types, feedPrefix, lines, timePrefix, rotary, rotaryB, tools,
     rates, rpms, feedModes,
-    feedPrefixAt: feedPrefixByIndex(types, rotary, n),
+    feedPrefixAt: feedPositionsByIndex(types, rotary, n),
     blockEnd: blockEnds(lines, n),
     totalTime: elapsed,
     count: n,
@@ -133,25 +135,50 @@ export function prevBlockStart(path, k) {
 }
 
 /**
- * Per rotary index, a running count of feed segments — the same shape as
- * `feedPrefix` above, just split by `rotary[i]`.
+ * Per rotary index, **where** its feed segments are — ascending segment
+ * positions, one entry per feed move at that index.
  *
- * Every known index's array has to carry its count forward at every `i`, not
- * just where that index is actually machining, or a lookup at an index this
- * segment isn't at would read a stale zero instead of its running total.
- * The number of distinct indices in a real program is small (four quarters,
- * six sixths — the presets in `rotate.js`), so this one-time pass costs a
- * small constant factor over a single scan, in exchange for turning every
- * later `feedsBeforeAt` call — one per playback tick — into O(1).
+ * ## Why this is not a prefix array any more
+ *
+ * It was: one `Uint32Array(n)` per distinct index, each carrying that index's
+ * running count forward at every `i`, which made `feedsBeforeAt` a single array
+ * read. That rested on an assumption written into its own comment — *"the number
+ * of distinct indices in a real program is small (four quarters, six sixths)"* —
+ * and a **continuously rotating 4th axis breaks it completely**. `A` is not
+ * normalised (a rotary engraving winds on to A3600 and beyond), so nearly every
+ * block is its own index: memory and build time both went quadratic in the
+ * program's length. Measured: 2,000 blocks cost 15 MB, 4,000 cost 61 MB, and a
+ * real 50,000-segment program asks for about 10 GB — which is exactly the
+ * *"Parse failed — Array buffer allocation failed"* it produced.
+ *
+ * Storing positions instead makes the total exactly the number of feed segments,
+ * whatever the indices do: one entry each, never a full-length array per index.
+ * `feedsBeforeAt` becomes a binary search — O(log) rather than O(1), which is
+ * nothing at one call per playback tick, and is the trade that stops the parse
+ * failing outright.
  */
-function feedPrefixByIndex(types, rotary, n) {
-  const byIndex = new Map();
-  const running = new Map();
+function feedPositionsByIndex(types, rotary, n) {
+  // Count first so each index's array is allocated exactly once at its real
+  // size — the growable-array version of this is what the old code's memory
+  // profile is a warning about.
+  const counts = new Map();
   for (let i = 0; i < n; i++) {
+    if (types[i] !== 1) continue;
     const a = rotary[i];
-    if (!byIndex.has(a)) byIndex.set(a, new Uint32Array(n));
-    if (types[i] === 1) running.set(a, (running.get(a) || 0) + 1);
-    for (const [idx, arr] of byIndex) arr[i] = running.get(idx) || 0;
+    counts.set(a, (counts.get(a) || 0) + 1);
+  }
+  const byIndex = new Map();
+  const fill = new Map();
+  for (const [a, c] of counts) {
+    byIndex.set(a, new Uint32Array(c));
+    fill.set(a, 0);
+  }
+  for (let i = 0; i < n; i++) {
+    if (types[i] !== 1) continue;
+    const a = rotary[i];
+    const at = fill.get(a);
+    byIndex.get(a)[at] = i;
+    fill.set(a, at + 1);
   }
   return byIndex;
 }
@@ -211,15 +238,26 @@ export function feedsBefore(path, k) {
  * run. The simulator only carves one index, so this — not feedsBefore — is what
  * maps the playhead onto its cursor.
  *
- * A lookup into `feedPrefixAt` (built once in `buildPath`), not a rescan —
- * this runs once per playback tick, so an O(k) scan here made a long 4-axis
- * program's simulation get slower and slower as the playhead advanced.
+ * A binary search over that index's feed positions (built once in `buildPath`),
+ * not a rescan — this runs once per playback tick, and an O(k) scan here made a
+ * long 4-axis program's simulation get slower and slower as the playhead
+ * advanced. See `feedPositionsByIndex` for why it is positions and not a running
+ * count.
  */
 export function feedsBeforeAt(path, k, aIndex) {
   const kk = Math.max(0, Math.min(k, path.count));
   if (kk === 0) return 0;
   const arr = path.feedPrefixAt?.get(aIndex);
-  return arr ? arr[kk - 1] : 0;
+  if (!arr || arr.length === 0) return 0;
+  // How many recorded positions are < kk — i.e. how many of this index's feed
+  // moves are already behind the playhead.
+  let lo = 0;
+  let hi = arr.length;
+  while (lo < hi) {
+    const mid = (lo + hi) >> 1;
+    if (arr[mid] < kk) lo = mid + 1; else hi = mid;
+  }
+  return lo;
 }
 
 /**

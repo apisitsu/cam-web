@@ -281,6 +281,7 @@ describe('a twist drill leaves a point, not a flat floor', () => {
     // A reamer sizes a hole that is already there, a tap threads one, a boring
     // bar opens one out. None of them leaves a drill point.
     for (const type of ['reamer', 'tap', 'bore']) {
+      // eslint-disable-next-line jest/valid-expect
       expect(cutterFromType(type), type).toBe(null);
     }
   });

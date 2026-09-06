@@ -1170,6 +1170,202 @@ export function circleIntersections(sk, cx, cy, r, selfId) {
   return out;
 }
 
+/** The curve a line/circle/arc entity traces, in a form the intersection maths wants. */
+function curveOf(sk, e) {
+  if (!e) return null;
+  if (e.type === 'line') {
+    const a = sk.entities.get(e.p1);
+    const b = sk.entities.get(e.p2);
+    return a && b ? { kind: 'seg', a, b } : null;
+  }
+  const c = sk.entities.get(e.center);
+  if (!c) return null;
+  if (e.type === 'circle') return { kind: 'circle', cx: c.x, cy: c.y, r: e.r };
+  if (e.type === 'arc') return { kind: 'arc', cx: c.x, cy: c.y, r: e.r, ent: e };
+  return null;
+}
+
+/**
+ * Every point where two entities (lines, circles, arcs) actually cross —
+ * segments respect their endpoints, arcs their swept span. 0–2 points.
+ */
+export function entityIntersections(sk, e1, e2) {
+  const c1 = curveOf(sk, e1);
+  const c2 = curveOf(sk, e2);
+  if (!c1 || !c2) return [];
+
+  if (c1.kind === 'seg' && c2.kind === 'seg') {
+    const p = segIntersect(c1.a, c1.b, c2.a, c2.b);
+    return p ? [{ x: p.x, y: p.y }] : [];
+  }
+
+  // seg × (circle | arc)
+  const seg = c1.kind === 'seg' ? c1 : c2.kind === 'seg' ? c2 : null;
+  if (seg) {
+    const cir = seg === c1 ? c2 : c1;
+    const out = [];
+    for (const t of lineCircleParams(seg.a, seg.b, cir.cx, cir.cy, cir.r)) {
+      if (t < -1e-9 || t > 1 + 1e-9) continue;
+      const x = seg.a.x + (seg.b.x - seg.a.x) * t;
+      const y = seg.a.y + (seg.b.y - seg.a.y) * t;
+      if (cir.kind === 'arc' && !arcSpanContains(sk, cir.ent, x, y)) continue;
+      out.push({ x, y });
+    }
+    return out;
+  }
+
+  // (circle | arc) × (circle | arc)
+  const out = [];
+  for (const p of circleCircleInts(c1.cx, c1.cy, c1.r, c2.cx, c2.cy, c2.r)) {
+    if (c1.kind === 'arc' && !arcSpanContains(sk, c1.ent, p.x, p.y)) continue;
+    if (c2.kind === 'arc' && !arcSpanContains(sk, c2.ent, p.x, p.y)) continue;
+    out.push(p);
+  }
+  return out;
+}
+
+/** Does segment a–b cross the axis-aligned box [xmin,ymin]–[xmax,ymax]? (Endpoints inside count.) */
+function segCrossesBox(a, b, xmin, ymin, xmax, ymax) {
+  const inBox = (p) => p.x >= xmin && p.x <= xmax && p.y >= ymin && p.y <= ymax;
+  if (inBox(a) || inBox(b)) return true;
+  const c = [
+    { x: xmin, y: ymin }, { x: xmax, y: ymin }, { x: xmax, y: ymax }, { x: xmin, y: ymax },
+  ];
+  for (let i = 0; i < 4; i += 1) {
+    if (segIntersect(a, b, c[i], c[(i + 1) % 4])) return true;
+  }
+  return false;
+}
+
+/**
+ * Ids of the entities a rubber-band box picks. `crossing` false (a left→right
+ * drag) takes only entities **fully enclosed**; true (right→left) also takes
+ * anything the box merely touches — the SolidWorks window / crossing rule.
+ *
+ * A point that anchors a curve (an endpoint, a centre) is structural, not free
+ * geometry — picking it alongside its curve is noise — so only a genuinely
+ * loose point is marquee-picked, and never the origin or a construction sharp.
+ */
+export function entitiesInBox(sk, x0, y0, x1, y1, { crossing = false } = {}) {
+  const xmin = Math.min(x0, x1);
+  const xmax = Math.max(x0, x1);
+  const ymin = Math.min(y0, y1);
+  const ymax = Math.max(y0, y1);
+  const inBox = (px, py) => px >= xmin && px <= xmax && py >= ymin && py <= ymax;
+  const P = (id) => sk.entities.get(id);
+  const anchored = new Set();
+  for (const e of sk.entities.values()) {
+    if (e.type === 'line') { anchored.add(e.p1); anchored.add(e.p2); }
+    else if (e.type === 'circle') anchored.add(e.center);
+    else if (e.type === 'arc') { anchored.add(e.center); anchored.add(e.start); anchored.add(e.end); }
+  }
+  const out = [];
+  for (const e of sk.entities.values()) {
+    if (e.type === 'point') {
+      if (e.origin || e.construction || anchored.has(e.id)) continue;
+      if (inBox(e.x, e.y)) out.push(e.id);
+    } else if (e.type === 'line') {
+      const a = P(e.p1);
+      const b = P(e.p2);
+      if (!a || !b) continue;
+      const enclosed = inBox(a.x, a.y) && inBox(b.x, b.y);
+      if (enclosed || (crossing && segCrossesBox(a, b, xmin, ymin, xmax, ymax))) out.push(e.id);
+    } else if (e.type === 'circle' || e.type === 'arc') {
+      const c = P(e.center);
+      if (!c) continue;
+      const bx0 = c.x - e.r;
+      const bx1 = c.x + e.r;
+      const by0 = c.y - e.r;
+      const by1 = c.y + e.r;
+      const enclosed = bx0 >= xmin && bx1 <= xmax && by0 >= ymin && by1 <= ymax;
+      const touches = bx0 <= xmax && bx1 >= xmin && by0 <= ymax && by1 >= ymin;
+      if (enclosed || (crossing && touches)) out.push(e.id);
+    }
+  }
+  return out;
+}
+
+/**
+ * The crossing point of two distinct entities nearest to (x, y), within `tol`,
+ * or null — the "intersection snap". A click on it lands exactly on the
+ * crossing; unlike the vertex / rim / tangent snaps it is where two *different*
+ * curves meet, whether or not a point was ever placed there.
+ *
+ * `skipId` drops one entity from the search (e.g. the one being drawn).
+ */
+export function nearestIntersection(sk, x, y, tol, skipId = null) {
+  const ents = [...sk.entities.values()].filter(
+    (e) => (e.type === 'line' || e.type === 'circle' || e.type === 'arc') && e.id !== skipId,
+  );
+  let best = null;
+  for (let i = 0; i < ents.length; i += 1) {
+    for (let j = i + 1; j < ents.length; j += 1) {
+      for (const p of entityIntersections(sk, ents[i], ents[j])) {
+        const d = Math.hypot(p.x - x, p.y - y);
+        if (d <= tol && (!best || d < best.d)) {
+          best = { x: p.x, y: p.y, ids: [ents[i].id, ents[j].id], d };
+        }
+      }
+    }
+  }
+  return best ? { x: best.x, y: best.y, ids: best.ids } : null;
+}
+
+/**
+ * The nearest **quadrant** point of a circle or arc to (x, y), within `tol`, or
+ * null. Quadrants are the four cardinal points on the sketch axes — top, bottom,
+ * left, right — the "high points" a machinist works to. An arc reports only the
+ * quadrants that fall inside its swept span.
+ *
+ * `axis` is `'v'` for the top/bottom pair (a point that sits on the centre's
+ * vertical) and `'h'` for left/right, so the caller can pin the point there with
+ * a vertical / horizontal relation to the centre.
+ */
+export function nearestQuadrant(sk, x, y, tol, skipId = null) {
+  let best = null;
+  for (const e of sk.entities.values()) {
+    if ((e.type !== 'circle' && e.type !== 'arc') || e.id === skipId) continue;
+    const c = sk.entities.get(e.center);
+    if (!c) continue;
+    const quads = [
+      { x: c.x + e.r, y: c.y, axis: 'h' },
+      { x: c.x - e.r, y: c.y, axis: 'h' },
+      { x: c.x, y: c.y + e.r, axis: 'v' },
+      { x: c.x, y: c.y - e.r, axis: 'v' },
+    ];
+    for (const q of quads) {
+      if (e.type === 'arc' && !arcSpanContains(sk, e, q.x, q.y)) continue;
+      const d = Math.hypot(q.x - x, q.y - y);
+      if (d <= tol && (!best || d < best.d)) {
+        best = { x: q.x, y: q.y, id: e.id, center: e.center, axis: q.axis, curveType: e.type, d };
+      }
+    }
+  }
+  return best
+    ? { x: best.x, y: best.y, id: best.id, center: best.center, axis: best.axis, curveType: best.curveType }
+    : null;
+}
+
+/**
+ * The nearest **line-segment midpoint** to (x, y), within `tol`, or null. A
+ * click on it pins the new point there with a `midpoint` relation, so it stays
+ * centred as the line changes.
+ */
+export function nearestMidpoint(sk, x, y, tol, skipId = null) {
+  let best = null;
+  for (const e of sk.entities.values()) {
+    if (e.type !== 'line' || e.id === skipId) continue;
+    const a = sk.entities.get(e.p1);
+    const b = sk.entities.get(e.p2);
+    if (!a || !b) continue;
+    const mx = (a.x + b.x) / 2;
+    const my = (a.y + b.y) / 2;
+    const d = Math.hypot(mx - x, my - y);
+    if (d <= tol && (!best || d < best.d)) best = { x: mx, y: my, id: e.id, d };
+  }
+  return best ? { x: best.x, y: best.y, id: best.id } : null;
+}
+
 /** Crossing angles of `pts` about (cx, cy), sorted CCW and de-duplicated. */
 function sortedCutAngles(pts, cx, cy) {
   const angs = pts
@@ -1513,4 +1709,312 @@ export function offsetEntity(sk, id, dist) {
   }
   if (nid != null && e.construction) sk.entities.get(nid).construction = true;
   return nid;
+}
+
+/** The endpoint ids of an entity, in its own direction. `null` for a circle. */
+function chainEnds(e) {
+  if (!e) return null;
+  if (e.type === 'line') return [e.p1, e.p2];
+  if (e.type === 'arc') return [e.start, e.end];
+  return null;
+}
+
+/** Replace one endpoint of an offset entity, keeping the entity's own field names. */
+function setChainEnd(e, which, pointId) {
+  if (e.type === 'line') { if (which === 0) e.p1 = pointId; else e.p2 = pointId; return; }
+  if (e.type === 'arc') { if (which === 0) e.start = pointId; else e.end = pointId; }
+}
+
+/**
+ * Where two offset entities should meet, given the corner they came from.
+ *
+ * Lines are intersected as **infinite** lines, not as segments: that is the
+ * whole point of the join. An outward offset leaves the two short of each other
+ * and needs extending; an inward one leaves them crossing and needs trimming.
+ * One formula does both, and `segIntersect` — which rejects anything off either
+ * segment — cannot.
+ *
+ * Where an arc is involved the answer is on its offset circle, and the corner it
+ * came from picks which of the (up to two) candidates is meant. Returns `null`
+ * when there is no sensible meeting point (parallel lines, a circle the line
+ * no longer reaches), and the caller then leaves the two ends where the plain
+ * offset put them rather than inventing a corner.
+ */
+function offsetJoin(sk, eA, eB, corner) {
+  const pick = (cands) => {
+    let best = null;
+    let bestD = Infinity;
+    for (const p of cands) {
+      const d = (p.x - corner.x) ** 2 + (p.y - corner.y) ** 2;
+      if (d < bestD) { bestD = d; best = p; }
+    }
+    return best;
+  };
+  if (eA.type === 'line' && eB.type === 'line') {
+    const a = sk.entities.get(eA.p1);
+    const b = sk.entities.get(eA.p2);
+    const c = sk.entities.get(eB.p1);
+    const d = sk.entities.get(eB.p2);
+    const rx = b.x - a.x;
+    const ry = b.y - a.y;
+    const sx = d.x - c.x;
+    const sy = d.y - c.y;
+    const denom = rx * sy - ry * sx;
+    if (Math.abs(denom) < 1e-12) return null;   // parallel: no corner to make
+    const t = ((c.x - a.x) * sy - (c.y - a.y) * sx) / denom;
+    return { x: a.x + t * rx, y: a.y + t * ry };
+  }
+  const lineOf = (e) => [sk.entities.get(e.p1), sk.entities.get(e.p2)];
+  const circleOf = (e) => {
+    const c = sk.entities.get(e.center);
+    return { x: c.x, y: c.y, r: e.r };
+  };
+  if (eA.type === 'line' && eB.type === 'arc') {
+    const [a, b] = lineOf(eA);
+    const C = circleOf(eB);
+    const ts = lineCircleParams(a, b, C.x, C.y, C.r);
+    if (!ts.length) return null;
+    return pick(ts.map((t) => ({ x: a.x + (b.x - a.x) * t, y: a.y + (b.y - a.y) * t })));
+  }
+  if (eA.type === 'arc' && eB.type === 'line') {
+    const [a, b] = lineOf(eB);
+    const C = circleOf(eA);
+    const ts = lineCircleParams(a, b, C.x, C.y, C.r);
+    if (!ts.length) return null;
+    return pick(ts.map((t) => ({ x: a.x + (b.x - a.x) * t, y: a.y + (b.y - a.y) * t })));
+  }
+  if (eA.type === 'arc' && eB.type === 'arc') {
+    const A = circleOf(eA);
+    const B = circleOf(eB);
+    const hits = circleCircleInts(A.x, A.y, A.r, B.x, B.y, B.r);
+    if (!hits.length) return null;
+    return pick(hits);
+  }
+  return null;
+}
+
+/**
+ * Which entities of a chain are stored back-to-front relative to a single walk
+ * around it.
+ *
+ * A profile has one inside and one outside, but its entities each remember only
+ * the direction they happened to be *drawn* in. Offsetting per entity therefore
+ * sends some sides one way and some the other, which is a wrong shape rather
+ * than a wrong-looking one. So the chain is walked once, end to end, and every
+ * entity that disagrees with that walk is marked — the caller flips its distance
+ * and the whole profile then moves to one side.
+ *
+ * Anything not in a chain (a lone line, a circle, a fork where three entities
+ * meet at a point) is simply never marked, and keeps the distance as given.
+ *
+ * @returns {Set<number>} entity ids whose stored direction runs against the walk
+ */
+function reversedInChain(sk, ids) {
+  const set = new Set(ids);
+  const flipped = new Set();
+  // point id -> the entities of the selection that end there
+  const at = new Map();
+  for (const id of ids) {
+    const ends = chainEnds(sk.entities.get(id));
+    if (!ends) continue;
+    for (const p of ends) {
+      if (!at.has(p)) at.set(p, []);
+      at.get(p).push(id);
+    }
+  }
+  const visited = new Set();
+  /** Walk from `id`, leaving by `exitPoint`, marking as we go. */
+  const walk = (startId, startExit) => {
+    let id = startId;
+    let exit = startExit;
+    while (true) {
+      visited.add(id);
+      // eslint-disable-next-line no-loop-func
+      const neighbours = (at.get(exit) || []).filter((n) => n !== id && set.has(n));
+      // A fork is ambiguous — three ways to continue is not a profile, and
+      // guessing one would silently offset part of it the wrong way.
+      if (neighbours.length !== 1) return;
+      const next = neighbours[0];
+      if (visited.has(next)) return;          // closed the loop
+      const ends = chainEnds(sk.entities.get(next));
+      if (!ends) return;
+      // Entered through `exit`. If that is the entity's END, it is stored
+      // backwards relative to this walk.
+      if (ends[1] === exit) flipped.add(next);
+      exit = ends[1] === exit ? ends[0] : ends[1];
+      id = next;
+    }
+  };
+  for (const id of ids) {
+    if (visited.has(id)) continue;
+    const ends = chainEnds(sk.entities.get(id));
+    if (!ends) continue;
+    // Start each walk from the entity as it is stored, so the first entity of a
+    // chain defines the direction the rest are measured against.
+    walk(id, ends[1]);
+    // ...then back the other way, for the half of an open chain behind it.
+    const back = (at.get(ends[0]) || []).filter((n) => n !== id && set.has(n));
+    if (back.length === 1 && !visited.has(back[0])) {
+      const bEnds = chainEnds(sk.entities.get(back[0]));
+      if (bEnds) {
+        if (bEnds[0] === ends[0]) flipped.add(back[0]);
+        visited.add(back[0]);
+        walk(back[0], bEnds[0] === ends[0] ? bEnds[1] : bEnds[0]);
+      }
+    }
+  }
+  return flipped;
+}
+
+/**
+ * Offset a **chain** of entities and close the corners between them.
+ *
+ * `offsetEntity` moves one entity along its own normal, which is right for one
+ * entity and wrong for a profile: offsetting the four sides of a square that way
+ * gives four parallel lines with a gap at every corner, because nothing extends
+ * or trims them to where they now cross. That is the reported bug, and it is not
+ * only cosmetic — `loops.js` finds a region by walking *shared endpoints*, so an
+ * offset profile with four loose segments cannot be built, only looked at.
+ *
+ * So neighbours are found first (they share an endpoint in the ORIGINAL), each
+ * entity is offset as before, and then each shared corner is replaced by one
+ * point where the two offsets actually meet. One point, not two coincident ones:
+ * the loop walk keys on point identity, and two points on top of each other look
+ * right until something drags one of them.
+ *
+ * Free ends — the two ends of an open chain, a lone line, a circle — are left
+ * exactly where the plain offset put them. There is nothing to meet there.
+ *
+ * @param {number} dist signed; a line moves along its left normal
+ * @returns {number[]} the new entity ids, in the order given
+ */
+export function offsetChain(sk, ids, dist) {
+  const flipped = reversedInChain(sk, ids);
+  const created = [];
+  const srcOf = new Map();          // new id -> source entity id
+  for (const id of ids) {
+    // **The side is the chain's, not the entity's.** `offsetEntity` measures
+    // from each entity's own left normal, which is its *drawing* direction — and
+    // nothing makes a profile's entities agree about that. Draw three sides of a
+    // square and close it back to the start and the last line runs the other
+    // way, so it offsets outward while its neighbours offset inward. Joined up,
+    // that is the octagon-ish shape this used to produce; before the corners
+    // were joined the gaps hid it.
+    const nid = offsetEntity(sk, id, flipped.has(id) ? -dist : dist);
+    if (nid != null) { created.push(nid); srcOf.set(nid, id); }
+  }
+  if (created.length < 2) return created;
+
+  // Which offsets are neighbours, and at which end of each. Keyed off the
+  // ORIGINAL entities, because the offsets deliberately share no points yet.
+  for (let i = 0; i < created.length; i++) {
+    for (let j = i + 1; j < created.length; j++) {
+      const srcA = sk.entities.get(srcOf.get(created[i]));
+      const srcB = sk.entities.get(srcOf.get(created[j]));
+      const endsA = chainEnds(srcA);
+      const endsB = chainEnds(srcB);
+      if (!endsA || !endsB) continue;
+      // The corner is a point the two originals share outright.
+      let ai = -1;
+      let bi = -1;
+      for (let x = 0; x < 2; x++) {
+        for (let y = 0; y < 2; y++) if (endsA[x] === endsB[y]) { ai = x; bi = y; }
+      }
+      if (ai < 0) continue;
+      const corner = sk.entities.get(endsA[ai]);
+      const eA = sk.entities.get(created[i]);
+      const eB = sk.entities.get(created[j]);
+      const meet = offsetJoin(sk, eA, eB, corner);
+      if (!meet) continue;          // nothing sensible to meet at: leave both
+
+      // One shared point at the meeting place, replacing the two the offsets
+      // made. The old ones are dropped if nothing else still refers to them.
+      const oldA = chainEnds(eA)[ai];
+      const oldB = chainEnds(eB)[bi];
+      const shared = addPoint(sk, meet.x, meet.y);
+      setChainEnd(eA, ai, shared);
+      setChainEnd(eB, bi, shared);
+      removeIfOrphan(sk, oldA);
+      removeIfOrphan(sk, oldB);
+    }
+  }
+  return created;
+}
+
+/**
+ * The unit direction a placed dimension of `kind` may be slid along — its
+ * "axis". A drag offset is projected onto this (`projectOnto`, used by
+ * `sketchStore.setDimensionOffset` and `annotations.js`), so the dimension
+ * line moves as one along a single direction with its value staying centred on
+ * it, instead of floating free. `null` when the kind has no natural axis.
+ */
+export function dimensionLockDir(sk, kind, refs = []) {
+  const P = (id) => sk?.entities?.get(id);
+  switch (kind) {
+    case 'distanceX': // line runs along X → it slides in Y (the standoff)
+    case 'lockY':
+      return [0, 1];
+    case 'distanceY':
+    case 'lockX':
+      return [1, 0];
+    case 'radius':
+    case 'diameter': // along the 45° leader
+      return [Math.SQRT1_2, Math.SQRT1_2];
+    case 'distance': {
+      const a = P(refs[0]);
+      const b = P(refs[1]);
+      if (!a || !b) return null;
+      const dx = b.x - a.x;
+      const dy = b.y - a.y;
+      const len = Math.hypot(dx, dy) || 1;
+      return [-dy / len, dx / len]; // perpendicular to the measured pair
+    }
+    case 'pointLineDistance': {
+      const l = P(refs[1]);
+      const a = l && P(l.p1);
+      const b = l && P(l.p2);
+      if (!a || !b) return null;
+      const dx = b.x - a.x;
+      const dy = b.y - a.y;
+      const len = Math.hypot(dx, dy) || 1;
+      return [dx / len, dy / len]; // along the measured line
+    }
+    case 'arcRadius': {
+      const arc = P(refs[0]);
+      const ctr = arc && P(arc.center);
+      const s = arc && P(arc.start);
+      const en = arc && P(arc.end);
+      if (!ctr || !s || !en) return null;
+      const a0 = Math.atan2(s.y - ctr.y, s.x - ctr.x);
+      const mid = a0 + (normAngle(Math.atan2(en.y - ctr.y, en.x - ctr.x) - a0) || TAU) / 2;
+      return [Math.cos(mid), Math.sin(mid)]; // along the spoke
+    }
+    case 'angle': {
+      const l1 = P(refs[0]);
+      const l2 = P(refs[1]);
+      if (!l1 || !l2) return null;
+      const sharedId = [l1.p1, l1.p2].find((id) => id === l2.p1 || id === l2.p2);
+      const vId = sharedId != null ? sharedId : l1.p1;
+      const v = P(vId);
+      const f1 = P(l1.p1 === vId ? l1.p2 : l1.p1);
+      const f2 = P(l2.p1 === vId ? l2.p2 : l2.p1);
+      if (!v || !f1 || !f2) return null;
+      const a1 = Math.atan2(f1.y - v.y, f1.x - v.x);
+      let d = Math.atan2(f2.y - v.y, f2.x - v.x) - a1;
+      while (d > Math.PI) d -= TAU;
+      while (d < -Math.PI) d += TAU;
+      const mid = a1 + d / 2;
+      return [Math.cos(mid), Math.sin(mid)]; // along the bisector
+    }
+    default:
+      return null;
+  }
+}
+
+/** Project a 2D `offset` onto unit `dir`; returns it unchanged when `dir` is null. */
+export function projectOnto(offset, dir) {
+  if (!dir) return [offset[0], offset[1]];
+  const t = offset[0] * dir[0] + offset[1] * dir[1];
+  // `+ 0` folds a `-0` (from a zero component of `dir`) back to plain `0`.
+  return [t * dir[0] + 0, t * dir[1] + 0];
 }

@@ -220,6 +220,7 @@ describe('OBJ specifics', () => {
   it('reads every index form', () => {
     for (const f of ['f 1 2 3', 'f 1/1 2/2 3/3', 'f 1//1 2//2 3//3', 'f 1/1/1 2/2/2 3/3/3']) {
       const soup = parseOBJ(`v 0 0 0\nv 1 0 0\nv 0 1 0\n${f}\n`);
+      // eslint-disable-next-line jest/valid-expect
       expect(soup.triangleCount, f).toBe(1);
     }
   });

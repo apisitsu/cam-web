@@ -249,6 +249,52 @@ describe('editing a placed dimension (double-click)', () => {
   });
 });
 
+describe('setDimensionOffset — dragging a placed dimension', () => {
+  const withDim = () => {
+    const sk = createSketch();
+    const a = addPoint(sk, 0, 0);
+    const b = addPoint(sk, 10, 0);
+    const ci = addConstraint(sk, 'distance', [a, b], 10);
+    useSketchStore.setState({ sk, past: [], future: [], version: 0 });
+    return { sk, ci };
+  };
+
+  it('locks a raw pointer offset to the dimension axis, and bumps the version', () => {
+    const { sk, ci } = withDim(); // a distance measured along X → locked to Y
+    useSketchStore.getState().setDimensionOffset(ci, [3, -4]);
+    expect(sk.constraints[ci].labelOffset).toEqual([0, -4]); // X component dropped
+    expect(useSketchStore.getState().version).toBeGreaterThan(0);
+  });
+
+  it('collapses a whole drag to one undo step', () => {
+    const { ci } = withDim();
+    const s = useSketchStore.getState();
+    s.setDimensionOffset(ci, [0, 1]);                      // first move — snapshots
+    s.setDimensionOffset(ci, [0, 2], { snapshot: false }); // ...the rest of the drag
+    s.setDimensionOffset(ci, [1, 5], { snapshot: false });
+    expect(useSketchStore.getState().past.length).toBe(1);
+    expect(useSketchStore.getState().sk.constraints[ci].labelOffset).toEqual([0, 5]);
+  });
+
+  it('undo puts the dimension back where it was', () => {
+    const { ci } = withDim();
+    useSketchStore.getState().setDimensionOffset(ci, [8, 8]);
+    useSketchStore.getState().undo();
+    expect(useSketchStore.getState().sk.constraints[ci].labelOffset).toBeUndefined();
+  });
+
+  it('does nothing for a non-dimensional constraint', () => {
+    const sk = createSketch();
+    const a = addPoint(sk, 0, 0);
+    const b = addPoint(sk, 10, 0);
+    addConstraint(sk, 'horizontal', [a, b]);
+    useSketchStore.setState({ sk, past: [] });
+    useSketchStore.getState().setDimensionOffset(0, [3, 3]);
+    expect(sk.constraints[0].labelOffset).toBeUndefined();
+    expect(useSketchStore.getState().past.length).toBe(0);
+  });
+});
+
 describe('construction geometry & driven dimensions', () => {
   it('toggleConstruction flips the flag on selected geometry only', () => {
     const sk = createSketch();
@@ -423,6 +469,159 @@ describe('line guides — angle lock & tangent snap (hover)', () => {
     expect(snap.tangent).toBe(true);
     expect(snap.tangentOf).toBe(circle);
     expect(near(Math.hypot(snap.x, snap.y), 10, 1e-6)).toBe(true); // lies on the rim
+  });
+});
+
+describe('intersection snap (hover + click)', () => {
+  const crossed = () => {
+    const sk = createSketch();
+    const h = addLine(sk, addPoint(sk, -10, 0), addPoint(sk, 10, 0));
+    const v = addLine(sk, addPoint(sk, 0, -10), addPoint(sk, 0, 10)); // cross at (0,0)
+    useSketchStore.setState({
+      sk, tool: 'point', pickTol: 1.5, snap: null, past: [], future: [],
+    });
+    return { sk, h, v };
+  };
+
+  it('reports a gold intersection snap under the cursor while a placing tool is active', () => {
+    crossed();
+    useSketchStore.getState().hover(0.4, -0.3);
+    const { snap } = useSketchStore.getState();
+    expect(snap.intersection).toBe(true);
+    expect(near(snap.x, 0) && near(snap.y, 0)).toBe(true);
+    expect(snap.of).toHaveLength(2);
+  });
+
+  it('does not run the pairwise scan for a non-placing tool', () => {
+    crossed();
+    useSketchStore.setState({ tool: 'select' });
+    useSketchStore.getState().hover(0.4, -0.3);
+    expect(useSketchStore.getState().snap).toBeNull();
+  });
+
+  it('a click there drops a point on the crossing, pinned to both lines', () => {
+    const { sk, h, v } = crossed();
+    useSketchStore.getState().clickAt(0.3, 0.2);
+    const pts = [...sk.entities.values()].filter((e) => e.type === 'point');
+    const placed = pts[pts.length - 1];
+    expect(near(placed.x, 0) && near(placed.y, 0)).toBe(true);
+    const added = sk.constraints.filter((c) => c.refs.includes(placed.id));
+    expect(added.map((c) => c.kind).sort()).toEqual(['pointOnLine', 'pointOnLine']);
+    expect(added.some((c) => c.refs.includes(h))).toBe(true);
+    expect(added.some((c) => c.refs.includes(v))).toBe(true);
+  });
+});
+
+describe('quadrant snap (circle high points)', () => {
+  const withCircle = () => {
+    const sk = createSketch();
+    const ctr = addPoint(sk, 5, 5);
+    const circle = addCircle(sk, ctr, 10); // right quadrant at (15, 5)
+    useSketchStore.setState({
+      sk, tool: 'point', pickTol: 1.5, snap: null, past: [], future: [],
+    });
+    return { sk, ctr, circle };
+  };
+
+  it('reports a violet quadrant snap near a circle high point', () => {
+    withCircle();
+    useSketchStore.getState().hover(14.7, 5.2);
+    const { snap } = useSketchStore.getState();
+    expect(snap.quadrant).toBe(true);
+    expect(near(snap.x, 15) && near(snap.y, 5)).toBe(true);
+    expect(snap.quadAxis).toBe('h');
+  });
+
+  it('a click there pins the point on the circle and level with its centre', () => {
+    const { sk, ctr, circle } = withCircle();
+    useSketchStore.getState().clickAt(14.7, 5.2);
+    const placed = [...sk.entities.values()].filter((e) => e.type === 'point').pop();
+    expect(near(placed.x, 15) && near(placed.y, 5)).toBe(true);
+    const kinds = sk.constraints.filter((c) => c.refs.includes(placed.id)).map((c) => c.kind).sort();
+    expect(kinds).toEqual(['horizontal', 'pointOnCircle']); // right quadrant → horizontal to centre
+    const hz = sk.constraints.find((c) => c.kind === 'horizontal' && c.refs.includes(placed.id));
+    expect(hz.refs).toContain(ctr);
+    const on = sk.constraints.find((c) => c.kind === 'pointOnCircle');
+    expect(on.refs).toContain(circle);
+  });
+});
+
+describe('midpoint snap (line centre)', () => {
+  const withLine = () => {
+    const sk = createSketch();
+    const l = addLine(sk, addPoint(sk, 0, 0), addPoint(sk, 20, 0)); // midpoint (10, 0)
+    useSketchStore.setState({ sk, tool: 'point', pickTol: 1.5, snap: null, past: [], future: [] });
+    return { sk, l };
+  };
+
+  it('reports a midpoint snap near the centre of a segment', () => {
+    withLine();
+    useSketchStore.getState().hover(10.2, 0.3);
+    const { snap } = useSketchStore.getState();
+    expect(snap.midpoint).toBe(true);
+    expect(near(snap.x, 10) && near(snap.y, 0)).toBe(true);
+  });
+
+  it('a click there pins the point with a midpoint relation to the line', () => {
+    const { sk, l } = withLine();
+    useSketchStore.getState().clickAt(10.2, 0.3);
+    const placed = [...sk.entities.values()].filter((e) => e.type === 'point').pop();
+    expect(near(placed.x, 10) && near(placed.y, 0)).toBe(true);
+    const c = sk.constraints.find((k) => k.kind === 'midpoint' && k.refs.includes(placed.id));
+    expect(c).toBeTruthy();
+    expect(c.refs).toContain(l);
+  });
+});
+
+describe('marquee (box) selection', () => {
+  const scene = () => {
+    const sk = createSketch();
+    const inside = addLine(sk, addPoint(sk, 1, 1), addPoint(sk, 4, 4));
+    const straddle = addLine(sk, addPoint(sk, 3, 3), addPoint(sk, 20, 20));
+    useSketchStore.setState({
+      sk, tool: 'select', selection: [], boxSelect: null, _boxStart: null, pickTol: 0.5,
+    });
+    return { sk, inside, straddle };
+  };
+
+  it('a left→right drag encloses; a bare press never touches the selection', () => {
+    const { inside, straddle } = scene();
+    const s = useSketchStore.getState();
+    s.beginBoxSelect(0, 0);
+    s.updateBoxSelect(10, 10); // grows past the click slop → marquee appears
+    expect(useSketchStore.getState().boxSelect).not.toBeNull();
+    expect(s.endBoxSelect()).toBe(true);
+    expect(useSketchStore.getState().selection).toEqual([inside]);
+    expect(useSketchStore.getState().selection).not.toContain(straddle);
+  });
+
+  it('a right→left drag also grabs what the box touches', () => {
+    const { inside, straddle } = scene();
+    const s = useSketchStore.getState();
+    s.beginBoxSelect(10, 10);
+    s.updateBoxSelect(0, 0);
+    s.endBoxSelect();
+    const sel = useSketchStore.getState().selection;
+    expect(sel).toContain(inside);
+    expect(sel).toContain(straddle);
+  });
+
+  it('a press that never grows past the slop commits nothing', () => {
+    scene();
+    useSketchStore.setState({ selection: [99] });
+    const s = useSketchStore.getState();
+    s.beginBoxSelect(5, 5);
+    s.updateBoxSelect(5.1, 5.1);
+    expect(useSketchStore.getState().boxSelect).toBeNull();
+    expect(s.endBoxSelect()).toBe(false);
+    expect(useSketchStore.getState().selection).toEqual([99]);
+  });
+
+  it('does not arm outside the Select tool', () => {
+    scene();
+    useSketchStore.setState({ tool: 'line' });
+    useSketchStore.getState().beginBoxSelect(0, 0);
+    expect(useSketchStore.getState()._boxStart).toBeNull();
   });
 });
 

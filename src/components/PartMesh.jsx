@@ -17,16 +17,18 @@
  * React's dev Performance Track structured-clones changed props and dies on
  * large typed arrays.
  */
-import { useEffect, useMemo } from 'react';
+import { useEffect, useMemo, useRef } from 'react';
 import * as THREE from 'three';
 import { getMesh, useCamPlanStore } from '../stores/camPlanStore.js';
 import { faceOfTriangle } from '../engine/mesh/features.js';
+import { featureAtPoint } from '../engine/mesh/pickEdge.js';
 import { originMarkerSize, rotaryAxisLength } from '../engine/view/originMarker.js';
+import { CAD } from '../theme.js';
 
 const ORIGIN_AXES = [
-  { dir: [1, 0, 0], color: '#f87171' },
-  { dir: [0, 1, 0], color: '#4ade80' },
-  { dir: [0, 0, 1], color: '#60a5fa' },
+  { dir: [1, 0, 0], color: CAD.rapid },
+  { dir: [0, 1, 0], color: CAD.feed },
+  { dir: [0, 0, 1], color: CAD.accent },
 ];
 
 /**
@@ -61,7 +63,11 @@ function highlightGeometry(feature, soup) {
 
 export default function PartMesh({ meshVer, visible = true, wireframe = false }) {
   const selectFeature = useCamPlanStore((s) => s.selectFeature);
+  const previewFeatureAt = useCamPlanStore((s) => s.previewFeatureAt);
   const features = useCamPlanStore((s) => s.features);
+  // The id currently highlighted, so a pointer move that stays on the same
+  // feature costs nothing. A ref, not state: it must not itself re-render.
+  const hoverIdRef = useRef(null);
   const datumPickMode = useCamPlanStore((s) => s.datumPickMode);
   const pickAxisOrigin = useCamPlanStore((s) => s.pickAxisOrigin);
   const pickRotaryCenter = useCamPlanStore((s) => s.pickRotaryCenter);
@@ -99,17 +105,28 @@ export default function PartMesh({ meshVer, visible = true, wireframe = false })
    * thing the operator was pointing at.
    */
   const onClick = (event) => {
+    // `event.point` is in WORLD space. That equals the part's own frame only
+    // while the `part-work` group wrapping this mesh is unrotated — but in the
+    // machine ("Work rotates") frame, which is a 4-axis mill's default, that
+    // group is turned by the playhead's A index (`workTransform`). Picking then
+    // would store an origin rotated by that angle. `worldToLocal` strips the
+    // group transform, landing the pick in the mesh's own (laid-down, datum-
+    // shifted) frame — which is exactly what the datum store expects.
+    // `event.face.normal` needs no such fix: three.js reports it in geometry
+    // space already, unaffected by any ancestor transform.
+    const localPoint = () => event.object.worldToLocal(event.point.clone()).toArray();
+
     // An armed axis pick ('x'/'y'/'z') sets just that axis's zero at the clicked
     // point — no plane, no reorientation, the other two axes left alone.
     const axis = { x: 0, y: 1, z: 2 }[datumPickMode];
     if (axis !== undefined) {
       event.stopPropagation();
-      pickAxisOrigin(axis, event.point.toArray());
+      pickAxisOrigin(axis, localPoint());
       return;
     }
     if (datumPickMode === 'rotary') {
       event.stopPropagation();
-      pickRotaryCenter(event.point.toArray());
+      pickRotaryCenter(localPoint());
       return;
     }
     if (datumPickMode === 'zero') {
@@ -117,23 +134,72 @@ export default function PartMesh({ meshVer, visible = true, wireframe = false })
       if (event.face?.normal) pickRotaryZero(event.face.normal.toArray());
       return;
     }
-    const detected = features();
-    if (!detected?.faces?.length) return;
+    const picked = featureUnder(event);
+    if (picked === undefined) return;
     event.stopPropagation();
-    const face = faceOfTriangle(detected, event.faceIndex);
-    selectFeature(face ?? null);
+    selectFeature(picked);
+  };
+
+  /**
+   * What the cursor is over: the edge it is sitting on, else the merged face.
+   * `undefined` means "nothing detected here" — which is not the same as `null`,
+   * a deliberate miss that clears the selection.
+   */
+  const featureUnder = (event) => {
+    const detected = features();
+    if (!detected?.faces?.length) return undefined;
+    return featureAtPoint({
+      edges: detected.edges,
+      face: faceOfTriangle(detected, event.faceIndex),
+      point: event.point?.toArray?.(),
+    });
+  };
+
+  /**
+   * Hover highlights what a click would take.
+   *
+   * The list in the CAM panel used to be the only thing that could do this, so
+   * the model was a click target you had to aim at blind. One rule for both —
+   * `featureAtPoint` — because a highlight that follows a different rule from
+   * the click after it teaches the wrong place to aim.
+   *
+   * Guarded on the id: a pointer move fires on every pixel, and re-setting the
+   * same feature would re-render the panel and the overlay for nothing.
+   */
+  const onPointerMove = (event) => {
+    if (datumPickMode) return;   // the cursor means an origin right now, not a feature
+    const picked = featureUnder(event);
+    if (picked === undefined) return;
+    if ((picked?.id ?? null) !== (hoverIdRef.current ?? null)) {
+      hoverIdRef.current = picked?.id ?? null;
+      previewFeatureAt(picked ?? null);
+    }
+  };
+
+  const onPointerOut = () => {
+    if (hoverIdRef.current === null) return;
+    hoverIdRef.current = null;
+    previewFeatureAt(null);
   };
 
   return (
     // Named so it can be picked out of the scene graph — by a test asking
     // "is the part actually on screen?", and by anyone inspecting the scene.
-    <mesh name="imported-part" geometry={geometry} castShadow receiveShadow onClick={onClick}>
+    <mesh
+      name="imported-part"
+      geometry={geometry}
+      castShadow
+      receiveShadow
+      onClick={onClick}
+      onPointerMove={onPointerMove}
+      onPointerOut={onPointerOut}
+    >
       {/* Distinct from the simulated stock's aluminium grey: this is the model
           to be made, not the material it is made from. DoubleSide because an
           inside-out STL is common enough that back faces must still draw —
           `analyzeMesh` warns about the winding rather than leaving a hole. */}
       <meshStandardMaterial
-        color="#38bdf8"
+        color="#93a7bd"
         metalness={0.1}
         roughness={0.65}
         transparent
@@ -172,7 +238,7 @@ export function FeatureHighlight({ meshVer }) {
   if (highlight.kind === 'line') {
     return (
       <line name="feature-highlight" geometry={highlight.geometry}>
-        <lineBasicMaterial color="#fbbf24" linewidth={2} depthTest={false} />
+        <lineBasicMaterial color={CAD.skHover} linewidth={2} depthTest={false} />
       </line>
     );
   }
@@ -181,7 +247,7 @@ export function FeatureHighlight({ meshVer }) {
       {/* polygonOffset lifts it off the face it covers, or the two planes fight
           for the same depth and the highlight flickers. */}
       <meshBasicMaterial
-        color="#fbbf24"
+        color={CAD.skHover}
         transparent
         opacity={0.55}
         side={THREE.DoubleSide}
@@ -276,7 +342,7 @@ export function RotaryAxisLine({ meshVer }) {
       {/* Solid, not dashed — a dashed THREE.Line needs `computeLineDistances()`
           called imperatively on the object, which a declarative <line> here
           cannot do; amber keeps it visually distinct from the origin triad. */}
-      <lineBasicMaterial color="#fbbf24" depthTest={false} />
+      <lineBasicMaterial color={CAD.skHover} depthTest={false} />
     </line>
   );
 }

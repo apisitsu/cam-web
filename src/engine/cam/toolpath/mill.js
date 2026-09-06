@@ -247,7 +247,7 @@ function centroidDist(pts, cx, cy) {
  * expects to read and what they can edit at the machine.
  */
 export function drillingOp(holes, opts) {
-  const { material, tool, machine, part, safeZ = 10, retract = 2 } = opts;
+  const { material, tool, machine, part, retract = 2 } = opts;
   if (holes.length === 0) return null;
   const depth = Math.max(...holes.map((h) => h.depth));
   const data = drillingSpeeds({ material, diameter: tool.diameter, depth, machine });

@@ -246,20 +246,30 @@ describe('droTool — what is in the spindle', () => {
   });
 });
 
-describe('droFeed — the rate in the units it was programmed in', () => {
+describe('droFeed — the rate, always in mm/min', () => {
   it('posts a milling feed in mm/min', () => {
-    expect(droFeed({ feed: 850, feedMode: 94 })).toEqual({ text: '850', unit: 'mm/min' });
+    expect(droFeed({ feed: 850, feedMode: 94 }))
+      .toEqual({ text: '850', unit: 'mm/min', note: null });
   });
 
-  it('converts a lathe feed back to the mm/rev the programmer typed', () => {
-    // F0.15 at 1200 rpm is stored as 180 mm/min; posting 180 would be a number
-    // that appears nowhere in the program.
-    expect(droFeed({ feed: 0.15 * 1200, rpm: 1200, feedMode: 95 }))
-      .toEqual({ text: '0.15', unit: 'mm/rev' });
+  it('posts a lathe feed in mm/min too, so the field is one comparable quantity', () => {
+    // F0.15 at 1200 rpm is 180 mm/min. That is what the machine is doing, and
+    // what any other feed on the screen can be held against.
+    expect(droFeed({ feed: 0.15 * 1200, rpm: 1200, feedMode: 95 }).text).toBe('180');
+    expect(droFeed({ feed: 0.15 * 1200, rpm: 1200, feedMode: 95 }).unit).toBe('mm/min');
   });
 
-  it('stays in mm/min under G95 with the spindle stopped — nothing to divide by', () => {
-    expect(droFeed({ feed: 100, rpm: 0, feedMode: 95 }).unit).toBe('mm/min');
+  it('keeps the programmed per-rev feed as a note — the only figure in the program text', () => {
+    expect(droFeed({ feed: 0.15 * 1200, rpm: 1200, feedMode: 95 }).note).toBe('0.15 mm/rev');
+  });
+
+  it('has no note under G95 with the spindle stopped — nothing to divide by', () => {
+    expect(droFeed({ feed: 100, rpm: 0, feedMode: 95 }))
+      .toEqual({ text: '100', unit: 'mm/min', note: null });
+  });
+
+  it('has no note when the feed was programmed per minute in the first place', () => {
+    expect(droFeed({ feed: 850, rpm: 6000, feedMode: 94 }).note).toBeNull();
   });
 
   it('keeps the decimals of a slow feed and drops them from a fast one', () => {
@@ -268,8 +278,8 @@ describe('droFeed — the rate in the units it was programmed in', () => {
   });
 
   it('dashes before the program has stated a feed', () => {
-    expect(droFeed({ feed: 0 })).toEqual({ text: '—', unit: '' });
-    expect(droFeed()).toEqual({ text: '—', unit: '' });
+    expect(droFeed({ feed: 0 })).toEqual({ text: '—', unit: '', note: null });
+    expect(droFeed()).toEqual({ text: '—', unit: '', note: null });
   });
 });
 
@@ -295,7 +305,7 @@ describe('droFooter', () => {
       line: 1234,
     });
     expect(foot.tool).toEqual({ number: 'T3', name: 'Chamfer mill Ø10' });
-    expect(foot.feed).toEqual({ text: '400', unit: 'mm/min' });
+    expect(foot.feed).toEqual({ text: '400', unit: 'mm/min', note: null });
     expect(foot.spindle).toEqual({ text: '6000', unit: 'rpm' });
     expect(foot.line).toBe('N1234');
   });

@@ -12,7 +12,7 @@ import { buildPath } from './path.js';
 export { interpret } from './interpreter.js';
 export { tokenizeLine } from './tokenizer.js';
 export { buildPath, sliceUpTo, feedsBefore, feedsBeforeAt, lineAt, timeAt, rotaryAt, toolAt } from './path.js';
-export { expandProgram } from './macro.js';
+export { expandProgram } from './macros.js';
 
 /** @param {{mode?:'mill'|'turn', rapidRate?:number, diameterMode?:boolean}} opts */
 export function parseGcode(text, opts) {

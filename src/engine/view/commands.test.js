@@ -40,6 +40,7 @@ describe('the catalogue is a usable index', () => {
     // a bug, whichever glyphs they carry.
     for (const group of new Set(COMMANDS.map((c) => c.group))) {
       const labels = commandsIn(group).map((c) => c.label);
+      // eslint-disable-next-line jest/valid-expect
       expect(new Set(labels).size, `duplicate label in "${group}"`).toBe(labels.length);
     }
   });

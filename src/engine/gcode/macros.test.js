@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { expandProgram } from './macro.js';
+import { expandProgram } from './macros.js';
 import { interpret } from './interpreter.js';
 
 const near = (a, b, eps = 1e-3) => Math.abs(a - b) <= eps;
@@ -185,5 +185,94 @@ describe('interpreter — 4th axis and reference return', () => {
     // The bare `J-12` block repeats G3 and sweeps another full circle.
     const arcs = segments.filter((s) => s.line === 4);
     expect(arcs.length).toBeGreaterThan(16);
+  });
+});
+
+describe('Fanuc macro syntax that real programs use', () => {
+  /** Run a program and hand back the blocks it expanded to. */
+  const run = (src) => expandProgram(src, () => {}).map((b) => b.text);
+
+  it('joins conditions with AND, OR and XOR', () => {
+    // A program using one could not be *opened* — the parser stopped at the
+    // first comparison and reported a missing operator.
+    expect(() => run('#1=1\n#2=1\nIF [#1 EQ 1 AND #2 EQ 1] GOTO 100\nN100 M30')).not.toThrow();
+    expect(() => run('#1=0\n#2=1\nIF [#1 EQ 1 OR #2 EQ 1] GOTO 100\nN100 M30')).not.toThrow();
+    expect(() => run('#1=0\n#2=1\nIF [#1 EQ 1 XOR #2 EQ 1] GOTO 100\nN100 M30')).not.toThrow();
+  });
+
+  it('takes the branch AND says it should, and not the one it should not', () => {
+    const taken = run('#1=1\n#2=1\nIF [#1 EQ 1 AND #2 EQ 1] GOTO 100\nG0 X1\nN100 M30');
+    expect(taken.join(' ')).not.toContain('G0 X1');
+    const skipped = run('#1=1\n#2=0\nIF [#1 EQ 1 AND #2 EQ 1] GOTO 100\nG0 X1\nN100 M30');
+    expect(skipped.join(' ')).toContain('G0 X1');
+  });
+
+  it('reads MOD as the remainder operator it is', () => {
+    expect(run('#1=[27 MOD 4]\nG1 X#1')).toContain('G1 X3');
+  });
+
+  it('lets GOTO name its block with an expression', () => {
+    // `GOTO #100` is how a program picks a branch at run time; only a literal
+    // was read, so the parser fell through to treating GOTO as address words.
+    const out = run('#100=200\nGOTO #100\nG0 X1\nN200 M30');
+    expect(out.join(' ')).not.toContain('G0 X1');
+    expect(out.join(' ')).toContain('M30');
+  });
+
+  it('knows BIN and BCD', () => {
+    expect(() => run('#1=BIN[16]\n#2=BCD[10]\nG1 X#1')).not.toThrow();
+  });
+
+  it('names the block and points at the character when it cannot read one', () => {
+    // The whole reason this was hard to diagnose from the floor: "Line 338:
+    // expected a value at column 3" says nothing about a line you are not
+    // looking at.
+    let msg = '';
+    try {
+      run(['#1=0', 'N338 G1 X#1 Y+', 'M30'].join('\n'));
+    } catch (e) { msg = e.message; }
+    expect(msg).toContain('Line 2');
+    expect(msg).toContain('N338 G1 X#1 Y+');
+    expect(msg).toContain('^');
+  });
+});
+
+describe('block delete — the `/` prefix a real program puts on optional blocks', () => {
+  const run = (src) => expandProgram(src, () => {}).map((b) => b.text);
+
+  it('reads a conditional hidden behind a slash', () => {
+    // UNCKZ87V4034.NC line 338, which would not open: the prefix meant `^IF`
+    // did not match, the block fell through to being read as address words, and
+    // the parser asked for a value after the `I` — "expected a value at
+    // column 3", exactly as reported from the floor.
+    expect(() => run(['#532=0', '/IF[#532EQ1]GOTO9999', 'G0X1', 'N9999 M30'].join('\n')))
+      .not.toThrow();
+  });
+
+  it('takes the branch when the condition holds', () => {
+    const out = run(['#532=1', '/IF[#532EQ1]GOTO9999', 'G0X1', 'N9999 M30'].join('\n'));
+    expect(out.join(' ')).not.toContain('G0X1');
+  });
+
+  it('runs the block, because block delete is off unless it is switched on', () => {
+    // The motion interpreter already executes these; the macro layer has to
+    // agree with it or the two disagree about what the program does.
+    const out = run(['#532=0', '/IF[#532EQ1]GOTO9999', 'G0X1', 'N9999 M30'].join('\n'));
+    expect(out.join(' ')).toContain('G0X1');
+  });
+
+  it('understands the numbered form, /1 … /9', () => {
+    expect(() => run(['#1=0', '/1IF[#1EQ1]GOTO100', 'N100 M30'].join('\n'))).not.toThrow();
+  });
+
+  it('handles a slashed WHILE, GOTO and assignment', () => {
+    expect(() => run(['/#1=0', '/WHILE[#1LT2]DO1', '#1=#1+1', '/END1', 'M30'].join('\n')))
+      .not.toThrow();
+    expect(() => run(['#1=0', '/GOTO100', 'G0X1', 'N100 M30'].join('\n'))).not.toThrow();
+  });
+
+  it('leaves the slash on a motion block, which the interpreter reads itself', () => {
+    const out = run(['#1=5', '/G0X#1', 'M30'].join('\n'));
+    expect(out.join(' ')).toContain('/G0X5');
   });
 });

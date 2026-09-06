@@ -42,6 +42,7 @@ describe('millingOrientation', () => {
       const even = (x === 0 && y === 1 && z === 2)
         || (x === 1 && y === 2 && z === 0)
         || (x === 2 && y === 0 && z === 1);
+      // eslint-disable-next-line jest/valid-expect
       expect(o.flipY, `dims ${dims}`).toBe(!even);
     }
   });

@@ -79,6 +79,7 @@ describe('postTurning', () => {
     const words = [...nc.matchAll(/(?:^|\s)([XYZRF])(-?[\d.]+)/g)];
     expect(words.length).toBeGreaterThan(10);
     for (const [, letter, value] of words) {
+      // eslint-disable-next-line jest/valid-expect
       expect(value, `${letter}${value}`).toMatch(/\./);
     }
   });

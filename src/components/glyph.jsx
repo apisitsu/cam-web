@@ -43,6 +43,15 @@ export const PartIcon = glyph(
   </>,
 );
 
+/** A plain isometric billet — the raw stock block, drawn or hidden. */
+export const StockIcon = glyph(
+  <>
+    <path d="M4 8l8-4 8 4-8 4z" />
+    <path d="M4 8v8l8 4 8-4V8" />
+    <path d="M12 12v8" opacity="0.6" />
+  </>,
+);
+
 /** A block with a step cut out of it — material removed, the height-field sim. */
 export const StockCutIcon = glyph(
   <>
@@ -128,6 +137,32 @@ export const ArborIcon = glyph(
     <path d="M8 3h8l-1.5 4h-5z" />
     <path d="M10.5 7h3v6h-3z" />
     <path d="M10.5 13h3v5h-3z" opacity="0.6" />
+  </>,
+);
+
+/**
+ * The programmed path — a run of moves with a rapid dashing back over it. The
+ * two colours the viewport draws it in cannot be used here (a glyph is one
+ * `currentColor`), so the rapid is the dashed leg and the feed the solid one.
+ */
+export const ToolpathIcon = glyph(
+  <>
+    <path
+      d="M4 17 L8 9 L12 15 L16 6 L20 12"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="1.8"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+    />
+    <path
+      d="M4 17 L20 12"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="1.2"
+      strokeDasharray="2 2"
+      opacity="0.55"
+    />
   </>,
 );
 

@@ -164,12 +164,20 @@ describe('fitBoundsForPart', () => {
     // A model can sit entirely on one side of the centreline; framing it
     // lopsided would read as an off-centre part rather than an off-centre view.
     const fit = fitBoundsForPart('turn', { min: [0, 0, 0], max: [12, 12, 60] });
-    expect(fit.min[0]).toBeCloseTo(-16.8, 6);
-    expect(fit.max[0]).toBeCloseTo(16.8, 6);
-    expect(fit.min[1]).toBeCloseTo(-16.8, 6);
+    expect(fit.min[0]).toBeCloseTo(-12.6, 6);
+    expect(fit.max[0]).toBeCloseTo(12.6, 6);
+    expect(fit.min[1]).toBeCloseTo(-12.6, 6);
     // The spindle axis is left alone.
     expect(fit.min[2]).toBe(0);
     expect(fit.max[2]).toBe(60);
+  });
+
+  it('frames a model close, not with 40% of empty air round it', () => {
+    // The padding here is symmetry plus a little air. A short fat part used to
+    // fill 71% of the height it was framed to, which reads as too far out.
+    const fit = fitBoundsForPart('turn', { min: [0, 0, 0], max: [50, 50, 40] });
+    const fitted = fit.max[0] - fit.min[0];
+    expect(100 / fitted).toBeGreaterThan(0.9);
   });
 
   it('never collapses to a zero-width box', () => {

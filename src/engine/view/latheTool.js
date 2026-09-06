@@ -7,15 +7,36 @@
  * rake face is the top. Getting that wrong is invisible in a screenshot but
  * obvious in a number, which is why it lives here — the insert was once mounted
  * on the holder's side face and floated 1–5 mm clear of the plane it cuts in.
+ *
+ * ## Why the insert stands proud (`standout`)
+ *
+ * The insert used to sit exactly flush in its seat: its rake face on Y = 0 and
+ * the holder's top face on Y = 0 as well, and the head's bevelled walls lying
+ * *along* the insert's own two edges. Every one of those is a pair of
+ * **coplanar** faces, and a depth buffer cannot order two surfaces at the same
+ * depth — so the insert and the holder took turns winning, pixel by pixel, and
+ * the tool flickered between gold and grey as the view moved. It reads as a
+ * rendering fault, which it is, and no amount of re-colouring fixes it.
+ *
+ * A real insert is not flush either: it stands out of its pocket, which is what
+ * lets it cut. So the *body* is dropped `standout` below the cutting plane and
+ * recessed the same amount radially behind the insert's corner. The insert keeps
+ * Y = 0 — the invariant above is untouched, and it is the insert that cuts.
  */
 
 const DEG = Math.PI / 180;
 
-/** Shared sizes, from the marker radius the viewport passes in. */
+/**
+ * Shared sizes, from the marker radius the viewport passes in.
+ *
+ * `standout` is how far the insert stands out of its seat — small enough to look
+ * like a seated insert, large enough that no viewing angle brings the two
+ * surfaces within the depth buffer's resolution.
+ */
 export function toolScale(radius) {
   const s = Math.max(radius * 7, 6);
   const thickY = Math.max(radius * 2.4, 1.8);
-  return { s, thickY };
+  return { s, thickY, standout: thickY * 0.16 };
 }
 
 /**
@@ -29,7 +50,7 @@ export function toolScale(radius) {
  * past the shank's front face on its own.
  */
 export function odHolderGeometry(radius = 0.8, shape = {}) {
-  const { s, thickY } = toolScale(radius);
+  const { s, thickY, standout } = toolScale(radius);
   const sides = shape.sides ?? 4;
   const angle = shape.angle ?? 35;
   const lead = shape.lead ?? 93;
@@ -63,11 +84,19 @@ export function odHolderGeometry(radius = 0.8, shape = {}) {
 
   return {
     depth,
-    // Silhouette in (x = radial, y = along Z), tip first.
-    outline: [[0, 0], [Xbot, Zf], [topX, Zf], [topX, Zb], [Xbot, Zb]],
+    // Silhouette in (x = radial, y = along Z), apex first. The whole wedge is
+    // pushed `standout` radially outward, so its walls run parallel to the
+    // insert's two edges but a hair behind them and its apex stops short of the
+    // cutting corner — the insert's corner is the tip of the tool, on its own.
+    outline: [
+      [standout, 0], [Xbot + standout, Zf], [topX, Zf], [topX, Zb], [Xbot + standout, Zb],
+    ],
     insert,
-    // Y placement: the insert's rake face is the cutting plane.
+    // Y placement: the insert's rake face is the cutting plane, and the body it
+    // is seated in hangs from `standout` below that face down to `bodyY - depth`.
     insertY: -thickY / 2,
+    bodyY: -standout,
+    standout,
     screwY: 0,
     screwR: s * 0.16,
     screwH: thickY * 0.4,
@@ -78,30 +107,37 @@ export function odHolderGeometry(radius = 0.8, shape = {}) {
 
 /** Boring bar: a round shank along +Z with a small insert at the tip. */
 export function boringBarGeometry(radius = 0.8, shape = {}) {
-  const { s, thickY } = toolScale(radius);
+  const { s, thickY, standout } = toolScale(radius);
   const sides = shape.sides ?? 4;
   const angle = shape.angle ?? 35;
   const r = s * 0.42;
+  const barRadius = s * 0.55;
   return {
-    barRadius: s * 0.55,
+    barRadius,
     barLength: s * 6,
-    barY: -(s * 0.55),               // top of the bar on the cutting plane
+    // The bar's crown clears the cutting plane by `standout`, so the insert's
+    // rake face is not tangent to it — a cylinder touching a plane along a line
+    // fights for that line exactly as two coplanar faces do.
+    barY: -(barRadius + standout),
     insert: { r, thickY, sides, zScale: sides === 4 ? Math.max(Math.tan((angle / 2) * DEG), 0.2) : 1 },
     insertY: -thickY / 2,
+    standout,
   };
 }
 
 /** Parting / grooving blade: a thin tall plate down to a narrow edge. */
 export function partingBladeGeometry(radius = 0.8, shape = {}) {
-  const { s } = toolScale(radius);
+  const { s, standout } = toolScale(radius);
   const depth = Math.max(radius * 2.4, 1.8) * 1.4;
   return {
     width: Math.max((shape.grooveW ?? 3) * 0.35, s * 0.18),
     height: s * 5,
     depth,
-    bladeY: -depth / 2,
+    // Blade top `standout` under the plane; the cutting tip is what reaches it.
+    bladeY: -depth / 2 - standout,
     tipY: -(depth * 1.02) / 2,
     tipHeight: s * 0.55,
+    standout,
   };
 }
 
@@ -119,5 +155,5 @@ export function markerYSpan(kind, radius, shape = {}) {
     return [Math.min(g.bladeY - g.depth / 2, g.tipY - (g.depth * 1.02) / 2), 0];
   }
   const g = odHolderGeometry(radius, shape);
-  return [-g.depth, 0];
+  return [g.bodyY - g.depth, 0];
 }

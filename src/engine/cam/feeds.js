@@ -112,6 +112,10 @@ export function turningSpeeds({ material, diameter, fnScale = 1, noseRadius = 0.
     clampRpm: Math.round(maxRpm),  // the G50 clamp that must accompany G96
     fn: Number(fn.toFixed(3)),
     feed: Number(fn.toFixed(3)),   // lathes feed in mm/rev under G99
+    // The same feed as the machine experiences it, which is the only form
+    // comparable with a milling feed, a cycle time, or the readout. The posted
+    // program still carries `fn` under G99 — this is for people, not for posts.
+    feedPerMin: Math.round(fn * rpm),
     // Theoretical peak-to-valley finish: Ra ~ fn^2 / (18*sqrt(3)*r). Useful for
     // telling the operator when the feed, not the insert, is what limits finish.
     estimatedRa: Number(((fn * fn) / (18 * Math.sqrt(3) * Math.max(noseRadius, 0.05)) * 1000).toFixed(2)),

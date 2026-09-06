@@ -2,6 +2,7 @@ import { describe, it, expect } from 'vitest';
 import { weld } from './stl.js';
 import {
   slicePlane, chainSegments, sliceLoops, loopArea, loopLength, zLevels,
+  normalizeLoops, interiorPoint, pointInLoop,
 } from './slice.js';
 import { box, cylinder, steppedShaft, prism } from './fixtures.js';
 
@@ -216,5 +217,79 @@ describe('zLevels', () => {
 
   it('rejects a non-positive stepdown instead of looping forever', () => {
     expect(() => zLevels(10, 0, 0)).toThrow(/positive/);
+  });
+});
+
+describe('interiorPoint', () => {
+  const square = (x0, y0, x1, y1) => [x0, y0, x1, y0, x1, y1, x0, y1];
+
+  it('returns a point strictly inside a convex loop', () => {
+    const sq = square(0, 0, 10, 10);
+    const p = interiorPoint(sq);
+    expect(pointInLoop(sq, p[0], p[1])).toBe(true);
+  });
+
+  it('stays inside a concave loop rather than landing in the notch', () => {
+    // An L: a naive centroid would fall outside it.
+    const L = [0, 0, 30, 0, 30, 10, 10, 10, 10, 30, 0, 30];
+    const p = interiorPoint(L);
+    expect(pointInLoop(L, p[0], p[1])).toBe(true);
+  });
+
+  it('works the same on a clockwise loop', () => {
+    const cw = [0, 0, 0, 10, 10, 10, 10, 0];
+    const p = interiorPoint(cw);
+    expect(pointInLoop(cw, p[0], p[1])).toBe(true);
+  });
+
+  it('falls back to the first vertex for a degenerate ring', () => {
+    expect(interiorPoint([3, 4])).toEqual([3, 4]);
+  });
+});
+
+describe('normalizeLoops — nesting is decided from inside the loop', () => {
+  const square = (x0, y0, x1, y1) => [x0, y0, x1, y0, x1, y1, x0, y1];
+
+  it('keeps two loops that touch at a corner both solid', () => {
+    // The regression this exists for: nesting used to be tested with the loop's
+    // *first vertex*, which sits on its own boundary. Where that vertex also sat
+    // on the other loop's boundary the crossing test answered arbitrarily, and
+    // one of two touching shapes silently became a pocket inside the other.
+    const a = square(0, 0, 10, 10);
+    const b = square(10, 10, 20, 20); // meets `a` at exactly one point
+    const loops = normalizeLoops([a, b]);
+    expect(loops).toHaveLength(2);
+    expect(loops.map((l) => l.isHole)).toEqual([false, false]);
+    expect(loops.every((l) => l.signedArea > 0)).toBe(true);
+  });
+
+  it('keeps two loops sharing a whole edge both solid', () => {
+    const loops = normalizeLoops([square(0, 0, 10, 10), square(10, 0, 20, 10)]);
+    expect(loops.map((l) => l.isHole)).toEqual([false, false]);
+  });
+
+  it('still calls a genuinely enclosed loop a hole', () => {
+    const loops = normalizeLoops([square(0, 0, 40, 40), square(10, 10, 20, 20)]);
+    expect(loops.map((l) => l.isHole)).toEqual([false, true]);
+    expect(loops[1].signedArea).toBeLessThan(0);
+  });
+
+  it('brings an island inside a pocket back out as solid', () => {
+    const loops = normalizeLoops([
+      square(0, 0, 100, 100), square(20, 20, 80, 80), square(40, 40, 60, 60),
+    ]);
+    expect(loops.map((l) => l.isHole)).toEqual([false, true, false]);
+    expect(loops[2].depth).toBe(2);
+  });
+
+  it('reports where each loop came from, so callers can carry their own data', () => {
+    // Loops come back biggest-first, which is not the order they went in.
+    const loops = normalizeLoops([square(0, 0, 5, 5), square(0, 0, 40, 40)]);
+    expect(loops.map((l) => l.sourceIndex)).toEqual([1, 0]);
+  });
+
+  it('drops slivers below minArea', () => {
+    const sliver = [0, 0, 1e-4, 0, 1e-4, 1e-4, 0, 1e-4];
+    expect(normalizeLoops([square(0, 0, 10, 10), sliver])).toHaveLength(1);
   });
 });

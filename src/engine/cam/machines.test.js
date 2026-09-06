@@ -14,22 +14,29 @@ describe('the library itself', () => {
 
   it('names every machine by make and model', () => {
     for (const m of MACHINES) {
+      // eslint-disable-next-line jest/valid-expect
       expect(m.label, m.id).toBe(`${m.brand} · ${m.model}`);
+      // eslint-disable-next-line jest/valid-expect
       expect(m.note.length, m.id).toBeGreaterThan(10);
     }
   });
 
   it('points every machine at a dialect that exists', () => {
     for (const m of MACHINES) {
+      // eslint-disable-next-line jest/valid-expect
       expect(DIALECTS[m.controller], `${m.id} -> ${m.controller}`).toBeTruthy();
     }
   });
 
   it('gives every machine a usable envelope', () => {
     for (const m of MACHINES) {
+      // eslint-disable-next-line jest/valid-expect
       expect(m.maxRpm, m.id).toBeGreaterThan(m.minRpm);
+      // eslint-disable-next-line jest/valid-expect
       expect(m.maxFeed, m.id).toBeGreaterThan(0);
+      // eslint-disable-next-line jest/valid-expect
       expect(m.rapidRate, m.id).toBeGreaterThanOrEqual(m.maxFeed);
+      // eslint-disable-next-line jest/no-conditional-expect, jest/valid-expect
       if (m.kind === 'turn') expect(m.maxTurnRpm, m.id).toBeGreaterThan(0);
     }
   });
@@ -38,20 +45,26 @@ describe('the library itself', () => {
     // The gap this closes: lathes carried no travel at all, so "will it fit"
     // could only ever be answered for mills.
     for (const m of MACHINES) {
+      // eslint-disable-next-line jest/valid-expect
       expect(m.travel, m.id).toBeTruthy();
       for (const axis of m.linear) {
+        // eslint-disable-next-line jest/valid-expect
         expect(m.travel[axis], `${m.id} ${axis}`).toBeGreaterThan(0);
       }
       // ...and carries no stroke for an axis it does not have.
       const extra = Object.keys(m.travel).filter((a) => !m.linear.includes(a));
+      // eslint-disable-next-line jest/valid-expect
       expect(extra, m.id).toEqual([]);
     }
   });
 
   it('knows how many axes every machine has, and which letters', () => {
     for (const m of MACHINES) {
+      // eslint-disable-next-line jest/valid-expect
       expect(m.axisCount, m.id).toBe(m.linear.length + m.rotary.length);
+      // eslint-disable-next-line jest/valid-expect
       expect(m.linear.length, m.id).toBeGreaterThanOrEqual(2);
+      // eslint-disable-next-line jest/valid-expect
       expect(axisLetters(m), m.id).toEqual([...m.linear, ...m.rotary]);
     }
   });

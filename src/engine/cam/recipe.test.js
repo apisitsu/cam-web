@@ -45,6 +45,7 @@ describe('toolChoicesFor', () => {
     expect(face.fits).toBe(true);      // Ø50 skimming a 40 mm wide part is fine
     expect(rough.fits).toBe(true);     // Ø20 is exactly half of 40
     const tooBig = toolChoicesFor('rough', mill).find((c) => c.tool.diameter > 20);
+    // eslint-disable-next-line jest/no-conditional-expect
     if (tooBig) expect(tooBig.fits).toBe(false);
   });
 });
@@ -238,6 +239,7 @@ describe('operationKindsFor', () => {
   it('has a default tool for every kind the geometry supports', () => {
     const mill = ctxFor(box(60, 40, 15));
     for (const kind of ['face', 'rough', 'finish']) {
+      // eslint-disable-next-line jest/valid-expect
       expect(defaultToolFor(kind, mill), kind).toBeTruthy();
     }
   });

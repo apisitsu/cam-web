@@ -39,6 +39,7 @@ function mount(extra = {}) {
   );
 }
 
+// eslint-disable-next-line testing-library/await-async-query
 const named = (r, name) => r.scene.findAllByType('Mesh').filter((m) => m.instance.name === name);
 
 describe('the arbor toggle reaches the scene', () => {

@@ -2,6 +2,13 @@ import { describe, it, expect } from 'vitest';
 import { readFileSync } from 'node:fs';
 import { sidebarSections, isRunMode, SECTIONS, RUN_SECTIONS } from './sidebar.js';
 
+// Resolved against this file, not the working directory. `'src/App.jsx'` only
+// finds anything when the runner is started from the cam-web root; inside
+// EngineerSystem the app is a subtree of a much larger src/ and the test read a
+// path that does not exist there — silently, because a file it cannot read
+// yields no `show.x` matches, which is not distinguishable from a clean App.
+const APP_JSX = new URL('../../App.jsx', import.meta.url);
+
 describe('sidebarSections while set up', () => {
   it('shows everything when the program is not running', () => {
     const s = sidebarSections({ playing: false });
@@ -22,7 +29,8 @@ describe('sidebarSections while running', () => {
 
   it('hides every setup section — that is the point', () => {
     const s = sidebarSections({ playing: true });
-    for (const name of ['files', 'project', 'cam', 'machine', 'stats', 'warnings', 'tools', 'removal']) {
+    for (const name of ['files', 'project', 'cam', 'machine', 'warnings', 'tools', 'removal']) {
+      // eslint-disable-next-line jest/valid-expect
       expect(s[name], name).toBe(false);
     }
   });
@@ -52,19 +60,21 @@ describe('the names App actually asks for', () => {
   // the section would vanish in *both* modes and no other test would notice.
   // Cheap to guard, and the failure is otherwise invisible.
   it('are all real sections', () => {
-    const src = readFileSync('src/App.jsx', 'utf8');
+    const src = readFileSync(APP_JSX, 'utf8');
     const used = [...src.matchAll(/\bshow\.([a-zA-Z]+)/g)].map((m) => m[1]);
     expect(used.length).toBeGreaterThan(0);
+    // eslint-disable-next-line jest/valid-expect
     for (const name of used) expect(SECTIONS, `show.${name}`).toContain(name);
   });
 
   it('cover every section that is meant to be collapsible', () => {
     // program and errors are rendered unconditionally — they survive run mode —
     // so every *other* section must be gated, or Play would leave it on screen.
-    const src = readFileSync('src/App.jsx', 'utf8');
+    const src = readFileSync(APP_JSX, 'utf8');
     const used = new Set([...src.matchAll(/\bshow\.([a-zA-Z]+)/g)].map((m) => m[1]));
     for (const name of SECTIONS) {
       if (RUN_SECTIONS.includes(name)) continue;
+      // eslint-disable-next-line jest/valid-expect
       expect(used, `show.${name} is missing from App.jsx`).toContain(name);
     }
   });

@@ -392,8 +392,49 @@ export function pointInLoop(loop, x, y) {
   return inside;
 }
 
+/**
+ * A point that is **strictly inside** a loop, for containment tests.
+ *
+ * Nesting used to be tested with the loop's first *vertex*, which is on its own
+ * boundary and can therefore be on another loop's boundary too — and a crossing
+ * test through a point that lies exactly on the edge it is testing against
+ * answers arbitrarily. Two loops that touch at a corner then come back as one
+ * nested inside the other, and nesting is what decides solid from hole: a
+ * boolean that produced two shapes meeting at a point had one of them silently
+ * become a pocket in the other.
+ *
+ * The point is found the way ear clipping finds one: at a convex vertex whose
+ * triangle holds no other vertex, the midpoint of the diagonal across it is
+ * interior. Falls back to the first vertex for a degenerate ring, where there is
+ * no interior to find.
+ */
+export function interiorPoint(pts) {
+  const n = pts.length / 2;
+  if (n < 3) return [pts[0], pts[1]];
+  const sign = loopArea(pts) >= 0 ? 1 : -1;
+  const at = (i) => { const k = ((i % n) + n) % n; return [pts[k * 2], pts[k * 2 + 1]]; };
+  const cross = (a, b, c) => (b[0] - a[0]) * (c[1] - a[1]) - (b[1] - a[1]) * (c[0] - a[0]);
+
+  for (let i = 0; i < n; i++) {
+    const a = at(i - 1);
+    const v = at(i);
+    const b = at(i + 1);
+    if (cross(a, v, b) * sign <= 0) continue; // reflex or flat in this loop's own winding
+    let clear = true;
+    for (let j = 0; j < n && clear; j++) {
+      if (j === ((i - 1) % n + n) % n || j === i || j === (i + 1) % n) continue;
+      const p = at(j);
+      if (cross(a, v, p) * sign >= 0 && cross(v, b, p) * sign >= 0 && cross(b, a, p) * sign >= 0) {
+        clear = false;
+      }
+    }
+    if (clear) return [(a[0] + b[0]) / 2, (a[1] + b[1]) / 2];
+  }
+  return [pts[0], pts[1]];
+}
+
 /** Reverse a loop's winding in place-free fashion. */
-function reversed(pts) {
+export function reversed(pts) {
   const out = new Array(pts.length);
   const n = pts.length / 2;
   for (let i = 0; i < n; i++) {
@@ -425,29 +466,53 @@ function reversed(pts) {
 export function sliceLoops(mesh, axis, coord, opts = {}) {
   const { tol = 1e-4, minArea = 1e-6 } = opts;
   const { closed, open } = chainSegments(slicePlane(mesh, axis, coord), tol);
+  return { loops: normalizeLoops(closed, { minArea }), openCount: open.length, open };
+}
 
+/**
+ * Sort closed loops biggest-first and force the outer-CCW / hole-CW convention
+ * on them, deciding which is which by **nesting**.
+ *
+ * Split out of `sliceLoops` because the sketcher needs exactly the same rule for
+ * the loops it chains out of sketch geometry (`engine/sketch/loops.js`), and the
+ * convention has to be stated once: everything downstream — Clipper offsetting,
+ * extrusion, the CAM planner — reads winding as the difference between solid and
+ * hole, so two copies of this that drift produce a pocket machined as an island.
+ * The reasoning behind nesting-over-winding is in `sliceLoops` above.
+ *
+ * `sourceIndex` is the loop's position in the input, so a caller that carries its
+ * own metadata per loop (the sketcher tracks which entities formed each one) can
+ * map back after the sort and the possible reversal.
+ *
+ * @param {number[][]} closed  loops as [x0,y0,x1,y1,...], first point not repeated
+ */
+export function normalizeLoops(closed, { minArea = 1e-6 } = {}) {
   const raw = [];
-  for (const pts of closed) {
+  for (let i = 0; i < closed.length; i++) {
+    const pts = closed[i];
     const signedArea = loopArea(pts);
     if (Math.abs(signedArea) < minArea) continue;
-    raw.push({ pts, area: Math.abs(signedArea), signedArea });
+    raw.push({
+      pts, area: Math.abs(signedArea), signedArea, sourceIndex: i, probe: interiorPoint(pts),
+    });
   }
   // Biggest first, so a containing loop is always tested before what it holds.
   raw.sort((a, b) => b.area - a.area);
 
-  const loops = raw.map((r, i) => {
+  return raw.map((r, i) => {
     let depth = 0;
     for (let j = 0; j < i; j++) {
-      if (pointInLoop(raw[j].pts, r.pts[0], r.pts[1])) depth++;
+      if (pointInLoop(raw[j].pts, r.probe[0], r.probe[1])) depth++;
     }
     const isHole = depth % 2 === 1;
     // Force the convention: outer counter-clockwise, hole clockwise.
     const wantPositive = !isHole;
     const points = (r.signedArea > 0) === wantPositive ? r.pts : reversed(r.pts);
-    return { points, area: r.area, isHole, depth, signedArea: wantPositive ? r.area : -r.area };
+    return {
+      points, area: r.area, isHole, depth, sourceIndex: r.sourceIndex,
+      signedArea: wantPositive ? r.area : -r.area,
+    };
   });
-
-  return { loops, openCount: open.length, open };
 }
 
 /**

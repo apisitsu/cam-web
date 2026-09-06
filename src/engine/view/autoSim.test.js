@@ -36,17 +36,25 @@ describe('stockStated', () => {
 });
 
 describe('originStated', () => {
-  it('is any axis touched off — a setter does them one at a time', () => {
-    expect(originStated({ axesSet: [true, false, false] })).toBe(true);
-    expect(originStated({ axesSet: [false, false, true] })).toBe(true);
+  it('milling needs all three linear axes — a partly set datum is worse than none', () => {
+    expect(originStated({ axesSet: [true, false, false] })).toBe(false);
+    expect(originStated({ axesSet: [true, true, false] })).toBe(false);
+    expect(originStated({ axesSet: [true, true, true] })).toBe(true);
   });
 
-  it('is a datum point carried in from a saved project', () => {
+  it('turning needs only the one axis it measures along', () => {
+    expect(originStated({ axesSet: [false, false, true] }, 'turn')).toBe(true);
+    expect(originStated({ axesSet: [true, false, false] }, 'turn')).toBe(true);
+  });
+
+  it('is a datum point carried in from a saved project, whatever the mode', () => {
     expect(originStated({ axesSet: [false, false, false], point: [10, 5, 0] })).toBe(true);
+    expect(originStated({ axesSet: [false, false, false], point: [10, 5, 0] }, 'turn')).toBe(true);
   });
 
   it('is nothing at all when nothing has been picked', () => {
     expect(originStated({ axesSet: [false, false, false], point: null })).toBe(false);
+    expect(originStated({ axesSet: [true, true, true] }, 'turn')).toBe(true);
     expect(originStated({})).toBe(false);
     expect(originStated(null)).toBe(false);
   });
@@ -65,6 +73,12 @@ describe('autoSimKey — the setup that would be simulated', () => {
     expect(autoSimKey()).toBeNull();
   });
 
+  it('holds until milling has all three linear axes, but turning needs only one', () => {
+    expect(autoSimKey({ ...SETUP, datum: { axesSet: [true, true, false], point: [0, 0, 0] } })).toBeNull();
+    expect(autoSimKey({ ...SETUP, mode: 'turn', datum: { axesSet: [false, false, true], point: [0, 0, 0] } }))
+      .toEqual(expect.any(String));
+  });
+
   it('changes when the stock changes', () => {
     expect(autoSimKey({ ...SETUP, stockSize: { x: 120, y: 60, z: 20 } }))
       .not.toBe(autoSimKey(SETUP));
@@ -75,10 +89,10 @@ describe('autoSimKey — the setup that would be simulated', () => {
       .not.toBe(autoSimKey(SETUP));
     expect(autoSimKey({ ...SETUP, datum: { axesSet: [true, true, true], point: [1, 0, 0] } }))
       .not.toBe(autoSimKey(SETUP));
-    // Which axes were touched off is part of it: two setups can share a point
-    // and mean different things about which axes the operator owns.
-    expect(autoSimKey({ ...SETUP, datum: { axesSet: [true, false, false], point: [0, 0, 0] } }))
-      .not.toBe(autoSimKey(SETUP));
+    // For turning, which axis was touched off is still part of the key: two
+    // setups can share a point and mean different things about which axis owns it.
+    expect(autoSimKey({ ...SETUP, mode: 'turn', datum: { axesSet: [true, false, false], point: [0, 0, 0] } }))
+      .not.toBe(autoSimKey({ ...SETUP, mode: 'turn', datum: { axesSet: [false, false, true], point: [0, 0, 0] } }));
   });
 
   it('changes when the program does', () => {

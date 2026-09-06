@@ -17,13 +17,15 @@
     "@react-three/drei": "^10.7.7",
     "@react-three/fiber": "^9.6.0",
     "@salusoft89/planegcs": "^1.2.0",
-    "antd": "^5.21.0",
+    "antd": "^5.29.1",
     "clipper-lib": "^6.4.2",
     "comlink": "^4.4.2",
     "react": "^19.0.0",
     "react-dom": "^19.0.0",
     "three": "^0.184.0",
-    "zustand": "^5.0.2"
+    "three-bvh-csg": "^0.0.18",
+    "three-mesh-bvh": "^0.9.14",
+    "zustand": "^5.0.11"
   },
   "devDependencies": {
     "@react-three/test-renderer": "^9.1.0",

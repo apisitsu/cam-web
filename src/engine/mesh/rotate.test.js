@@ -106,15 +106,19 @@ describe('index presets', () => {
   });
 
   it('starts every preset at A0', () => {
+    // eslint-disable-next-line jest/valid-expect
     for (const p of INDEX_PRESETS) expect(p.angles[0], p.id).toBe(0);
   });
 
   it('spaces every preset evenly and stays inside one turn', () => {
     for (const p of INDEX_PRESETS) {
       for (const a of p.angles) {
+        // eslint-disable-next-line jest/valid-expect
         expect(a, p.id).toBeGreaterThanOrEqual(0);
+        // eslint-disable-next-line jest/valid-expect
         expect(a, p.id).toBeLessThan(360);
       }
+      // eslint-disable-next-line jest/valid-expect
       expect(new Set(p.angles).size, p.id).toBe(p.angles.length);
     }
   });

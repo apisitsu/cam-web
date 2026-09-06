@@ -55,7 +55,7 @@ export function effectiveTool({ detected = null, override = null, fallback = {} 
 
   const diameter = ov.diameter ?? det.diameter ?? null;
   const radius = diameter != null ? diameter / 2 : (det.radius ?? null);
-  const cutter = ov.cutter
+  const stated = ov.cutter
     // A project saved before the tool table offered types carries only the old
     // Flat/Ball choice. "Ball" was an explicit pick of a rounded end and must
     // still win over the comment; "flat" was the default half of a two-way
@@ -63,6 +63,27 @@ export function effectiveTool({ detected = null, override = null, fallback = {} 
     ?? (ov.simType === 'ball' ? 'ball' : null)
     ?? det.cutter
     ?? null;
+  // The comment named nothing we recognise (`T1 M6 (ROUGH D6)`): it gave a size
+  // and said nothing about the shape. The fallback picker is then the only
+  // opinion in the room, so it decides the shape — the size still comes from the
+  // program, which did state one.
+  //
+  // `det.unclassified` and not merely `!det.cutter`, because a reamer, a tap and
+  // a boring bar are ALSO `cutter: null` — recognised, and deliberately
+  // shapeless, since they size or thread a hole that is already there. Those
+  // must keep the plain flat/ball rather than borrow whatever the picker holds.
+  //
+  // Narrower than it looks: `ov.simType` (the operator's own Flat/Ball on this
+  // row) still counts as stated, and the picker's default IS `endmill`, so
+  // nothing moves for anyone who has not deliberately chosen something else.
+  // What it fixes is the case where they have — the pick used to be silently
+  // outranked by a comment that never named a cutter at all.
+  const shapeUnstated = Boolean(det.unclassified) && !stated && !ov.simType;
+  // The fallback's shape, not its id: `sim/session.js` builds its fallback with
+  // `cutterGeometry`, whose output is `{radius, type, angle}` with no cutter id
+  // at all, while `App.jsx` passes an id as well. Reading the fields works for
+  // both, and the carvers only ever wanted `type` and `angle`.
+  const cutter = stated ?? (shapeUnstated ? fallback.cutter ?? null : null);
   const simType = ov.simType ?? det.simType ?? null;
   const length = ov.length ?? det.length ?? null;
 
@@ -77,15 +98,25 @@ export function effectiveTool({ detected = null, override = null, fallback = {} 
   }
 
   const spec = cutter ? cutterById(cutter) : null;
-  const angle = ov.angle ?? spec?.angle;
+  // The surface the carvers stamp with. A recognised cutter decides it; failing
+  // that, an unstated shape takes the fallback's; failing that, the old flat/ball.
+  const type = spec?.profile
+    ?? (shapeUnstated ? fallback.type : null)
+    ?? simType
+    ?? 'flat';
+  // A cone's angle follows whoever chose the cone: the operator's own number on
+  // this tool's row, else the angle that came with the fallback pick (a 60°
+  // chamfer mill typed into the picker must not carve at the catalogue's 90°),
+  // else the type's default.
+  const angle = ov.angle ?? (shapeUnstated ? fallback.angle : undefined) ?? spec?.angle;
   const r = radius > 0 ? radius : (fallback.radius ?? 3);
   const thickness = ov.thickness ?? fallback.thickness;
   const shank = ov.shank ?? fallback.shank;
   return {
     radius: r,
     ...(cutter ? { cutter } : {}),
-    type: spec ? spec.profile : (simType ?? 'flat'),
-    ...(spec?.profile === 'cone' ? { angle: angle ?? 90 } : {}),
+    type,
+    ...(type === 'cone' ? { angle: angle ?? 90 } : {}),
     // The cutting body's length and the shank's diameter, when the operator has
     // stated them — on this tool's own row, else on the fallback picker.
     //

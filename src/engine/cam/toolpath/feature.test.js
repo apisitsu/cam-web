@@ -80,6 +80,7 @@ describe('faceRegionOp', () => {
     // the single worst thing this module could do quietly.
     for (const facing of ['front', 'left', 'down']) {
       const face = facesOf(box(60, 40, 20)).find((f) => f.facing === facing);
+      // eslint-disable-next-line jest/valid-expect
       expect(faceRegionOp(face, cut), facing).toBeNull();
     }
   });

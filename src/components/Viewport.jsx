@@ -20,7 +20,11 @@ import { sliceUpTo } from '../engine/gcode/path.js';
 import { useSketchStore } from '../stores/sketchStore.js';
 import { framing, unionBounds } from '../engine/view/camera.js';
 import { endMillGeometry } from '../engine/view/millTool.js';
+import {
+  odHolderGeometry, boringBarGeometry, partingBladeGeometry,
+} from '../engine/view/latheTool.js';
 import { workTransform, toolTilt } from '../engine/view/rotaryFrame.js';
+import { CAD, metal } from '../theme.js';
 
 /**
  * Eye directions for each preset, in machine coordinates (X right, Y away,
@@ -45,8 +49,41 @@ export { VIEW_DIRS, TURN_VIEW_DIRS } from '../engine/view/camera.js';
  * fill — where the old 3D-diagonal fit zoomed out for an out-of-plane dimension
  * (a 4-axis part's rotated rapid retracts) and shrank the part to a sliver.
  */
+/**
+ * How many pixels of the canvas each edge's floating chrome covers.
+ *
+ * Measured from the DOM rather than hard-coded, because the rail wraps to a
+ * second row on a narrow viewport and the readout comes and goes — a constant
+ * would be wrong exactly when it mattered. Elements opt in with
+ * `data-cam-overlay="top|right|bottom|left"`; anything transient (a popover, a
+ * prompt) deliberately does not, so aiming the camera never depends on what was
+ * open at the time.
+ */
+function overlayInsets(canvasEl) {
+  const out = {
+    left: 0, right: 0, top: 0, bottom: 0,
+  };
+  if (!canvasEl || typeof document === 'undefined') return out;
+  const c = canvasEl.getBoundingClientRect();
+  if (!c.width || !c.height) return out;
+  for (const el of document.querySelectorAll('[data-cam-overlay]')) {
+    const r = el.getBoundingClientRect();
+    if (!r.width || !r.height) continue;
+    // Ignore anything not actually over this canvas.
+    if (r.right <= c.left || r.left >= c.right || r.bottom <= c.top || r.top >= c.bottom) continue;
+    const side = el.getAttribute('data-cam-overlay');
+    if (side === 'top') out.top = Math.max(out.top, r.bottom - c.top);
+    else if (side === 'bottom') out.bottom = Math.max(out.bottom, c.bottom - r.top);
+    else if (side === 'left') out.left = Math.max(out.left, r.right - c.left);
+    else if (side === 'right') out.right = Math.max(out.right, c.right - r.left);
+  }
+  // A little air between the geometry and the panel it sits beside.
+  for (const k of ['left', 'right', 'top', 'bottom']) if (out[k] > 0) out[k] += 8;
+  return out;
+}
+
 function CameraRig({ bounds, sketchFit, view, viewNonce, controlsRef, mode }) {
-  const { camera, size: canvasSize } = useThree();
+  const { camera, size: canvasSize, gl } = useThree();
   // Refit ONLY when the view, the fit request, or the bounds *values* change —
   // never on an incidental re-render. Keying the effect on this string means
   // playback (which re-renders every tick but changes none of these) can't snap
@@ -64,7 +101,11 @@ function CameraRig({ bounds, sketchFit, view, viewNonce, controlsRef, mode }) {
     const box = unionBounds(bounds ?? null, sketchFit ?? null);
     // All the arithmetic — view direction, screen axes, zoom, standoff — lives in
     // `engine/view/camera.js` so it can be tested without a canvas.
-    const f = framing(mode, view, box, canvasSize);
+    // Measured now rather than tracked as state: the rail may have wrapped or
+    // the readout appeared since the last fit, and this is the moment it matters.
+    const f = framing(mode, view, box, canvasSize, {
+      inset: overlayInsets(gl?.domElement),
+    });
     camera.zoom = f.zoom;
     // Orient the camera with the same screen-up the fit was measured against.
     // Using world-up here instead rolls the view whenever the two disagree, and
@@ -74,7 +115,7 @@ function CameraRig({ bounds, sketchFit, view, viewNonce, controlsRef, mode }) {
     camera.near = f.near;
     camera.far = f.far;
     camera.updateProjectionMatrix();
-    const target = new THREE.Vector3(...f.center);
+    const target = new THREE.Vector3(...f.target);
     camera.lookAt(target);
     if (controlsRef.current) {
       controlsRef.current.target.copy(target);
@@ -117,7 +158,7 @@ function EndMill({
       {nose && nose.kind === 'ball' && (
         <mesh name="tool-nose" position={[0, 0, nose.z]}>
           <sphereGeometry args={[nose.radius, 24, 16]} />
-          <meshStandardMaterial color="#e2e8f0" metalness={0.6} roughness={0.3} />
+          <meshStandardMaterial {...metal('#e2e8f0', 0.3)} />
         </mesh>
       )}
       {nose && nose.kind === 'cone' && (
@@ -125,24 +166,24 @@ function EndMill({
         // local Y like the rest, so it stands up with the same +90° about X.
         <mesh name="tool-nose" position={[0, 0, nose.z]} rotation={[Math.PI / 2, 0, 0]}>
           <cylinderGeometry args={[nose.radius, 0, nose.height, 32]} />
-          <meshStandardMaterial color="#e2e8f0" metalness={0.6} roughness={0.3} />
+          <meshStandardMaterial {...metal('#e2e8f0', 0.3)} />
         </mesh>
       )}
       {/* Cutter / flutes. */}
       <mesh name="tool-flutes" position={[0, 0, flutes.z]} rotation={[Math.PI / 2, 0, 0]}>
         <cylinderGeometry args={[flutes.radius, flutes.radius, flutes.length, 32]} />
-        <meshStandardMaterial color="#cbd5e1" metalness={0.7} roughness={0.3} />
+        <meshStandardMaterial {...metal('#cbd5e1', 0.3)} />
       </mesh>
       {/* Shank up to the collet face. */}
       <mesh name="tool-shank" position={[0, 0, shank.z]} rotation={[Math.PI / 2, 0, 0]}>
         <cylinderGeometry args={[shank.radius, shank.radius, shank.length, 24]} />
-        <meshStandardMaterial color="#94a3b8" metalness={0.6} roughness={0.35} />
+        <meshStandardMaterial {...metal('#94a3b8', 0.35)} />
       </mesh>
       {/* Collet / arbor above the gauge line — hidden when it is in the way. */}
       {holder && (
         <mesh name="tool-arbor" position={[0, 0, holder.z]} rotation={[Math.PI / 2, 0, 0]}>
           <cylinderGeometry args={[holder.rBottom, holder.rTop, holder.length, 32]} />
-          <meshStandardMaterial color="#eab308" metalness={0.75} roughness={0.25} />
+          <meshStandardMaterial {...metal('#eab308', 0.25)} />
         </mesh>
       )}
     </>
@@ -158,89 +199,54 @@ function EndMill({
  * at the tip. Turn geometry runs along world Z (spindle) with X radial.
  */
 function ODHolder({ radius = 0.8, shape }) {
-  const sides = shape?.sides ?? 4;
-  const angle = shape?.angle ?? 35;
-  const lead = shape?.lead ?? 93;
-  const s = Math.max(radius * 7, 6);
-  const thickY = Math.max(radius * 2.4, 1.8);
-  const r = s * 0.62;
-  const zScale = sides === 4 ? Math.max(Math.tan((angle / 2) * DEG), 0.2) : 1;
-  const baseRot = sides === 3 ? Math.PI : 0;
-  // Holder depth runs **down** from the cutting plane: a lathe cuts in the plane
-  // through the spindle axis (Y=0), so the insert's rake face is at Y=0 and the
-  // whole tool hangs below it. Looking down from Top you see the rake face lying
-  // exactly on the toolpath.
-  const depth = thickY * 1.5;                         // holder depth (down −Y)
+  // Every number comes from `engine/view/latheTool.js`, which is tested — the
+  // silhouette, where the insert sits on it, and how far the body is set back
+  // from the cutting corner so the two never share a surface. This file used to
+  // carry its own copy of that trigonometry, which is how the seated-flush
+  // flicker survived a fix to the module: there were two of it.
+  const g = odHolderGeometry(radius, shape ?? {});
+  const { insert } = g;
+  const baseRot = insert.sides === 3 ? Math.PI : 0;
+  // A key over the numbers the silhouette is built from: `g` is a fresh object
+  // every render, so it cannot be a dependency itself.
+  const shapeKey = `${g.outline.flat().join(',')}|${g.depth}`;
 
-  // The insert sits at the lead angle: its long diagonal is rotated `t` from
-  // vertical (`t` = lead + angle/2 − 90, mirrored by `flip`; MVVNN 72.5°+35° → 0
-  // upright, MVJNR 93° tips it back). Its acute corner is the cutting tip at the
-  // origin. The SHANK stays vertical; only its HEAD (the bevelled front-bottom)
-  // is cut to the insert angle — the bevel runs along the insert's trailing (+Z)
-  // edge, so the tip juts past the shank's front face on its own.
-  const flip = !!shape?.flip;
-  const sgn = flip ? -1 : 1;
-  const bis = (lead + angle / 2) * DEG;
-  const t = sgn * (bis - Math.PI / 2);
-  const ct = Math.cos(t);
-  const st = Math.sin(t);
-  const iX = r * ct;                                  // insert centre (world X, Z)
-  const iZ = -r * st;
-  // The two insert edges from the tip. Trailing (+Z, toward the shank) and
-  // leading (−Z). Each `ratio` is the Z gained per unit up the shank along that
-  // edge; the head bevels follow them so its walls lie on the insert's edges.
-  const eX = ct + zScale * st, eZ = zScale * ct - st;      // trailing
-  const fX = ct - zScale * st, fZ = -zScale * ct - st;     // leading
-  const ratioBack = Math.abs(eX) > 1e-4 ? eZ / eX : 0;
-  const ratioFront = Math.abs(fX) > 1e-4 ? fZ / fX : 0;
-  const span = Math.max(ratioBack - ratioFront, 0.2);     // guard degenerate wedge
-
-  // Vertical shank (front/back sides at constant Z) over a wedge head whose two
-  // walls follow the insert's two edges. The head height gives a FIXED shank
-  // width W for every insert angle, and the top sits at a FIXED height so all
-  // four holders read the same width and height. `shift` nudges the shank +Z only
-  // when a laid-over insert (MVJNR 80°) would otherwise poke its cutting edge past
-  // the shank's front face; for MVVNN and the tighter MVJNR angles it is 0.
   const holderGeo = useMemo(() => {
-    const W = s * 1.1;
-    const topX = s * 5.0;            // fixed holder height (radial), same for every insert
-    const Xbot = W / span;           // head height → shank width stays W across angles
-    const shift = flip ? Math.max(0, r * fZ - Xbot * ratioFront) : 0;
-    const Zf = Xbot * ratioFront + shift;    // front-bottom on the leading-edge line
-    const Zb = Xbot * ratioBack + shift;     // back-bottom on the trailing-edge line
     const sh = new THREE.Shape();    // shape (x = world X, y = world Z)
-    sh.moveTo(0, 0);                          // A tip
-    sh.lineTo(Xbot, Zf);                      // B shank front-bottom (bevel = leading edge)
-    sh.lineTo(topX, Zf);                      // C shank front-top (straight up +X)
-    sh.lineTo(topX, Zb);                      // D shank back-top
-    sh.lineTo(Xbot, Zb);                     // E shank back-bottom (bevel = trailing edge)
-    sh.closePath();                           // E → A (head bottom-back edge)
-    const g = new THREE.ExtrudeGeometry(sh, { depth, bevelEnabled: false });
-    // rotateX maps the extrusion (shape +z) onto world −Y, so leaving it
-    // untranslated hangs the solid from Y=0 down to −depth: the top face is the
-    // cutting plane. (It used to be centred, which floated the tip off Y=0.)
-    g.rotateX(Math.PI / 2);                   // shape (X,Z) → world XZ, depth → −Y
-    g.computeVertexNormals();
-    return g;
-  }, [s, r, fZ, ratioFront, ratioBack, span, flip, depth]);
+    g.outline.forEach(([x, z], i) => (i === 0 ? sh.moveTo(x, z) : sh.lineTo(x, z)));
+    sh.closePath();
+    const geo = new THREE.ExtrudeGeometry(sh, { depth: g.depth, bevelEnabled: false });
+    // rotateX maps the extrusion (shape +z) onto world −Y, so the solid hangs
+    // from the shape plane downward; the mesh is then placed at `bodyY`, a hair
+    // under the cutting plane, and the insert alone reaches Y=0.
+    geo.rotateX(Math.PI / 2);                 // shape (X,Z) → world XZ, depth → −Y
+    geo.computeVertexNormals();
+    return geo;
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [shapeKey]);
 
   useEffect(() => () => holderGeo.dispose(), [holderGeo]);
 
   return (
     <>
-      <mesh geometry={holderGeo}>
-        <meshStandardMaterial color="#a7afbd" metalness={0.6} roughness={0.42} side={THREE.DoubleSide} />
+      <mesh geometry={holderGeo} position={[0, g.bodyY, 0]}>
+        <meshStandardMaterial {...metal('#a7afbd')} side={THREE.DoubleSide} />
       </mesh>
       {/* Gold insert at the lead angle, acute corner at the tip. Its rake face
-          sits on Y=0, so the cutting corner is exactly at spindle centre. */}
-      <mesh position={[iX, -thickY / 2, iZ]} rotation={[0, t + baseRot, 0]} scale={[1, 1, zScale]}>
-        <cylinderGeometry args={[r, r, thickY, sides]} />
-        <meshStandardMaterial color="#e0a92a" metalness={0.72} roughness={0.3} />
+          sits on Y=0, so the cutting corner is exactly at spindle centre — and
+          it stands proud of the seat below it, as a real insert does. */}
+      <mesh
+        position={[insert.x, g.insertY, insert.z]}
+        rotation={[0, insert.rot + baseRot, 0]}
+        scale={[1, 1, insert.zScale]}
+      >
+        <cylinderGeometry args={[insert.r, insert.r, insert.thickY, insert.sides]} />
+        <meshStandardMaterial {...metal('#e0a92a', 0.3)} />
       </mesh>
       {/* Centre clamp screw, head proud of the rake face. */}
-      <mesh position={[iX, 0, iZ]}>
-        <cylinderGeometry args={[s * 0.16, s * 0.16, thickY * 0.4, 14]} />
-        <meshStandardMaterial color="#3f4653" metalness={0.6} roughness={0.45} />
+      <mesh position={[insert.x, g.screwY, insert.z]}>
+        <cylinderGeometry args={[g.screwR, g.screwR, g.screwH, 14]} />
+        <meshStandardMaterial {...metal('#3f4653', 0.45)} />
       </mesh>
     </>
   );
@@ -252,26 +258,28 @@ function ODHolder({ radius = 0.8, shape }) {
  * Marker only — the sim still carves the outer profile.
  */
 function BoringBar({ radius = 0.8, shape }) {
-  const sides = shape?.sides ?? 4;
-  const angle = shape?.angle ?? 35;
-  const s = Math.max(radius * 7, 6);
-  const thickY = Math.max(radius * 2.4, 1.8);
-  const r = s * 0.42;                                 // small insert
-  const zScale = sides === 4 ? Math.max(Math.tan((angle / 2) * DEG), 0.2) : 1;
-  const rBar = s * 0.55;                              // bar radius
-  const barLen = s * 6;
+  const g = boringBarGeometry(radius, shape ?? {});
+  const { insert } = g;
   return (
     <>
-      {/* Round bar along +Z, hanging below the cutting plane (its top is Y=0). */}
-      <mesh position={[-rBar, -rBar, rBar + barLen / 2]} rotation={[Math.PI / 2, 0, 0]}>
-        <cylinderGeometry args={[rBar, rBar, barLen, 20]} />
-        <meshStandardMaterial color="#a7afbd" metalness={0.6} roughness={0.42} />
+      {/* Round bar along +Z, hanging below the cutting plane — its crown clears
+          that plane by `standout` rather than touching it. */}
+      <mesh
+        position={[-g.barRadius, g.barY, g.barRadius + g.barLength / 2]}
+        rotation={[Math.PI / 2, 0, 0]}
+      >
+        <cylinderGeometry args={[g.barRadius, g.barRadius, g.barLength, 20]} />
+        <meshStandardMaterial {...metal('#a7afbd')} />
       </mesh>
       {/* Gold insert at the tip, acute corner down toward the axis, cutting the
           ID. Rake face on Y=0 so the cutting corner is at spindle centre. */}
-      <mesh position={[-r * 0.4, -thickY / 2, r * 0.6]} rotation={[0, Math.PI / 4, 0]} scale={[1, 1, zScale]}>
-        <cylinderGeometry args={[r, r, thickY, sides]} />
-        <meshStandardMaterial color="#e0a92a" metalness={0.72} roughness={0.3} />
+      <mesh
+        position={[-insert.r * 0.4, g.insertY, insert.r * 0.6]}
+        rotation={[0, Math.PI / 4, 0]}
+        scale={[1, 1, insert.zScale]}
+      >
+        <cylinderGeometry args={[insert.r, insert.r, insert.thickY, insert.sides]} />
+        <meshStandardMaterial {...metal('#e0a92a', 0.3)} />
       </mesh>
     </>
   );
@@ -282,22 +290,21 @@ function BoringBar({ radius = 0.8, shape }) {
  * edge at the tip. `grooveW` sets the cut width. Marker only.
  */
 function PartingBlade({ radius = 0.8, shape }) {
-  const s = Math.max(radius * 7, 6);
-  const w = Math.max((shape?.grooveW ?? 3) * 0.35, s * 0.18);  // blade thickness (Z)
-  const bladeH = s * 5;
-  const depth = Math.max(radius * 2.4, 1.8) * 1.4;
+  const g = partingBladeGeometry(radius, shape ?? {});
   return (
     <>
-      {/* Thin blade rising from the tip, hanging below the cutting plane. */}
-      <mesh position={[bladeH / 2, -depth / 2, 0]}>
-        <boxGeometry args={[bladeH, depth, w]} />
-        <meshStandardMaterial color="#a7afbd" metalness={0.6} roughness={0.42} />
+      {/* Thin blade rising from the tip, hanging below the cutting plane and set
+          back from it by `standout` in both directions — so neither its top face
+          nor its leading face shares a plane with the cutting tip's. */}
+      <mesh position={[g.height / 2 + g.standout, g.bladeY, 0]}>
+        <boxGeometry args={[g.height, g.depth, g.width]} />
+        <meshStandardMaterial {...metal('#a7afbd')} />
       </mesh>
-      {/* Cutting tip — a small block flush with the blade's leading (−Z) face,
-          its top edge on Y=0 so the cut is at spindle centre. */}
-      <mesh position={[s * 0.28, -depth * 1.02 / 2, 0]}>
-        <boxGeometry args={[s * 0.55, depth * 1.02, w * 1.15]} />
-        <meshStandardMaterial color="#e0a92a" metalness={0.72} roughness={0.3} />
+      {/* Cutting tip — a small block proud of the blade on every side, its top
+          edge on Y=0 so the cut is at spindle centre. */}
+      <mesh position={[g.tipHeight / 2, g.tipY, 0]}>
+        <boxGeometry args={[g.tipHeight, g.depth * 1.02, g.width * 1.15]} />
+        <meshStandardMaterial {...metal('#e0a92a', 0.3)} />
       </mesh>
     </>
   );
@@ -324,7 +331,7 @@ function Chuck({ zEnd, od }) {
   const jawOuter = bodyR * 0.95;     // jaws reach out nearly to the body rim
   const rMid = (od + jawOuter) / 2;
   const angles = [0, 120, 240].map((d) => (d * Math.PI) / 180);
-  const steel = (c, r = 0.45) => <meshStandardMaterial color={c} metalness={0.55} roughness={r} />;
+  const steel = (c, r = 0.45) => <meshStandardMaterial {...metal(c, r)} />;
 
   return (
     <group>
@@ -351,8 +358,6 @@ function Chuck({ zEnd, od }) {
     </group>
   );
 }
-
-const DEG = Math.PI / 180;
 
 /**
  * Cutting tool at the current tip.
@@ -419,15 +424,17 @@ function AxisLabels({ len = 22 }) {
     fontWeight: 700,
     fontFamily: 'monospace',
     fontSize: 14,
-    textShadow: '0 0 3px #000',
+    // A white halo, because the label now sits on a light viewport — the black
+    // one it used to carry made the letters look bruised rather than legible.
+    textShadow: '0 0 3px #fff, 0 0 6px #fff',
     userSelect: 'none',
     pointerEvents: 'none', // don't intercept orbit drags
   });
   return (
     <group>
-      <Html position={[len, 0, 0]} center><div style={style('#ef4444')}>X</div></Html>
-      <Html position={[0, len, 0]} center><div style={style('#22c55e')}>Y</div></Html>
-      <Html position={[0, 0, len]} center><div style={style('#3b82f6')}>Z</div></Html>
+      <Html position={[len, 0, 0]} center><div style={style(CAD.rapid)}>X</div></Html>
+      <Html position={[0, len, 0]} center><div style={style(CAD.feed)}>Y</div></Html>
+      <Html position={[0, 0, len]} center><div style={style(CAD.accent)}>Z</div></Html>
     </group>
   );
 }
@@ -447,7 +454,7 @@ function SpindleAxis({ bounds }) {
       <bufferGeometry>
         <bufferAttribute attach="attributes-position" args={[points, 3]} />
       </bufferGeometry>
-      <lineBasicMaterial color="#475569" />
+      <lineBasicMaterial color={CAD.sceneLine} />
     </lineSegments>
   );
 }
@@ -465,9 +472,26 @@ export function SceneContents({
   bounds, turnChuck, showStock, toolPos, toolRotary, toolRadius, toolType,
   toolCutter, toolAngle, toolThickness, toolShank, toolLength, turnInsert, bufVer, drawVer, partVer,
   showPart = true,
-  mode = 'mill', sketching = false, showArbor = true,
+  mode = 'mill', sketching = false, showArbor = true, showToolpath = true,
   rotaryFrame = 'part', rotaryCenter, simFrameA = 0, stockSolid = null,
 }) {
+  // **If the scene re-rendered, the scene needs painting.**
+  //
+  // The canvas is `frameloop="demand"`, so nothing reaches the screen without an
+  // `invalidate()`. `Viewport` has one, outside the `<Canvas>`, with a hand-kept
+  // list of every prop that ought to trigger a frame — and a list like that is
+  // only ever as right as the last person to add a prop. It was already wrong:
+  // toggling the arbor changed the scene graph and left the last frame on
+  // screen, so the button flipped and the picture did not. Measured: 0.00% of
+  // viewport pixels changed on the toggle, 9.78% once the camera was nudged into
+  // repainting.
+  //
+  // This one is bound to *this* root (`useThree`, from inside the canvas) and
+  // has **no dependency array on purpose**: React re-rendering these contents is
+  // itself the signal, and it costs exactly the one frame that was wanted.
+  const requestFrame = useThree((s) => s.invalidate);
+  useEffect(() => { requestFrame(); });
+
   // Where the workpiece and the carved stock sit for this frame. They can differ:
   // the height-field sim carves one index in the machine frame, so its block is
   // already turned to `simFrameA` and must only travel the rest of the way.
@@ -476,8 +500,14 @@ export function SceneContents({
   const stockT = workTransform(rotaryFrame, { a, baseA: simFrameA, center: rotaryCenter });
   return (
     <>
-      <ambientLight intensity={0.8} />
-      <directionalLight position={[100, 100, 200]} intensity={0.6} />
+      {/* Key light over the operator's shoulder, plus a weak fill from the
+          opposite side so a face turned away from the key still has a value
+          rather than going flat to the ambient. Two lights is the whole rig —
+          the materials are shaded, not simulated (see `metal()` in theme.js),
+          and shading is all they need. */}
+      <ambientLight intensity={0.72} />
+      <directionalLight position={[100, 100, 200]} intensity={0.75} />
+      <directionalLight position={[-140, -80, 60]} intensity={0.28} />
 
       <axesHelper args={[20]} />
       <AxisLabels len={22} />
@@ -496,7 +526,7 @@ export function SceneContents({
           {/* The backplot is never rotated: it is where the tool went, and in
               the machine frame that is exactly the stationary trail the
               programmed coordinates describe. */}
-          <Backplot drawVer={drawVer} />
+          <Backplot drawVer={drawVer} visible={showToolpath} />
           <WorkGroup name="stock-work" t={stockT}>
             <StockMesh simVer={bufVer} visible={showStock} />
             {/* The uncarved blank, live off the store. Yielded to the carved
@@ -541,12 +571,18 @@ export default function Viewport({
   toolCutter, toolAngle, toolThickness, toolShank, toolLength, turnInsert, bufVer, playhead, partVer,
   showPart = true,
   mode = 'mill', sketching = false, view = 'iso', viewNonce = 0, showArbor = true,
+  showToolpath = true,
   rotaryFrame = 'part', rotaryCenter, simFrameA = 0, stockSolid = null,
 }) {
   const controlsRef = useRef();
   // Disable orbit while dragging a sketch point so the drag moves the point,
   // not the camera (SolidWorks drags geometry, not the view).
   const sketchDragging = useSketchStore((s) => s.dragging);
+  // And turn off left-drag *rotate* whenever the sketch Select tool is active, so
+  // a drag on empty space is free for a marquee (SketchLayer) rather than
+  // tumbling the view. Pan (right-drag) and zoom (wheel) are untouched; other
+  // sketch tools get orbit back.
+  const sketchTool = useSketchStore((s) => s.tool);
 
   // Resolve which rapids/feeds to draw (full backplot, or the sliced sub-path
   // during playback) and stash them in the module view-cache. Children read
@@ -574,14 +610,20 @@ export default function Viewport({
   // `rotaryFrame`/`simFrameA` belong here for the same reason `showArbor` does:
   // the canvas is frameloop="demand", so flipping the frame would not appear on
   // screen until some other input happened to change.
-  }, [drawVer, showStock, toolPos, toolRotary, toolRadius, toolType, toolLength, turnInsert, mode, partVer, showPart, showArbor, rotaryFrame, simFrameA, stockSolid, toolCutter, toolAngle, toolThickness, toolShank]);
+  }, [drawVer, showStock, toolPos, toolRotary, toolRadius, toolType, toolLength, turnInsert, mode, partVer, showPart, showArbor, showToolpath, rotaryFrame, simFrameA, stockSolid, toolCutter, toolAngle, toolThickness, toolShank]);
 
+  // The gradient goes on the canvas ELEMENT, not on a three.js scene background:
+  // CSS paints it for free behind the renderer's transparent clear colour, where
+  // a scene background would be a texture to build, upload and keep in step with
+  // the canvas size. This is the SolidWorks/CATIA viewport — slate blue at the
+  // horizon fading to near-white at the floor, which is what gives an unlit face
+  // something to be seen against.
   return (
     <Canvas
       frameloop="demand"
       orthographic
       camera={{ position: [80, -80, 80], up: [0, 0, 1], zoom: 6, near: 0.1, far: 100000 }}
-      style={{ background: '#0f172a' }}
+      style={{ background: CAD.viewport }}
     >
       <SceneContents
         bounds={bounds}
@@ -604,6 +646,7 @@ export default function Viewport({
         mode={mode}
         sketching={sketching}
         showArbor={showArbor}
+        showToolpath={showToolpath}
         rotaryFrame={rotaryFrame}
         rotaryCenter={rotaryCenter}
         simFrameA={simFrameA}
@@ -618,7 +661,14 @@ export default function Viewport({
         controlsRef={controlsRef}
         mode={mode}
       />
-      <OrbitControls ref={controlsRef} makeDefault enabled={!(sketching && sketchDragging)} minZoom={0.05} maxZoom={2000} />
+      <OrbitControls
+        ref={controlsRef}
+        makeDefault
+        enabled={!(sketching && sketchDragging)}
+        enableRotate={!(sketching && sketchTool === 'select')}
+        minZoom={0.05}
+        maxZoom={2000}
+      />
     </Canvas>
   );
 }

@@ -25,6 +25,7 @@ function mount(extra = {}) {
   );
 }
 
+// eslint-disable-next-line testing-library/await-async-query
 const named = (r, name) => r.scene.findAllByType('Mesh')
   .filter((m) => m.instance.name === name);
 const fluteLength = (r) => named(r, 'tool-flutes')[0].instance.geometry.parameters.height;
@@ -33,6 +34,7 @@ describe('the marker takes the shape of the cutter type', () => {
   it('draws no nose on a square-ended cutter', async () => {
     for (const cutter of ['endmill', 'shoulder', 'face', 'slot']) {
       const r = await mount({ toolCutter: cutter });
+      // eslint-disable-next-line jest/valid-expect
       expect(named(r, 'tool-nose'), cutter).toHaveLength(0);
     }
   });
@@ -75,8 +77,11 @@ describe('the marker takes the shape of the cutter type', () => {
   it('keeps every part of the tool whatever the type', async () => {
     for (const cutter of ['endmill', 'shoulder', 'face', 'slot', 'ball', 'chamfer']) {
       const r = await mount({ toolCutter: cutter });
+      // eslint-disable-next-line jest/valid-expect
       expect(named(r, 'tool-flutes'), cutter).toHaveLength(1);
+      // eslint-disable-next-line jest/valid-expect
       expect(named(r, 'tool-shank'), cutter).toHaveLength(1);
+      // eslint-disable-next-line jest/valid-expect
       expect(named(r, 'tool-arbor'), cutter).toHaveLength(1);
     }
   });

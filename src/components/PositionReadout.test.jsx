@@ -17,6 +17,7 @@ let root;
 
 /** Render the readout with a set of props and hand back the container. */
 async function render(props) {
+  // eslint-disable-next-line testing-library/no-unnecessary-act
   await act(async () => {
     root.render(React.createElement(PositionReadout, props));
   });
@@ -222,13 +223,16 @@ describe('PositionReadout — the footer', () => {
     expect(container.textContent).toContain('rpm');
   });
 
-  it('posts a lathe feed per rev, the way it was programmed', async () => {
+  it('posts a lathe feed in mm/min, with the programmed per-rev feed beneath it', async () => {
     await render({
       count: 500, mode: 'turn', point: [12.5, 0, -30], toolNumber: 101,
       running: { feed: 180, rpm: 1200, feedMode: 95 },
     });
-    expect(field('feed')).toBe('0.15');
-    expect(container.textContent).toContain('mm/rev');
+    // F0.15 at 1200 rpm: the field says what the machine is doing, the note says
+    // what the program states, and neither has to be worked out by the operator.
+    expect(field('feed')).toBe('180');
+    expect(container.textContent).toContain('mm/min');
+    expect(field('feedNote')).toContain('0.15 mm/rev');
   });
 
   it('says nothing definite before a tool, feed or line is known', async () => {

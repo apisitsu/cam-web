@@ -41,6 +41,7 @@ import CommandButton from './CommandButton.jsx';
 import {
   PartIcon, AutoPlanIcon, ClearFaceIcon, ContourIcon, A0FaceIcon, RotaryCentreIcon,
 } from './glyph.jsx';
+import { useFeatureStore } from '../stores/featureStore.js';
 import { useCamPlanStore } from '../stores/camPlanStore.js';
 import { MATERIALS } from '../engine/cam/library.js';
 import {
@@ -52,6 +53,7 @@ import { describeFace, describeEdge } from '../engine/mesh/features.js';
 import { visibleFeatures, hiddenNote } from '../engine/view/featureList.js';
 import { PART_ACCEPT, PART_FORMATS } from '../engine/mesh/import.js';
 import { dialectFor } from '../engine/cam/post/dialect.js';
+import { CAD } from '../theme.js';
 
 const { Text, Title } = Typography;
 
@@ -102,12 +104,19 @@ function ToolSelect({ step, choices, onChange }) {
 }
 
 /**
- * The faces and edges of the part, as a list to pick from.
+ * The faces and edges of the part, as a list to pick from — **closed by default.**
  *
- * A list, not only a click target in the 3D view. Picking in 3D is faster when
- * the face is visible and useless when it is not — a pocket floor under an
- * overhang, the underside, the face that is currently pointing away. The list
- * reaches everything, and hovering a row is what highlights it in the viewport.
+ * The model itself is now the primary way to pick: hovering it highlights what a
+ * click would take, and an edge under the cursor wins over the face behind it
+ * (`PartMesh` + `engine/mesh/pickEdge.js`). Two long lists open on the panel were
+ * noise once that worked, so they start collapsed and the headers stay as a
+ * count.
+ *
+ * They are collapsed and not deleted, and the distinction is the point: picking
+ * in 3D is only possible for a face you can *see*. A pocket floor under an
+ * overhang, the underside, the face currently pointing away from the camera —
+ * none of those has a cursor position, and the list is the only thing that
+ * reaches them. Hovering a row still highlights it, exactly as before.
  */
 /**
  * The pickable faces and edges, as a list.
@@ -144,11 +153,11 @@ const FeaturePicker = React.memo(function FeaturePicker({ features, selected, on
       style={{
         display: 'flex', alignItems: 'center', gap: 6, padding: '3px 4px',
         borderRadius: 4, cursor: 'pointer',
-        background: selected?.id === item.id ? 'rgba(251,191,36,0.18)' : 'transparent',
+        background: selected?.id === item.id ? CAD.selected : 'transparent',
       }}
     >
       <Tag style={{ margin: 0, minWidth: 34, textAlign: 'center' }}>{item.id}</Tag>
-      <Text style={{ flex: 1, fontSize: 11, color: reachable ? '#cbd5e1' : '#64748b' }}>
+      <Text style={{ flex: 1, fontSize: 11, color: reachable ? CAD.icon : CAD.muted }}>
         {label}
       </Text>
       {!reachable && (
@@ -163,7 +172,9 @@ const FeaturePicker = React.memo(function FeaturePicker({ features, selected, on
     <Collapse
       size="small"
       ghost
-      defaultActiveKey={['faces']}
+      // Closed. The viewport is where picking happens now; this is the reach for
+      // what the camera cannot see — see the note above.
+      defaultActiveKey={[]}
       items={[
         {
           key: 'faces',
@@ -207,13 +218,13 @@ function SelectionActions({ feature, onAddFace, onAddEdge, onClear }) {
 
   return (
     <div style={{
-      border: '1px solid rgba(251,191,36,0.4)', borderRadius: 6,
-      padding: '8px 10px', background: 'rgba(251,191,36,0.08)',
+      border: '1px solid rgba(180,83,9,0.35)', borderRadius: 6,
+      padding: '8px 10px', background: 'rgba(251,191,36,0.16)',
     }}>
       <Space wrap style={{ width: '100%', justifyContent: 'space-between' }}>
         <Space size={6}>
           <Tag color="gold" style={{ margin: 0 }}>{feature.id}</Tag>
-          <Text style={{ fontSize: 11, color: '#e2e8f0' }}>
+          <Text style={{ fontSize: 11, color: CAD.text }}>
             {isEdge ? describeEdge(feature) : describeFace(feature)}
           </Text>
         </Space>
@@ -274,7 +285,9 @@ export default function CamPanel() {
   const diameterMode = useCamPlanStore((s) => s.diameterMode);
   const programNumber = useCamPlanStore((s) => s.programNumber);
 
-  const loadPart = useCamPlanStore((s) => s.loadPart);
+  // Imports go through the feature tree so the part always has a history —
+  // `featureStore.importPart` calls `loadPart` and records it as the base.
+  const loadPart = useFeatureStore((s) => s.importPart);
   const makePlan = useCamPlanStore((s) => s.makePlan);
   const sendToViewport = useCamPlanStore((s) => s.sendToViewport);
   const setOption = useCamPlanStore((s) => s.setOption);
@@ -394,11 +407,18 @@ export default function CamPanel() {
       render: (_, row) => (row.step ? (
         <div style={{ fontSize: 11, lineHeight: 1.5 }}>
           <div>{row.step.speeds.rpm} rpm</div>
+          {/* Turning is quoted in mm/min like everything else, with the mm/rev
+              that will actually be posted under G99 beneath it — the two are the
+              same feed, and only one of them can be compared with a milling
+              operation two rows up. */}
           <div>
             {plan?.mode === 'turn'
-              ? `${row.step.speeds.fn} mm/rev`
+              ? `${row.step.speeds.feedPerMin} mm/min`
               : `${row.step.speeds.feed} mm/min`}
           </div>
+          {plan?.mode === 'turn' && (
+            <div style={{ color: CAD.dim }}>{row.step.speeds.fn} mm/rev</div>
+          )}
           {row.step.speeds.limitedBy && (
             <Tooltip title={`Clamped by ${machine.label}'s ${row.step.speeds.limitedBy}`}>
               <Tag color="orange" style={{ marginTop: 2 }}>clamped</Tag>
@@ -437,7 +457,7 @@ export default function CamPanel() {
 
   return (
     <Space direction="vertical" size="middle" style={{ width: '100%' }}>
-      <Title level={5} style={{ color: '#e2e8f0', margin: 0 }}>
+      <Title level={5} style={{ color: CAD.text, margin: 0 }}>
         CAM from a model
       </Title>
 
@@ -525,7 +545,7 @@ export default function CamPanel() {
           {/* The machine comes first because it decides the most: the process,
               the spindle and feed limits, and the dialect the NC is written in. */}
           <div>
-            <Text style={{ color: '#94a3b8', fontSize: 11 }}>Machine</Text>
+            <Text style={{ color: CAD.label, fontSize: 11 }}>Machine</Text>
             <Select
               size="small"
               style={{ width: '100%' }}
@@ -617,11 +637,11 @@ export default function CamPanel() {
               <>
                 <Space size={4}>
                   <Switch size="small" checked={partOff} onChange={(v) => setOption({ partOff: v })} />
-                  <Text style={{ color: '#94a3b8', fontSize: 12 }}>Part off</Text>
+                  <Text style={{ color: CAD.label, fontSize: 12 }}>Part off</Text>
                 </Space>
                 <Space size={4}>
                   <Switch size="small" checked={diameterMode} onChange={(v) => setOption({ diameterMode: v })} />
-                  <Text style={{ color: '#94a3b8', fontSize: 12 }}>X = diameter</Text>
+                  <Text style={{ color: CAD.label, fontSize: 12 }}>X = diameter</Text>
                 </Space>
               </>
             )}
@@ -636,7 +656,7 @@ export default function CamPanel() {
               is moved to sit at whatever point the operator actually touched
               off at. */}
           <div>
-            <Text style={{ color: '#94a3b8', fontSize: 11 }}>
+            <Text style={{ color: CAD.label, fontSize: 11 }}>
               Origin — so a separately loaded .nc program simulates at the same X0/Y0/Z0
             </Text>
             <div style={{ marginTop: 4 }}>
@@ -708,7 +728,7 @@ export default function CamPanel() {
                 <Space size={4} style={{ marginTop: 6 }}>
                   <Switch size="small" checked={datum.reverseX} onChange={toggleReverseX} />
                   <Tooltip title="Rotate the part 180° about Z — reverses which end reads as high X (and high Y with it)">
-                    <Text style={{ color: '#94a3b8', fontSize: 12 }}>Flip X</Text>
+                    <Text style={{ color: CAD.label, fontSize: 12 }}>Flip X</Text>
                   </Tooltip>
                 </Space>
               )}
@@ -724,7 +744,7 @@ export default function CamPanel() {
       {analysis && pickable && (
         <>
           <Divider style={{ margin: '4px 0' }} />
-          <Text style={{ color: '#94a3b8', fontSize: 11 }}>
+          <Text style={{ color: CAD.label, fontSize: 11 }}>
             Pick a face or edge — click the model, or a row below
           </Text>
 
@@ -748,7 +768,7 @@ export default function CamPanel() {
                   chucked at — this turns the whole part about the rotary axis
                   so a picked face reads as A0. */}
               <div style={{ marginTop: 8 }}>
-                <Text style={{ color: '#94a3b8', fontSize: 11 }}>
+                <Text style={{ color: CAD.label, fontSize: 11 }}>
                   A0 face — which way the part faces when the table reads zero
                 </Text>
                 <div style={{ marginTop: 4 }}>
@@ -787,7 +807,7 @@ export default function CamPanel() {
                   simulator pivots on the same physical line the plan indexed
                   about, which `camStore.machineOpts()` reads off this. */}
               <div style={{ marginTop: 8 }}>
-                <Text style={{ color: '#94a3b8', fontSize: 11 }}>
+                <Text style={{ color: CAD.label, fontSize: 11 }}>
                   A-axis centre — where the rotary physically pivots
                 </Text>
                 <div style={{ marginTop: 4 }}>
@@ -845,7 +865,7 @@ export default function CamPanel() {
           <Space wrap style={{ justifyContent: 'space-between', width: '100%' }}>
             <Space>
               <Tag color={plan.mode === 'turn' ? 'gold' : 'blue'}>{MODE_LABEL[plan.mode]}</Tag>
-              <Text style={{ color: '#94a3b8', fontSize: 12 }}>
+              <Text style={{ color: CAD.label, fontSize: 12 }}>
                 {plan.steps.length} operations · ~{plan.totalMinutes.toFixed(1)} min cutting
               </Text>
               {edited && <Tag color="cyan">edited</Tag>}
@@ -913,9 +933,9 @@ export default function CamPanel() {
               rowExpandable: (row) => Boolean(row.step || row.warning),
               expandedRowRender: (row) => (
                 <div style={{ fontSize: 12 }}>
-                  <Text style={{ color: '#cbd5e1' }}>{row.step?.why ?? row.warning}</Text>
+                  <Text style={{ color: CAD.icon }}>{row.step?.why ?? row.warning}</Text>
                   {row.step?.notes?.length > 0 && (
-                    <ul style={{ margin: '6px 0 0 16px', color: '#64748b' }}>
+                    <ul style={{ margin: '6px 0 0 16px', color: CAD.muted }}>
                       {row.step.notes.map((note) => <li key={note}>{note}</li>)}
                     </ul>
                   )}

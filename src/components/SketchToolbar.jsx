@@ -12,23 +12,34 @@ import { Button, Tooltip, Popover, InputNumber, Space, Tag, Typography, Divider,
 import {
   UndoOutlined, RedoOutlined, DeleteOutlined, ThunderboltOutlined,
   NodeIndexOutlined, EllipsisOutlined, BulbOutlined, ClearOutlined,
-  SaveOutlined, FolderOpenOutlined, ExportOutlined, DatabaseOutlined,
+  SaveOutlined, FolderOpenOutlined, ExportOutlined, ImportOutlined, DatabaseOutlined,
 } from '@ant-design/icons';
 import { useState, useEffect, useCallback } from 'react';
 import { useSketchStore } from '../stores/sketchStore.js';
 import { saveProject, openProjectFile, exportSketchDxf } from '../lib/projectIO.js';
 import LibraryPanel from './LibraryPanel.jsx';
+import SketchesPanel from './SketchesPanel.jsx';
+import BuildPanel from './BuildPanel.jsx';
 // The helper this rail introduced now serves the whole app — see `glyph.jsx`.
 import { glyph } from './glyph.jsx';
+import { CAD } from '../theme.js';
 
 const { Text } = Typography;
 const DEG = Math.PI / 180;
+
+// Every rail and prompt on this page floats over the viewport. On the old
+// near-black background a pale panel separated itself by contrast; on the light
+// CAD one it does not, so they all carry the same drop shadow instead. One
+// constant, so the sketcher's six floating surfaces cannot drift apart.
+const FLOAT_SHADOW = '0 2px 10px rgba(23,42,66,0.18)';
 
 // Symbolic glyphs for each drawing tool.
 const SelectIcon = glyph(<path d="M5 3l6 15 2.2-6.2L19.5 9.6z" fill="currentColor" stroke="none" />);
 const PointIcon = glyph(<><circle cx="12" cy="12" r="3.2" fill="currentColor" stroke="none" /><path d="M12 3v3M12 18v3M3 12h3M18 12h3" /></>);
 const LineIcon = glyph(<><line x1="5" y1="19" x2="19" y2="5" /><circle cx="5" cy="19" r="1.8" fill="currentColor" /><circle cx="19" cy="5" r="1.8" fill="currentColor" /></>);
 const RectIcon = glyph(<rect x="4.5" y="6.5" width="15" height="11" />);
+const SlotIcon = glyph(<path d="M8.5 7.5h7a4.5 4.5 0 0 1 0 9h-7a4.5 4.5 0 0 1 0-9z" />);
+const PolygonIcon = glyph(<path d="M12 4l7 4.2v7.6L12 20l-7-4.2V8.2z" />);
 const CircleIcon = glyph(<circle cx="12" cy="12" r="7.5" />);
 const ArcIcon = glyph(<><path d="M4 18A14 14 0 0 1 18 4" /><circle cx="4" cy="18" r="1.8" fill="currentColor" /><circle cx="18" cy="4" r="1.8" fill="currentColor" /></>);
 const DimIcon = glyph(<><path d="M4 7v10M20 7v10M4 12h16" /><path d="M7 9l-3 3 3 3M17 9l3 3-3 3" /></>);
@@ -38,12 +49,18 @@ const ChamferIcon = glyph(<path d="M5 20V10L11 4H20" />);
 const ConstructionIcon = glyph(<path d="M4 18L20 6" strokeDasharray="3 2.5" />);
 const MirrorIcon = glyph(<><path d="M12 3v18" strokeDasharray="3 2" /><path d="M9 7L4 12l5 5z" /><path d="M15 7l5 5-5 5z" /></>);
 const OffsetIcon = glyph(<><path d="M4 16c4-8 12-8 16 0" /><path d="M4 20c4-8 12-8 16 0" opacity="0.55" /></>);
+// 2D→3D. Planes: two sheets at an angle, the way a CAD tree draws its reference
+// planes. Extrude: a profile with the solid pushed off it.
+const PlanesIcon = glyph(<><path d="M3 8.5l8-3.5 10 3-8 3.5z" /><path d="M3 8.5v7l8 3.5v-7" /><path d="M21 8v7l-10 4" opacity="0.55" /></>);
+const ExtrudeIcon = glyph(<><rect x="3.5" y="9.5" width="10" height="8" /><path d="M3.5 9.5l6-5h10l-6 5" /><path d="M19.5 4.5v8l-6 5" /></>);
 
 const TOOLS = [
-  { value: 'select', label: 'Select', Icon: SelectIcon, hint: 'Click to select points, lines, circles or arcs · drag a point to move it (the sketch re-solves) · double-click a dimension to edit it' },
-  { value: 'point', label: 'Point', Icon: PointIcon, hint: 'Click on the plane to add points' },
-  { value: 'line', label: 'Line', Icon: LineIcon, hint: 'Click to start, click to finish · locks to 0/45/90…° and snaps tangent to circles/arcs · Esc cancels' },
+  { value: 'select', label: 'Select', Icon: SelectIcon, hint: 'Click to select · drag empty space for a box (left→right encloses, right→left also grabs what it touches) · drag a point to move it · double-click a dimension to edit it' },
+  { value: 'point', label: 'Point', Icon: PointIcon, hint: 'Click on the plane to add points · snaps to vertices, curve rims, line midpoints, circle quadrants (the axis high points) and where two curves cross' },
+  { value: 'line', label: 'Line', Icon: LineIcon, hint: 'Click to start, click to finish · locks to 0/45/90…°, snaps tangent to circles/arcs, to line midpoints, quadrants and curve intersections · Esc cancels' },
   { value: 'rectangle', label: 'Rectangle', Icon: RectIcon, hint: 'Click two opposite corners' },
+  { value: 'slot', label: 'Slot', Icon: SlotIcon, hint: 'Click the two ends of the slot axis, then a point setting the radius · the flanks stay tangent to the caps' },
+  { value: 'polygon', label: 'Polygon', Icon: PolygonIcon, hint: 'Click the centre, then a corner (sets size and rotation) · pick the number of sides on the rail' },
   { value: 'circle', label: 'Circle', Icon: CircleIcon, hint: 'Click centre, then a point on the rim' },
   { value: 'arc', label: 'Arc', Icon: ArcIcon, hint: 'Click centre, start, then end (sweeps CCW) · Esc cancels' },
   { value: 'dimension', label: 'Dimension', Icon: DimIcon, hint: 'Pick 1 pt (to origin) / 2 pts / 1 line / 1 circle / 1 arc / pt+line / 2 lines (gap or angle) / line+circle / 2 circles — set value, or click empty space to apply' },
@@ -219,7 +236,7 @@ function ConstraintsPanel() {
       <div style={{ maxHeight: 160, overflow: 'auto', marginTop: 4 }}>
         {sk.constraints.map((c, i) => (
           <Space key={i} size={4} style={{ width: '100%', justifyContent: 'space-between' }}>
-            <Text style={{ fontSize: 11, color: c.driven ? '#c4b5fd' : '#9ca3af' }}>
+            <Text style={{ fontSize: 11, color: c.driven ? CAD.skDriven : CAD.muted }}>
               {c.kind} [{c.refs.join(', ')}]
               {c.value != null ? ` = ${c.kind === 'angle' ? `${(c.value / DEG).toFixed(1)}°` : Math.round(c.value * 100) / 100}` : ''}
               {c.driven ? ' (ref)' : ''}
@@ -230,7 +247,7 @@ function ConstraintsPanel() {
                   <Button
                     size="small"
                     type="text"
-                    style={{ fontSize: 11, lineHeight: 1, padding: '0 4px', color: c.driven ? '#a78bfa' : '#64748b' }}
+                    style={{ fontSize: 11, lineHeight: 1, padding: '0 4px', color: c.driven ? CAD.skDriven : CAD.muted }}
                     onClick={() => toggleDriven(i)}
                   >
                     D
@@ -288,16 +305,16 @@ function DimensionInput() {
       style={{
         position: 'absolute', top: 60, left: 12, zIndex: 6,
         display: 'flex', gap: 6, alignItems: 'center',
-        background: 'rgba(15,23,42,0.95)', border: '1px solid #38bdf8',
-        padding: '6px 10px', borderRadius: 8,
+        background: CAD.glassSolid, border: `1px solid ${CAD.accent}`,
+        padding: '6px 10px', borderRadius: 4, boxShadow: FLOAT_SHADOW,
       }}
     >
-      <Text style={{ color: '#cbd5e1', fontSize: 12 }}>{dimensionPending.label}</Text>
+      <Text style={{ color: CAD.icon, fontSize: 12 }}>{dimensionPending.label}</Text>
       {angular && (
         <>
-          <Text style={{ color: '#22d3ee', fontSize: 11 }}>base L{dimensionPending.refs[0]}</Text>
-          <Text style={{ color: '#64748b', fontSize: 11 }}>→</Text>
-          <Text style={{ color: '#f59e0b', fontSize: 11 }}>rotate L{dimensionPending.refs[1]}</Text>
+          <Text style={{ color: CAD.skAxis, fontSize: 11 }}>base L{dimensionPending.refs[0]}</Text>
+          <Text style={{ color: CAD.muted, fontSize: 11 }}>→</Text>
+          <Text style={{ color: CAD.skPreview, fontSize: 11 }}>rotate L{dimensionPending.refs[1]}</Text>
           <Tooltip title="Swap base / rotating line">
             <Button size="small" onClick={swapDimensionRefs} style={{ padding: '0 6px' }}>⇄</Button>
           </Tooltip>
@@ -327,7 +344,7 @@ function DimensionInput() {
         addonAfter={dimensionPending.unit ?? 'mm'}
       />
       <Button size="small" type="primary" onClick={apply}>Set</Button>
-      <Button size="small" type="text" style={{ color: '#94a3b8' }} onClick={cancelDimension}>✕</Button>
+      <Button size="small" type="text" style={{ color: CAD.label }} onClick={cancelDimension}>✕</Button>
     </div>
   );
 }
@@ -361,11 +378,11 @@ function EditDimensionInput() {
       style={{
         position: 'absolute', top: 104, left: 12, zIndex: 6,
         display: 'flex', gap: 6, alignItems: 'center',
-        background: 'rgba(15,23,42,0.95)', border: '1px solid #22c55e',
-        padding: '6px 10px', borderRadius: 8,
+        background: CAD.glassSolid, border: `1px solid ${CAD.feed}`,
+        padding: '6px 10px', borderRadius: 4, boxShadow: FLOAT_SHADOW,
       }}
     >
-      <Text style={{ color: '#cbd5e1', fontSize: 12 }}>Edit {editingConstraint.label}</Text>
+      <Text style={{ color: CAD.icon, fontSize: 12 }}>Edit {editingConstraint.label}</Text>
       <InputNumber controls={false}
         autoFocus
         size="small"
@@ -376,7 +393,7 @@ function EditDimensionInput() {
         addonAfter={editingConstraint.angular ? '°' : 'mm'}
       />
       <Button size="small" type="primary" onClick={apply}>Set</Button>
-      <Button size="small" type="text" style={{ color: '#94a3b8' }} onClick={cancelEditConstraint}>✕</Button>
+      <Button size="small" type="text" style={{ color: CAD.label }} onClick={cancelEditConstraint}>✕</Button>
     </div>
   );
 }
@@ -419,12 +436,12 @@ function ChamferInput() {
         style={{
           position: 'absolute', top: 60, left: 12, zIndex: 6,
           display: 'flex', gap: 8, alignItems: 'center', maxWidth: 420,
-          background: 'rgba(15,23,42,0.95)', border: '1px solid #f59e0b',
-          padding: '6px 10px', borderRadius: 8,
+          background: CAD.glassSolid, border: `1px solid ${CAD.skPreview}`,
+          padding: '6px 10px', borderRadius: 4, boxShadow: FLOAT_SHADOW,
         }}
       >
-        <Text style={{ color: '#fbbf24', fontSize: 12 }}>Fillet</Text>
-        <Text style={{ color: '#cbd5e1', fontSize: 12 }}>
+        <Text style={{ color: CAD.skHover, fontSize: 12 }}>Fillet</Text>
+        <Text style={{ color: CAD.icon, fontSize: 12 }}>
           A whole circle has no corner to round against a line or arc — Trim it to an arc first, then apply R.
         </Text>
       </div>
@@ -442,11 +459,11 @@ function ChamferInput() {
       style={{
         position: 'absolute', top: 60, left: 12, zIndex: 6,
         display: 'flex', gap: 6, alignItems: 'center',
-        background: 'rgba(15,23,42,0.95)', border: '1px solid #f59e0b',
-        padding: '6px 10px', borderRadius: 8,
+        background: CAD.glassSolid, border: `1px solid ${CAD.skPreview}`,
+        padding: '6px 10px', borderRadius: 4, boxShadow: FLOAT_SHADOW,
       }}
     >
-      <Text style={{ color: '#cbd5e1', fontSize: 12 }}>{rounded ? 'Fillet' : 'Chamfer'}</Text>
+      <Text style={{ color: CAD.icon, fontSize: 12 }}>{rounded ? 'Fillet' : 'Chamfer'}</Text>
       {twoLines ? (
         <Tooltip title="C = straight chamfer · R = rounded fillet (tangent arc)">
           <Segmented
@@ -495,11 +512,11 @@ function OffsetInput() {
       style={{
         position: 'absolute', top: 60, left: 12, zIndex: 6,
         display: 'flex', gap: 6, alignItems: 'center',
-        background: 'rgba(15,23,42,0.95)', border: '1px solid #34d399',
-        padding: '6px 10px', borderRadius: 8,
+        background: CAD.glassSolid, border: `1px solid ${CAD.skTangent}`,
+        padding: '6px 10px', borderRadius: 4, boxShadow: FLOAT_SHADOW,
       }}
     >
-      <Text style={{ color: '#cbd5e1', fontSize: 12 }}>Offset</Text>
+      <Text style={{ color: CAD.icon, fontSize: 12 }}>Offset</Text>
       <InputNumber controls={false}
         autoFocus
         size="small"
@@ -510,7 +527,7 @@ function OffsetInput() {
         addonAfter="mm"
       />
       <Button size="small" type="primary" onClick={apply}>Set</Button>
-      <Button size="small" type="text" style={{ color: '#94a3b8' }} onClick={cancelOffset}>✕</Button>
+      <Button size="small" type="text" style={{ color: CAD.label }} onClick={cancelOffset}>✕</Button>
     </div>
   );
 }
@@ -534,6 +551,8 @@ export default function SketchToolbar() {
   const toggleConstruction = useSketchStore((s) => s.toggleConstruction);
   const mirror = useSketchStore((s) => s.mirror);
   const beginOffset = useSketchStore((s) => s.beginOffset);
+  const polygonSides = useSketchStore((s) => s.polygonSides);
+  const setPolygonSides = useSketchStore((s) => s.setPolygonSides);
 
   const setError = useSketchStore((s) => s.setError);
   // Save/open failures land on the sketcher's own error line.
@@ -546,6 +565,16 @@ export default function SketchToolbar() {
   const onExportDxf = useCallback(async () => {
     try { await exportSketchDxf(); } catch (e) { setError?.(e?.message || String(e)); }
   }, [setError]);
+  const importDxf = useSketchStore((s) => s.importDxf);
+  const onImportDxf = useCallback(async (file) => {
+    try {
+      // The file's own name becomes the sketch's, so a drawing imported next to
+      // two others is identifiable in the list.
+      importDxf(await file.text(), { name: file.name.replace(/\.[^.]*$/, '') || 'DXF' });
+    } catch (e) {
+      setError?.(e?.message || String(e));
+    }
+  }, [importDxf, setError]);
 
   const activeHint = TOOLS.find((t) => t.value === tool)?.hint;
   // Enablement for the sketch-modify tools, from the current selection.
@@ -555,15 +584,16 @@ export default function SketchToolbar() {
 
   const railBtn = () => ({ width: 34, height: 34 });
   // Vertical hairline separating groups in the horizontal rail.
-  const sep = <div style={{ width: 1, height: 24, background: '#334155', margin: '0 2px' }} />;
+  const sep = <div style={{ width: 1, height: 24, background: CAD.border, margin: '0 2px' }} />;
 
   return (
     <>
-    <div style={{
+    <div data-cam-overlay="top" style={{
       position: 'absolute', top: 12, left: 12, zIndex: 5,
       display: 'flex', flexDirection: 'row', gap: 6, alignItems: 'center', flexWrap: 'wrap',
-      background: 'rgba(15,23,42,0.82)', border: '1px solid #334155',
-      padding: 6, borderRadius: 8, maxWidth: 'calc(100% - 24px)',
+      background: CAD.glass, border: `1px solid ${CAD.border}`,
+      padding: 6, borderRadius: 4, boxShadow: FLOAT_SHADOW,
+      maxWidth: 'calc(100% - 24px)',
     }}>
       {TOOLS.map((t) => (
         <Tooltip key={t.value} title={`${t.label} — ${t.hint}`} placement="bottom">
@@ -571,10 +601,27 @@ export default function SketchToolbar() {
             type={tool === t.value ? 'primary' : 'text'}
             icon={<t.Icon />}
             onClick={() => setTool(t.value)}
-            style={{ ...railBtn(), color: tool === t.value ? undefined : '#cbd5e1' }}
+            style={{ ...railBtn(), color: tool === t.value ? undefined : CAD.icon }}
           />
         </Tooltip>
       ))}
+
+      {/* The polygon's side count, beside the tool rather than in a popover: it
+          is picked before the two clicks, not after, so it has to be reachable
+          without covering the viewport being clicked on. */}
+      {tool === 'polygon' && (
+        <Tooltip title="Sides — set before drawing; the polygon is inscribed in the circle through the corner you click" placement="bottom">
+          <InputNumber
+            size="small"
+            min={3}
+            max={64}
+            value={polygonSides}
+            onChange={(v) => setPolygonSides(v)}
+            style={{ width: 62 }}
+            data-polygon-sides
+          />
+        </Tooltip>
+      )}
 
       {sep}
 
@@ -587,7 +634,7 @@ export default function SketchToolbar() {
           icon={<ConstructionIcon />}
           disabled={!geomSelected}
           onClick={() => toggleConstruction()}
-          style={{ ...railBtn(), color: geomSelected ? '#cbd5e1' : undefined }}
+          style={{ ...railBtn(), color: geomSelected ? CAD.icon : undefined }}
         />
       </Tooltip>
       <Tooltip title="Mirror — reflect the selection about an axis line (make the axis a construction line first)" placement="bottom">
@@ -596,7 +643,7 @@ export default function SketchToolbar() {
           icon={<MirrorIcon />}
           disabled={!canMirror}
           onClick={() => mirror()}
-          style={{ ...railBtn(), color: canMirror ? '#cbd5e1' : undefined }}
+          style={{ ...railBtn(), color: canMirror ? CAD.icon : undefined }}
         />
       </Tooltip>
       <Tooltip title="Offset — copy the selected lines/circles/arcs a set distance away (negative flips the side)" placement="bottom">
@@ -605,7 +652,7 @@ export default function SketchToolbar() {
           icon={<OffsetIcon />}
           disabled={!geomSelected}
           onClick={() => beginOffset()}
-          style={{ ...railBtn(), color: geomSelected ? '#cbd5e1' : undefined }}
+          style={{ ...railBtn(), color: geomSelected ? CAD.icon : undefined }}
         />
       </Tooltip>
 
@@ -618,18 +665,18 @@ export default function SketchToolbar() {
         content={<ConstraintsPanel />}
       >
         <Tooltip title="Relations & dimensions" placement="bottom">
-          <Button type="text" icon={<NodeIndexOutlined />} style={{ ...railBtn(), color: '#cbd5e1' }} />
+          <Button type="text" icon={<NodeIndexOutlined />} style={{ ...railBtn(), color: CAD.icon }} />
         </Tooltip>
       </Popover>
 
       <Tooltip title="Solve (apply constraints)" placement="bottom">
-        <Button type="text" icon={<ThunderboltOutlined />} onClick={() => solve()} style={{ ...railBtn(), color: '#38bdf8' }} />
+        <Button type="text" icon={<ThunderboltOutlined />} onClick={() => solve()} style={{ ...railBtn(), color: CAD.accent }} />
       </Tooltip>
       <Tooltip title="Undo (Ctrl+Z)" placement="bottom">
-        <Button type="text" icon={<UndoOutlined />} disabled={!past.length} onClick={() => undo()} style={{ ...railBtn(), color: '#cbd5e1' }} />
+        <Button type="text" icon={<UndoOutlined />} disabled={!past.length} onClick={() => undo()} style={{ ...railBtn(), color: CAD.icon }} />
       </Tooltip>
       <Tooltip title="Redo (Ctrl+Y)" placement="bottom">
-        <Button type="text" icon={<RedoOutlined />} disabled={!future.length} onClick={() => redo()} style={{ ...railBtn(), color: '#cbd5e1' }} />
+        <Button type="text" icon={<RedoOutlined />} disabled={!future.length} onClick={() => redo()} style={{ ...railBtn(), color: CAD.icon }} />
       </Tooltip>
       <Tooltip title="Delete selection (Del)" placement="bottom">
         <Button type="text" danger icon={<DeleteOutlined />} disabled={!selection.length} onClick={() => deleteSelected()} style={railBtn()} />
@@ -641,11 +688,34 @@ export default function SketchToolbar() {
           saved to a file and never to the library that keeps it. */}
       <LibraryPanel
         trigger={(
-          <Tooltip title="Library — everything saved in this browser" placement="bottom">
-            <Button type="text" icon={<DatabaseOutlined />} style={{ ...railBtn(), color: '#cbd5e1' }} />
+          <Tooltip title="Library — your own saved work, and the shelf everyone shares" placement="bottom">
+            <Button type="text" icon={<DatabaseOutlined />} style={{ ...railBtn(), color: CAD.icon }} />
           </Tooltip>
         )}
       />
+
+      {sep}
+
+      {/* The 2D→3D pair. Which sketch and which plane comes first because it is
+          what the drawing lands on; Build is next to it because it is what the
+          drawing is for. Both are their own triggers for the same reason the
+          library is — a popover nested inside the "More" popover closes the
+          outer one as you reach for it. */}
+      <SketchesPanel
+        trigger={(
+          <Tooltip title="Sketches — which one you are drawing, and the plane it sits on" placement="bottom">
+            <Button type="text" icon={<PlanesIcon />} style={{ ...railBtn(), color: CAD.icon }} />
+          </Tooltip>
+        )}
+      />
+      <BuildPanel
+        trigger={(
+          <Tooltip title="Build — extrude or revolve this sketch into a solid and send it to CAM" placement="bottom">
+            <Button type="text" icon={<ExtrudeIcon />} style={{ ...railBtn(), color: CAD.accent }} />
+          </Tooltip>
+        )}
+      />
+
 
       <Popover
         trigger="click"
@@ -670,6 +740,15 @@ export default function SketchToolbar() {
                 Export DXF
               </Button>
             </Tooltip>
+            <Tooltip title="Read a DXF drawing in as a new sketch — lines, circles, arcs and polylines, with the ends that meet welded so the profile closes">
+              <Upload
+                accept=".dxf"
+                showUploadList={false}
+                beforeUpload={(file) => { onImportDxf(file); return false; }}
+              >
+                <Button size="small" icon={<ImportOutlined />} block>Import DXF</Button>
+              </Upload>
+            </Tooltip>
             <Divider style={{ margin: '4px 0' }} />
             <Button size="small" icon={<BulbOutlined />} onClick={() => loadDemo()} block>Demo sketch</Button>
             <Button size="small" icon={<ClearOutlined />} onClick={() => clear()} block>Clear all</Button>
@@ -677,7 +756,7 @@ export default function SketchToolbar() {
         )}
       >
         <Tooltip title="More" placement="bottom">
-          <Button type="text" icon={<EllipsisOutlined />} style={{ ...railBtn(), color: '#cbd5e1' }} />
+          <Button type="text" icon={<EllipsisOutlined />} style={{ ...railBtn(), color: CAD.icon }} />
         </Tooltip>
       </Popover>
 

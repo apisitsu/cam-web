@@ -69,6 +69,7 @@ function readoutProps(path, stats, playT, playing, view = {}) {
 }
 
 async function render(props) {
+  // eslint-disable-next-line testing-library/no-unnecessary-act
   await act(async () => {
     root.render(React.createElement(PositionReadout, props));
   });
@@ -368,10 +369,12 @@ describe('the footer during a real run', () => {
     expect(frames[frames.length - 1].toolName).toBe('ENDMILL D7');
   });
 
-  it('posts a lathe feed per rev and the rpm CSS is chasing', async () => {
-    // G96 S200 at Ø30 is ~2122 rpm, and F0.2 is a feed per rev under G99. A
-    // readout that posted S200 and 424 mm/min would be showing two numbers the
-    // programmer never typed.
+  it('posts a lathe feed in mm/min and the rpm CSS is chasing', async () => {
+    // G96 S200 at Ø30 is ~2122 rpm, and F0.2 is a feed per rev under G99, so
+    // the machine is running at 0.2 × 2122 ≈ 424 mm/min. That is the rate the
+    // field posts; the F0.2 the programmer typed comes back as the note under
+    // it, so neither number has to be reconstructed by the operator. S is the
+    // rpm CSS is actually holding, never the S200 surface speed.
     const CSS = [
       'G21 G90 G18 G99',
       'G96 S200 M03',
@@ -381,8 +384,9 @@ describe('the footer during a real run', () => {
     const { path, stats } = load(CSS, { mode: 'turn', diameterMode: true });
     const frames = await play(path, stats, { mode: 'turn', diameterMode: true });
     const last = frames[frames.length - 1];
-    expect(last.feed).toBe('0.2');
+    expect(Number(last.feed)).toBeCloseTo(424, 0);
     expect(Number(last.spindle)).toBeCloseTo(2122, 0);
-    expect(last.text).toContain('mm/rev');
+    expect(last.text).toContain('mm/min');
+    expect(last.text).toContain('0.2 mm/rev');
   });
 });

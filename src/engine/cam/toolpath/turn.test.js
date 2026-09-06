@@ -67,6 +67,7 @@ describe('roughingOp', () => {
     const op = roughingOp(profile, { ...base, tool: roughTool });
     const g = profile.recesses[0];
     for (const m of op.moves) {
+      // eslint-disable-next-line jest/no-conditional-expect
       if (m.z > g.zStart && m.z < g.zEnd) expect(m.x).toBeGreaterThan(g.minRadius + 1);
     }
   });

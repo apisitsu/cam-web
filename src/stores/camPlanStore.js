@@ -164,7 +164,40 @@ export const useCamPlanStore = create((set, get) => ({
     set({ status: 'loading', error: null, plan: null, nc: null });
     try {
       const buffer = await file.arrayBuffer();
-      const soup = parsePart(buffer, file.name);
+      return await get().loadSoup(parsePart(buffer, file.name), file.name);
+    } catch (err) {
+      _raw.soup = _raw.welded = null;
+      _mesh.soup = _mesh.welded = null;
+      _ctx = null;
+      set({ status: 'error', error: err.message || String(err) });
+      return null;
+    }
+  },
+
+  /**
+   * Take a part that is already a triangle soup.
+   *
+   * Split out of `loadPart` because a file is no longer the only way a part
+   * arrives: the sketcher builds one directly (`engine/solid/extrude.js`). Every
+   * line below this point was always soup-only — nothing downstream of here has
+   * ever known or cared which file the triangles came out of — so a built solid
+   * enters the CAM pipeline through exactly the path an STL does, and gets the
+   * same measurement, feature detection, planning and simulation with no second
+   * code path to keep in step.
+   *
+   * @param {{positions:Float32Array, triangleCount:number, format:string}} soup
+   * @param {string} name  what to call it in the UI
+   * @param {{keepDatum?:boolean, keepPage?:boolean}} [opts]
+   *   Both exist for **rebuilding a feature tree**, which is not a new part but
+   *   the same one recomputed. Clearing the datum is right for an imported file
+   *   and wrong here — it would throw away the X0/Y0/Z0 the operator set every
+   *   time they changed a dimension. Moving them to the machine page is right
+   *   when a part appears out of nowhere and wrong when they are stood at the
+   *   sketch they are editing.
+   */
+  async loadSoup(soup, name, { keepDatum = false, keepPage = false } = {}) {
+    set({ status: 'loading', error: null, plan: null, nc: null });
+    try {
       const welded = weld(soup);
       _raw.soup = soup;
       _raw.welded = welded;
@@ -179,15 +212,16 @@ export const useCamPlanStore = create((set, get) => ({
       // planning is the whole point of splitting the two steps.
       const analysis = analyzeMesh(soup, welded);
       set({
-        stlName: file.name,
+        stlName: name,
         partFormat: soup.format,
         analysis,
         meshVer: get().meshVer + 1,
         status: 'ready',
         forceMode: 'auto',
         // A new part has no relationship to wherever the last one's origin
-        // was picked — that point may not even exist on this geometry.
-        datum: NO_DATUM,
+        // was picked — that point may not even exist on this geometry. A
+        // *rebuilt* part is the same part, so `keepDatum` holds onto it.
+        ...(keepDatum ? {} : { datum: NO_DATUM }),
       });
 
       // Measure it straight away, so the operator can pick a face the moment
@@ -209,7 +243,7 @@ export const useCamPlanStore = create((set, get) => ({
       // Someone already on Milling or Turning has made a choice, so it is left
       // alone; the panel's mode selector is there to override the analysis.
       const cam = useCamStore.getState();
-      if (cam.page === 'sketch') await cam.setPage(analysis.recommend);
+      if (!keepPage && cam.page === 'sketch') await cam.setPage(analysis.recommend);
 
       return analysis;
     } catch (err) {

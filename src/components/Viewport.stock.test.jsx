@@ -43,6 +43,7 @@ function mount(extra = {}) {
   );
 }
 
+// eslint-disable-next-line testing-library/await-async-query
 const preview = (r) => r.scene.findAllByType('Group')
   .find((g) => g.instance.name === 'stock-preview')?.instance;
 
@@ -60,6 +61,7 @@ describe('the blank is drawn before anything is carved', () => {
 
   it('sizes the box to the stated dimensions, not the toolpath', async () => {
     const r = await mount({ stockSolid: solidFor({ x: 50, y: 50, z: 28 }, { x: -25, y: -25, z: 0 }) });
+    // eslint-disable-next-line testing-library/await-async-query
     const mesh = r.scene.findAllByType('Mesh')
       .find((m) => m.instance.name === 'stock-preview-solid');
     const p = mesh.instance.geometry.parameters;
@@ -72,6 +74,7 @@ describe('the blank is drawn before anything is carved', () => {
     const size = { x: 50, y: 50, z: 28 };
     const here = await mount({ stockSolid: solidFor(size, { x: -25, y: -25, z: 0 }) });
     const there = await mount({ stockSolid: solidFor(size, { x: 15, y: -25, z: 0 }) });
+    // eslint-disable-next-line testing-library/await-async-query
     expect(there.scene.findAllByType('Group')
       .find((g) => g.instance.name === 'stock-preview').instance.position.x
       - preview(here).position.x).toBeCloseTo(40);
@@ -80,6 +83,7 @@ describe('the blank is drawn before anything is carved', () => {
   it('resizes when the size changes', async () => {
     const box = async (x) => {
       const r = await mount({ stockSolid: solidFor({ x, y: 50, z: 28 }, { x: 0, y: 0, z: 0 }) });
+      // eslint-disable-next-line testing-library/await-async-query
       return r.scene.findAllByType('Mesh')
         .find((m) => m.instance.name === 'stock-preview-solid').instance.geometry.parameters.width;
     };
@@ -90,6 +94,7 @@ describe('the blank is drawn before anything is carved', () => {
   it('picks out the edges as well as the faces', async () => {
     // Faces alone vanish against the backplot running through them.
     const r = await mount({ stockSolid: solidFor({ x: 50, y: 50, z: 28 }) });
+    // eslint-disable-next-line testing-library/await-async-query
     const edges = r.scene.findAllByType('LineSegments')
       .find((l) => l.instance.name === 'stock-preview-edges');
     expect(edges).toBeTruthy();
@@ -97,6 +102,7 @@ describe('the blank is drawn before anything is carved', () => {
 
   it('sees through itself — it is measured against what it covers', async () => {
     const r = await mount({ stockSolid: solidFor({ x: 50, y: 50, z: 28 }) });
+    // eslint-disable-next-line testing-library/await-async-query
     const mat = r.scene.findAllByType('Mesh')
       .find((m) => m.instance.name === 'stock-preview-solid').instance.material;
     expect(mat.transparent).toBe(true);
@@ -119,6 +125,7 @@ describe('the blank is drawn before anything is carved', () => {
       rotaryFrame: 'machine',
       toolRotary: { a: 90, b: 0 },
     });
+    // eslint-disable-next-line testing-library/await-async-query
     const work = r.scene.findAllByType('Group')
       .find((g) => g.instance.name === 'stock-work').instance;
     expect(work.rotation.x).toBeCloseTo(Math.PI / 2);

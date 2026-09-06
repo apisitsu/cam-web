@@ -38,6 +38,7 @@ afterEach(async () => {
 });
 
 async function render(node) {
+  // eslint-disable-next-line testing-library/no-unnecessary-act
   await act(async () => root.render(node));
   return container;
 }

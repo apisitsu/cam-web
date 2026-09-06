@@ -61,12 +61,31 @@ const TYPES = [
  * we can draw — it is what makes a detected `T1(FACEMILL D50)` appear on screen
  * as a disc, and what the carvers stamp with. Drills, taps, reamers and boring
  * bars have no cutter shape here (`null`): they keep the plain flat/ball.
+ *
+ * **An unrecognised comment reports `unclassified: true`**, and that is not the
+ * same as a recognised tool with no shape. Two different things both arrive here
+ * as `cutter: null`:
+ *
+ * - a **reamer, tap or boring bar** — recognised, and deliberately shapeless:
+ *   it sizes or threads a hole that is already there, so it keeps the plain
+ *   flat/ball and must NOT borrow whatever the fallback picker holds;
+ * - an **unrecognised description** — nothing was said about the shape at all,
+ *   so the cutter the operator picked is the only opinion in the room and gets
+ *   to decide.
+ *
+ * They used to be indistinguishable, and the second was resolved as a confident
+ * `'endmill'`, which beat the operator every time: pick a chamfer mill, run a
+ * program whose tool line reads `T1 M6 (ROUGH D6)`, and the stock came out with a
+ * square-shouldered groove where the part has a chamfer — with nothing on screen
+ * to say why. `effectiveTool` reads the flag; `type` and `simType` keep their old
+ * defaults, being what the tool table *displays* and what the feed model assumes,
+ * neither of which is a shape the carvers stamp with.
  */
 function classify(desc) {
   for (const [re, type, simType] of TYPES) {
     if (re.test(desc)) return { type, simType, cutter: cutterFromType(type) };
   }
-  return { type: 'endmill', simType: 'flat', cutter: 'endmill' };
+  return { type: 'endmill', simType: 'flat', cutter: null, unclassified: true };
 }
 
 /**
@@ -79,7 +98,7 @@ function diameterOf(head) {
   const d = /(?:\bD|[ØøΦφ⌀])\s*(\d+(?:\.\d+)?)/i.exec(head);
   if (d) return Number(d[1]);
   // Strip any L-length token so its digits can't be mistaken for a diameter.
-  const bare = /(?:^|\s)(\d+(?:\.\d+)?)(?=\s|$)/.exec(head.replace(/\bL\s*\d[\d.\-]*/gi, ' '));
+  const bare = /(?:^|\s)(\d+(?:\.\d+)?)(?=\s|$)/.exec(head.replace(/\bL\s*\d[\d.-]*/gi, ' '));
   return bare ? Number(bare[1]) : null;
 }
 
@@ -109,7 +128,7 @@ export function parseToolTable(text) {
   // A comment line that names the tool instead: `(TOOL: T1 FACEMILL Ø50)`. The
   // tool number is inside the comment here, which is why the rule above cannot
   // see it — its `T` is the machine's, this one is prose.
-  const RE_DECL = /^\s*\(\s*TOOL\s*[:\-]?\s*T0*(\d+)\s*[:\-]?\s*([^)]*)\)/i;
+  const RE_DECL = /^\s*\(\s*TOOL\s*[:-]?\s*T0*(\d+)\s*[:-]?\s*([^)]*)\)/i;
   for (const raw of lines) {
     const m = RE.exec(raw) || RE_DECL.exec(raw);
     if (!m) continue;
@@ -117,12 +136,16 @@ export function parseToolTable(text) {
     if (table.has(n)) continue; // first definition wins
     const desc = m[2].trim();
     const head = desc.split(/\s+-\s+|--/)[0]; // drop the "- OPERATION" tail
-    const { type, simType, cutter } = classify(desc);
+    const { type, simType, cutter, unclassified } = classify(desc);
     const diameter = diameterOf(head);
     const { length, lengthMax } = lengthOf(head);
     table.set(n, {
       n, type, simType, cutter, diameter,
       radius: diameter != null ? diameter / 2 : null,
+      // Only present when the comment named nothing we recognise — see
+      // `classify`. `effectiveTool` reads it to know the shape is unstated
+      // rather than deliberately shapeless.
+      ...(unclassified ? { unclassified: true } : {}),
       length, lengthMax, desc,
     });
   }

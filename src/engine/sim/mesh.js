@@ -220,8 +220,65 @@ export function heightmapToSolidMesh(stock, opts = {}) {
     v += 3;
   };
 
+  // ---- Where the walls really are ---------------------------------------
+  //
+  // A node sits on a lattice corner, and a wall almost never does. The height
+  // field knows which CELL a bore's rim falls in and nothing finer, so a riser
+  // drawn on the cell boundary makes every circle a staircase one cell deep —
+  // whatever its diameter, which is why a Ø80 bore looked as rough as a Ø10 one.
+  //
+  // `stock.edge` carries the signed horizontal distance from each cell's centre
+  // to the nearest cut boundary (see `dexel.js`). Where the four cells around a
+  // node straddle it, the node is slid along the field's gradient onto the zero
+  // crossing — the surface-nets move. Tops and risers are both built from these
+  // nodes, so both follow, and two cells sharing a node still share a position:
+  // no gaps.
+  //
+  // Only where there is a real crossing, and never further than half a cell —
+  // a node that overshoots its own cell turns the quad inside out.
+  const nodeDX = new Float32Array(nw * (ny + 1));
+  const nodeDY = new Float32Array(nw * (ny + 1));
+  const edge = stock.edge;
+  if (edge) {
+    const KNOWN = 1e8; // anything larger is `EDGE_FAR`: no cut came near
+    for (let j = 1; j < ny; j++) {
+      const below = (j - 1) * nx;
+      const above = j * nx;
+      const nodeRow = j * nw;
+      for (let i = 1; i < nx; i++) {
+        const bl = edge[below + i - 1];
+        const br = edge[below + i];
+        const al = edge[above + i - 1];
+        const ar = edge[above + i];
+        if (bl > KNOWN || br > KNOWN || al > KNOWN || ar > KNOWN) continue;
+        const lo = Math.min(bl, br, al, ar);
+        const hi = Math.max(bl, br, al, ar);
+        if (lo >= 0 || hi <= 0) continue;   // no boundary passes this node
+        // Value and gradient of the field at the node, from its four samples.
+        const f = (bl + br + al + ar) * 0.25;
+        const gx = ((br + ar) - (bl + al)) * 0.5;
+        const gy = ((al + ar) - (bl + br)) * 0.5;
+        const g2 = gx * gx + gy * gy;
+        if (g2 < 1e-12) continue;
+        // Step to the zero of the linear approximation. `gx`,`gy` are per cell,
+        // so the step comes out in cells and is scaled back to mm.
+        const s = (-f * cs) / g2;
+        const half = cs * 0.5;
+        let dx = s * gx;
+        let dy = s * gy;
+        if (dx > half) dx = half; else if (dx < -half) dx = -half;
+        if (dy > half) dy = half; else if (dy < -half) dy = -half;
+        nodeDX[nodeRow + i] = dx;
+        nodeDY[nodeRow + i] = dy;
+      }
+    }
+  }
+
   const xAt = (i) => xMin + i * cs;
   const yAt = (j) => yMin + j * cs;
+  /** Node position, slid onto the wall where one passes through it. */
+  const nX = (i, j) => xMin + i * cs + nodeDX[j * nw + i];
+  const nY = (i, j) => yMin + j * cs + nodeDY[j * nw + i];
 
   // ---- Tops -------------------------------------------------------------
   //
@@ -239,6 +296,7 @@ export function heightmapToSolidMesh(stock, opts = {}) {
   // wants four of them.
   for (let j = 0; j < ny; j++) {
     const y0 = yAt(j);
+    // eslint-disable-next-line no-unused-vars
     const y1 = y0 + cs;
     const row = j * nx;
     const nRow0 = j * nw;        // node row along y0
@@ -263,7 +321,14 @@ export function heightmapToSolidMesh(stock, opts = {}) {
 
       const flat = merge && h00 === h && h10 === h && h11 === h && h01 === h;
       if (!flat) {
-        quad(xAt(i), y0, h00, xAt(i + 1), y0, h10, xAt(i + 1), y1, h11, xAt(i), y1, h01);
+        // The cell's own footprint, on the nodes as they actually sit — which
+        // is on the wall wherever one runs through this cell.
+        quad(
+          nX(i, j), nY(i, j), h00,
+          nX(i + 1, j), nY(i + 1, j), h10,
+          nX(i + 1, j + 1), nY(i + 1, j + 1), h11,
+          nX(i, j + 1), nY(i, j + 1), h01,
+        );
         i += 1;
         continue;
       }
@@ -277,7 +342,16 @@ export function heightmapToSolidMesh(stock, opts = {}) {
         if ((nodeOn[a + 1] && nodeH[a + 1] !== h) || (nodeOn[b + 1] && nodeH[b + 1] !== h)) break;
         end += 1;
       }
-      quad(xAt(i), y0, h, xAt(end), y0, h, xAt(end), y1, h, xAt(i), y1, h);
+      // A merged run is flat by construction, but its two END nodes can still
+      // be on a wall — the run stops exactly where the height changes. Reading
+      // them through `nX`/`nY` is what lets a floor reach the true rim of the
+      // bore it ends at instead of stopping on the lattice.
+      quad(
+        nX(i, j), nY(i, j), h,
+        nX(end, j), nY(end, j), h,
+        nX(end, j + 1), nY(end, j + 1), h,
+        nX(i, j + 1), nY(i, j + 1), h,
+      );
       i = end;
     }
   }
@@ -289,6 +363,7 @@ export function heightmapToSolidMesh(stock, opts = {}) {
   // it. Kept in its own pass so the merging above stays a statement about tops.
   for (let j = 0; j < ny; j++) {
     const y0 = yAt(j);
+    // eslint-disable-next-line no-unused-vars
     const y1 = y0 + cs;
     const row = j * nx;
     const nRow0 = j * nw;
@@ -306,8 +381,15 @@ export function heightmapToSolidMesh(stock, opts = {}) {
       const h10 = nodeOn[k10] ? nodeH[k10] : h;
       const h11 = nodeOn[k11] ? nodeH[k11] : h;
       const h01 = nodeOn[k01] ? nodeH[k01] : h;
-      const x0 = xAt(i);
-      const x1 = x0 + cs;
+      // The shared-edge nodes, where they actually sit. The riser is the wall
+      // itself, so this is the one place the move matters most: put it on the
+      // lattice and every bore is a staircase.
+      const ex10 = nX(i + 1, j);
+      const ey10 = nY(i + 1, j);
+      const ex11 = nX(i + 1, j + 1);
+      const ey11 = nY(i + 1, j + 1);
+      const ex01 = nX(i, j + 1);
+      const ey01 = nY(i, j + 1);
       // A step exists only where something was removed: a cut wall.
       col = CUT;
       // Closing the step to the +X neighbour — from the heights this cell left
@@ -316,16 +398,16 @@ export function heightmapToSolidMesh(stock, opts = {}) {
       // close, which is the ordinary case on a slope.
       if (rightStep && !(nodeOn[k10] && nodeOn[k11])) {
         const hR = heights[g + 1];
-        riser(x1, y0, h10, x1, y1, h11,
-          x1, y1, nodeOn[k11] ? nodeH[k11] : hR,
-          x1, y0, nodeOn[k10] ? nodeH[k10] : hR);
+        riser(ex10, ey10, h10, ex11, ey11, h11,
+          ex11, ey11, nodeOn[k11] ? nodeH[k11] : hR,
+          ex10, ey10, nodeOn[k10] ? nodeH[k10] : hR);
       }
       // ...and to the +Y neighbour.
       if (upStep && !(nodeOn[k01] && nodeOn[k11])) {
         const hU = heights[g + nx];
-        riser(x0, y1, h01, x1, y1, h11,
-          x1, y1, nodeOn[k11] ? nodeH[k11] : hU,
-          x0, y1, nodeOn[k01] ? nodeH[k01] : hU);
+        riser(ex01, ey01, h01, ex11, ey11, h11,
+          ex11, ey11, nodeOn[k11] ? nodeH[k11] : hU,
+          ex01, ey01, nodeOn[k01] ? nodeH[k01] : hU);
       }
     }
   }

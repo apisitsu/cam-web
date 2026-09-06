@@ -22,17 +22,32 @@ import {
   deleteEntity, removeConstraint, chamfer as chamferEdit, fillet as filletEdit,
   filletLineArc as filletLineArcEdit, filletArcArc as filletArcArcEdit,
   filletCircleCircle as filletCircleCircleEdit,
-  trimLine, trimCircle, trimArc, mirror as mirrorEdit, offsetEntity,
+  trimLine, trimCircle, trimArc, mirror as mirrorEdit, offsetChain,
   distancePointToLine, farEndpointFromLine, nearestRimPoint, nearestTangent,
+  nearestIntersection, nearestQuadrant, nearestMidpoint, entitiesInBox,
   measureConstraint, lineArcMeet, arcArcMeet, angleSpec, interiorAngleToModel,
-  axisFromPlacement,
+  axisFromPlacement, dimensionLockDir, projectOnto,
 } from '../engine/sketch/edit.js';
+import {
+  DEFAULT_PLANE, parsePlane, planeFromFace, planeLabel,
+} from '../engine/sketch/plane.js';
+import { sketchRegions } from '../engine/sketch/loops.js';
+import { dxfToSketch } from '../engine/sketch/dxfImport.js';
+import { buildSlot, buildPolygon, axisDistance } from '../engine/sketch/shapes.js';
+import { combineRegions } from '../engine/solid/regionBoolean.js';
+import { useCamPlanStore } from './camPlanStore.js';
 
 const DEG = Math.PI / 180;
 
 const SNAP = 1.5; // mm — click snap / pick tolerance
 const ANGLE_SNAP_DEG = 5; // ° — lock the line rubber-band to the nearest 45° axis within this
 const HISTORY = 50; // max undo depth
+
+/** Pin `pointId` onto a line / circle / arc with the matching relation. No-op on any other type; a redundant relation is swallowed. */
+function pinPointOn(sk, pointId, entId) {
+  const kind = { line: 'pointOnLine', circle: 'pointOnCircle', arc: 'pointOnArc' }[sk.entities.get(entId)?.type];
+  if (kind) { try { addConstraint(sk, kind, [pointId, entId]); } catch { /* leave that side free */ } }
+}
 
 let sketchApi = null;
 function worker() {
@@ -77,13 +92,33 @@ function demoSketch() {
   return sk;
 }
 
+/** The first sketch of a session, so `sketches` is never empty. */
+function firstSketch(doc) {
+  return [{
+    id: 1, name: 'Sketch1', plane: { ...DEFAULT_PLANE }, doc, past: [], future: [],
+  }];
+}
+
+const INITIAL_DOC = newSketch();
+
 export const useSketchStore = create((set, get) => ({
-  sk: newSketch(),
+  // A sketch is a document plus the plane it is drawn on. `sk` is the *active*
+  // document and is the **same object** as `sketches[active].doc`, not a copy —
+  // every edit mutates in place and bumps `version`, so the two cannot drift.
+  // Anything that swaps `sk` for a different document (undo, clear, open) has to
+  // go through `_docs()` to keep the entry pointing at it.
+  sketches: firstSketch(INITIAL_DOC),
+  activeId: 1,
+  nextSketchId: 2,
+  sk: INITIAL_DOC,
   version: 0, // bump to re-render after any mutation
-  tool: 'select', // select | point | line | rectangle | circle | arc | dimension | trim
+  tool: 'select', // select | point | line | rectangle | slot | polygon | circle | arc | dimension | trim
+  polygonSides: 6, // sides the Polygon tool draws — hex is the shop's default
   pending: null, // first click while drawing (line/rect/circle centre, arc centre)
   pending2: null, // second click for a 3-click tool — the arc's start point
   cursor: null, // { x, y } live pointer on the plane — drives rubber-band preview
+  boxSelect: null, // { x0, y0, x1, y1 } while a marquee drag is on screen (select tool)
+  _boxStart: null, // { x, y } armed marquee origin, before it grows past the click slop
   snap: null, // positional snap target: { x, y, id? (vertex) | onCurve+curveType (rim) | tangent+tangentOf+curveType }
   axisSnap: null, // { x, y, deg } line-tool angle lock to the nearest 45° axis, or null
   lineAngle: null, // ° the line rubber-band currently points at (readout while drawing a line)
@@ -110,6 +145,161 @@ export const useSketchStore = create((set, get) => ({
     set({ version: get().version + 1, dofState: dof(get().sk) });
   },
 
+  /** `sketches` with the active entry re-pointed at `doc`. */
+  _docs(doc) {
+    const { sketches, activeId } = get();
+    return sketches.map((s) => (s.id === activeId ? { ...s, doc } : s));
+  },
+
+  /**
+   * `sketches` with the active entry holding the undo stacks that are currently
+   * live in the store.
+   *
+   * History is **per sketch**, but only the active one's is kept in store state
+   * — `past`/`future` are read all over the sketcher and every one of those
+   * reads would otherwise have to learn which sketch it meant. So the stacks
+   * move: stashed onto the entry being left, restored from the entry being
+   * opened. Switching away and back now returns the history intact, where it
+   * used to be thrown away because a snapshot carried no note of which sketch
+   * it came from and undoing after a switch would restore one sketch's geometry
+   * into another.
+   */
+  _stash() {
+    const {
+      sketches, activeId, past, future,
+    } = get();
+    return sketches.map((s) => (s.id === activeId ? { ...s, past, future } : s));
+  },
+
+  /** The active sketch's entry — its name and, more usefully, its plane. */
+  activeSketch() {
+    const { sketches, activeId } = get();
+    return sketches.find((s) => s.id === activeId) || sketches[0];
+  },
+
+  /**
+   * Start a new sketch and make it active. `plane` defaults to the table; the
+   * point of the argument is drawing a profile on the front or on a face part
+   * way up the part.
+   */
+  addSketch({ name, plane } = {}) {
+    // The list itself comes from `_stash()` below, which carries the outgoing
+    // sketch's undo history onto it — reading `sketches` here as well would take
+    // a copy from before that and drop the history it was stashing.
+    const { nextSketchId } = get();
+    const doc = newSketch();
+    const entry = {
+      id: nextSketchId,
+      name: name || `Sketch${nextSketchId}`,
+      plane: parsePlane(plane || DEFAULT_PLANE),
+      doc,
+      past: [],
+      future: [],
+    };
+    set({
+      // The sketch being left keeps its own history — see `_stash`.
+      sketches: get()._stash().concat([entry]),
+      activeId: entry.id,
+      nextSketchId: nextSketchId + 1,
+      sk: doc,
+      past: [], future: [],
+      selection: [], pending: null, pending2: null, snap: null, axisSnap: null,
+      lineAngle: null, solveResult: null, error: null,
+      dimensionPending: null, editingConstraint: null,
+    });
+    get()._bump();
+    return entry.id;
+  },
+
+  /**
+   * Switch which sketch is being edited, carrying each one's undo history with
+   * it — see `_stash` for why the stacks travel rather than staying put.
+   */
+  setActiveSketch(id) {
+    if (id === get().activeId) return false;
+    const stashed = get()._stash();
+    const entry = stashed.find((s) => s.id === id);
+    if (!entry) return false;
+    set({
+      sketches: stashed,
+      activeId: id,
+      sk: entry.doc,
+      past: entry.past || [], future: entry.future || [],
+      selection: [], pending: null, pending2: null, snap: null, axisSnap: null,
+      lineAngle: null, solveResult: null, error: null,
+      dimensionPending: null, editingConstraint: null,
+    });
+    get()._bump();
+    return true;
+  },
+
+  renameSketch(id, name) {
+    const clean = String(name ?? '').trim();
+    if (!clean) return false;
+    set({ sketches: get().sketches.map((s) => (s.id === id ? { ...s, name: clean } : s)) });
+    return true;
+  },
+
+  /** Move a sketch onto a different plane. The geometry keeps its 2D coordinates. */
+  setSketchPlane(id, plane) {
+    const parsed = parsePlane(plane);
+    set({ sketches: get().sketches.map((s) => (s.id === id ? { ...s, plane: parsed } : s)) });
+    get()._bump();
+    return parsed;
+  },
+
+  /**
+   * Start a sketch on the face the operator has picked on the part — how a
+   * second operation actually begins: point at the floor of a pocket or the top
+   * of a boss and draw on it, rather than working out its height and typing an
+   * offset.
+   *
+   * The face comes from `camPlanStore.selectedFeature`, which is already what a
+   * click on the part sets; nothing new has to be picked. `onto` re-planes the
+   * *current* sketch instead of starting a new one, for a sketch drawn before
+   * the operator realised which face it belonged on.
+   */
+  sketchOnFace({ onto = null } = {}) {
+    const face = useCamPlanStore.getState().selectedFeature;
+    if (!face?.normal || !face?.centroid) {
+      set({ error: 'Pick a face on the part first — click it in the viewport.' });
+      return null;
+    }
+    const plane = planeFromFace(face);
+    if (onto != null) {
+      get().setSketchPlane(onto, plane);
+      set({ error: null });
+      return onto;
+    }
+    const id = get().addSketch({ name: `Face ${planeLabel(plane)}`, plane });
+    set({ error: null });
+    return id;
+  },
+
+  /** Delete a sketch. The last one is never removed — there is always one to draw on. */
+  removeSketch(id) {
+    const { sketches, activeId } = get();
+    if (sketches.length <= 1) return false;
+    if (!sketches.some((s) => s.id === id)) return false;
+    if (id === activeId) {
+      // The removed sketch's history goes with it; the one opened in its place
+      // gets its own back.
+      const next = get()._stash().filter((s) => s.id !== id);
+      set({
+        sketches: next,
+        activeId: next[0].id,
+        sk: next[0].doc,
+        past: next[0].past || [],
+        future: next[0].future || [],
+        selection: [],
+      });
+    } else {
+      set({ sketches: sketches.filter((s) => s.id !== id) });
+    }
+    get()._bump();
+    return true;
+  },
+
   /** Push the current sketch onto the undo stack and clear the redo stack. */
   _snapshot() {
     const past = get().past.concat([serialize(get().sk)]);
@@ -120,8 +310,10 @@ export const useSketchStore = create((set, get) => ({
   undo() {
     const { past, future, sk } = get();
     if (!past.length) return;
+    const doc = deserialize(past[past.length - 1]);
     set({
-      sk: deserialize(past[past.length - 1]),
+      sk: doc,
+      sketches: get()._docs(doc),
       past: past.slice(0, -1),
       future: future.concat([serialize(sk)]),
       selection: [], pending: null, pending2: null, snap: null, axisSnap: null, lineAngle: null, error: null,
@@ -132,8 +324,10 @@ export const useSketchStore = create((set, get) => ({
   redo() {
     const { past, future, sk } = get();
     if (!future.length) return;
+    const doc = deserialize(future[future.length - 1]);
     set({
-      sk: deserialize(future[future.length - 1]),
+      sk: doc,
+      sketches: get()._docs(doc),
       future: future.slice(0, -1),
       past: past.concat([serialize(sk)]),
       selection: [], pending: null, pending2: null, snap: null, axisSnap: null, lineAngle: null, error: null,
@@ -142,7 +336,7 @@ export const useSketchStore = create((set, get) => ({
   },
 
   setTool(tool) {
-    set({ tool, pending: null, pending2: null, cursor: null, snap: null, axisSnap: null, lineAngle: null, hoverId: null, error: null, dimensionPending: null, editingConstraint: null, offsetPending: false });
+    set({ tool, pending: null, pending2: null, cursor: null, snap: null, axisSnap: null, lineAngle: null, hoverId: null, error: null, dimensionPending: null, editingConstraint: null, offsetPending: false, boxSelect: null, _boxStart: null });
   },
 
   /** Show a message on the sketcher's error line (used by save/open failures). */
@@ -151,6 +345,13 @@ export const useSketchStore = create((set, get) => ({
   },
 
   /** Pick whether the Chamfer tool cuts a straight chamfer ('C') or rounds ('R'). */
+  /** How many sides the Polygon tool draws. Clamped to what it can build. */
+  setPolygonSides(n) {
+    const sides = Math.min(64, Math.max(3, Math.round(Number(n) || 6)));
+    set({ polygonSides: sides });
+    return sides;
+  },
+
   setChamferKind(chamferKind) {
     set({ chamferKind });
   },
@@ -207,6 +408,31 @@ export const useSketchStore = create((set, get) => ({
       const tan = nearestTangent(sk, anchor.x, anchor.y, x, y, tol);
       if (tan) snap = { x: tan.x, y: tan.y, tangent: true, tangentOf: tan.id, curveType: tan.type };
     }
+    // Where two curves cross — more specific than a plain rim landing, so it
+    // wins over it. A click here lands on the crossing and pins the new point to
+    // both curves (see `_pointAt`). Only while a point-placing tool is active:
+    // the pairwise scan is O(n²) and means nothing to select / dimension / trim.
+    const placing = tool === 'point' || tool === 'line' || tool === 'rectangle'
+      || tool === 'circle' || tool === 'arc' || tool === 'slot' || tool === 'polygon';
+    if (!snap && placing) {
+      const xn = nearestIntersection(sk, x, y, tol);
+      if (xn) snap = { x: xn.x, y: xn.y, intersection: true, of: xn.ids };
+    }
+    if (!snap && placing) {
+      // A circle/arc quadrant (top/bottom/left/right on the axes) — the "high
+      // points". More specific than a plain rim landing, so it comes first.
+      const q = nearestQuadrant(sk, x, y, tol);
+      if (q) {
+        snap = {
+          x: q.x, y: q.y, quadrant: true, onCurve: q.id, curveType: q.curveType,
+          quadCenter: q.center, quadAxis: q.axis,
+        };
+      }
+    }
+    if (!snap && placing) {
+      const mid = nearestMidpoint(sk, x, y, tol);
+      if (mid) snap = { x: mid.x, y: mid.y, midpoint: true, midOf: mid.id };
+    }
     if (!snap) {
       const rim = nearestRimPoint(sk, x, y, tol);
       if (rim) snap = { x: rim.x, y: rim.y, onCurve: rim.id, curveType: rim.type };
@@ -250,6 +476,35 @@ export const useSketchStore = create((set, get) => ({
     const tol = get().pickTol || SNAP;
     const hit = hitTestPoint(sk, x, y, tol);
     if (hit != null) return hit;
+    // Where two curves cross: place the point exactly on it and pin it to both,
+    // so it tracks the intersection through solves. Checked before the plain rim
+    // landing because it is the more specific target.
+    const xn = nearestIntersection(sk, x, y, tol);
+    if (xn) {
+      const id = addPoint(sk, xn.x, xn.y);
+      for (const entId of xn.ids) pinPointOn(sk, id, entId);
+      return id;
+    }
+    // A circle/arc quadrant: place it on the rim and lock it to the quadrant with
+    // a horizontal / vertical relation to the centre, so it stays a "high point"
+    // through solves.
+    const q = nearestQuadrant(sk, x, y, tol);
+    if (q) {
+      const id = addPoint(sk, q.x, q.y);
+      pinPointOn(sk, id, q.id);
+      try {
+        addConstraint(sk, q.axis === 'v' ? 'vertical' : 'horizontal', [id, q.center]);
+      } catch { /* a redundant relation is fine — the point is already placed */ }
+      return id;
+    }
+    // A line-segment midpoint: pin it there with a `midpoint` relation so it
+    // stays centred as the line changes.
+    const mid = nearestMidpoint(sk, x, y, tol);
+    if (mid) {
+      const id = addPoint(sk, mid.x, mid.y);
+      try { addConstraint(sk, 'midpoint', [id, mid.id]); } catch { /* leave it a plain point on the line */ }
+      return id;
+    }
     const rim = nearestRimPoint(sk, x, y, tol);
     if (rim) {
       const id = addPoint(sk, rim.x, rim.y);
@@ -285,6 +540,45 @@ export const useSketchStore = create((set, get) => ({
     set({ selection: sel });
   },
 
+  // ---- Rubber-band (marquee) selection --------------------------------------
+  //
+  // Only the Select tool, and only from empty space (a point pointer-down starts
+  // a drag-to-modify, which stops the event before it reaches the pick plane).
+  // Left→right encloses; right→left also grabs anything the box touches —
+  // SolidWorks' window / crossing rule. `Viewport` turns OrbitControls' left-drag
+  // rotate off while the Select tool is active so the drag is ours to use.
+
+  /** Arm a marquee at (x, y). Nothing shows until it grows past the click slop. */
+  beginBoxSelect(x, y) {
+    if (get().tool === 'select') set({ _boxStart: { x, y } });
+  },
+
+  /** Grow the armed marquee to (x, y); reveals it once it is bigger than a click. */
+  updateBoxSelect(x, y) {
+    const s = get()._boxStart;
+    if (!s) return;
+    if (!get().boxSelect && Math.hypot(x - s.x, y - s.y) < (get().pickTol || SNAP)) return;
+    set({ boxSelect: { x0: s.x, y0: s.y, x1: x, y1: y } });
+  },
+
+  /**
+   * Finish a marquee: replace the selection with what the box caught. Returns
+   * true when a real box was committed (so the caller can eat the trailing
+   * click), false for a bare press that never grew into one.
+   */
+  endBoxSelect() {
+    const box = get().boxSelect;
+    set({ boxSelect: null, _boxStart: null });
+    if (!box) return false;
+    const crossing = box.x1 < box.x0;
+    set({ selection: entitiesInBox(get().sk, box.x0, box.y0, box.x1, box.y1, { crossing }) });
+    return true;
+  },
+
+  cancelBoxSelect() {
+    if (get().boxSelect || get()._boxStart) set({ boxSelect: null, _boxStart: null });
+  },
+
   /** A pointer-down on the sketch plane at sketch coords (x, y). */
   clickAt(x, y) {
     const { sk, tool } = get();
@@ -312,6 +606,11 @@ export const useSketchStore = create((set, get) => ({
           tangentKind = { kind: snap.curveType === 'arc' ? 'tangentArc' : 'tangent', curve: snap.tangentOf };
         } else if (snap?.id != null) {
           p = snap.id;
+        } else if (snap?.quadrant) {
+          // A quadrant needs its horizontal/vertical-to-centre lock too, which
+          // only `_pointAt` adds — so route it there rather than the plain
+          // on-curve branch below.
+          p = get()._pointAt(x, y);
         } else if (snap?.onCurve != null) {
           p = addPoint(sk, snap.x, snap.y);
           const onKind = snap.curveType === 'arc' ? 'pointOnArc' : 'pointOnCircle';
@@ -365,7 +664,11 @@ export const useSketchStore = create((set, get) => ({
         set({ pending: getOrCreatePoint(sk, x, y, tol) });
       } else if (pending2 == null) {
         const s = getOrCreatePoint(sk, x, y, tol);
-        if (s !== pending) set({ pending2: s });
+        if (s === pending) {
+          set({ error: 'The start point landed on the centre — zoom in, or click further out.' });
+        } else {
+          set({ pending2: s, error: null });
+        }
       } else {
         const center = sk.entities.get(pending);
         const start = sk.entities.get(pending2);
@@ -386,6 +689,65 @@ export const useSketchStore = create((set, get) => ({
         }
         set({ pending: null, pending2: null });
         get()._bump();
+      }
+    } else if (tool === 'slot') {
+      // Slot tool — three clicks, the way SolidWorks draws a straight slot:
+      // the two ends of the axis, then a point whose distance from that axis
+      // sets the radius. Built as flanks + caps by `engine/sketch/shapes.js`.
+      const { pending, pending2 } = get();
+      if (pending == null) {
+        set({ pending: getOrCreatePoint(sk, x, y, tol) });
+      } else if (pending2 == null) {
+        const s = getOrCreatePoint(sk, x, y, tol);
+        // Zoomed far enough out, two clicks a few pixels apart are the same
+        // point as far as the pick tolerance is concerned — which is right, but
+        // absorbing the click without a word makes the tool look dead.
+        if (s === pending) {
+          set({ error: 'Both ends of the axis landed on one point — zoom in, or click further apart.' });
+        } else {
+          set({ pending2: s, error: null });
+        }
+      } else {
+        const a = sk.entities.get(pending);
+        const b = sk.entities.get(pending2);
+        const r = axisDistance(x, y, a, b);
+        get()._snapshot();
+        const built = buildSlot(sk, a.x, a.y, b.x, b.y, r, tol);
+        set({ pending: null, pending2: null });
+        if (!built) {
+          // Saying nothing is what this used to do, and three clicks that
+          // produce silence read as a broken tool.
+          get()._undoSnapshot();
+          set({ error: r > 1e-6
+            ? 'That slot is too small to build — click further from the axis.'
+            : 'The third click sets the radius — click to one side of the axis, not on it.' });
+          get()._bump();
+          return;
+        }
+        get()._bump();
+        get().solve();
+        return;
+      }
+    } else if (tool === 'polygon') {
+      // Polygon tool — centre, then a vertex, which sets size and rotation at
+      // once. The side count is the toolbar's, not a third click.
+      const { pending } = get();
+      if (pending == null) {
+        set({ pending: getOrCreatePoint(sk, x, y, tol) });
+      } else {
+        const c = sk.entities.get(pending);
+        get()._snapshot();
+        const built = buildPolygon(sk, c.x, c.y, x, y, get().polygonSides, tol);
+        set({ pending: null });
+        if (!built) {
+          get()._undoSnapshot();
+          set({ error: 'That polygon is too small to build — click further from the centre.' });
+          get()._bump();
+          return;
+        }
+        get()._bump();
+        get().solve();
+        return;
       }
     } else if (tool === 'rectangle') {
       // Rectangle tool: first click sets corner A; second click sets the opposite
@@ -1076,7 +1438,12 @@ export const useSketchStore = create((set, get) => ({
     if (!geom.length) { set({ error: 'Select lines/circles/arcs to offset' }); return; }
     if (!(Number.isFinite(dist) && dist !== 0)) { set({ error: 'Offset needs a non-zero distance' }); return; }
     get()._snapshot();
-    const created = geom.map((id) => offsetEntity(sk, id, dist)).filter((x) => x != null);
+    // `offsetChain`, not one `offsetEntity` per selection: offsetting a profile
+    // entity by entity leaves a gap at every corner, because a line moved along
+    // its own normal ends where it ended and nothing extends or trims it to
+    // where the neighbour now runs. A selection that is not a chain falls
+    // through it unchanged — see `engine/sketch/edit.js`.
+    const created = offsetChain(sk, geom, dist);
     if (!created.length) { get()._undoSnapshot(); set({ error: 'Nothing could be offset (radius would collapse?)' }); return; }
     set({ selection: [], error: null, offsetPending: false });
     get()._bump();
@@ -1100,15 +1467,39 @@ export const useSketchStore = create((set, get) => ({
     get().solve();
   },
 
+  /**
+   * Slide a placed dimension (its line and value together) to `offset`, in
+   * sketch units, from where the annotation would otherwise draw it. The offset
+   * is **projected onto the dimension's own axis** (`dimensionLockDir`), so a
+   * horizontal dimension can only move its standoff, a radius only along its
+   * leader, etc. — the caller passes the raw pointer delta and this constrains
+   * it. Purely how the dimension is *shown* — no DOF, no solve — but it lives on
+   * the constraint so it is saved and undoable like any other edit.
+   *
+   * The drag emits one call per pointer move; `snapshot` is true only on the
+   * first of a gesture, so a whole drag collapses to one undo step (the same
+   * trick the point drag uses).
+   */
+  setDimensionOffset(index, offset, { snapshot = true } = {}) {
+    const { sk } = get();
+    const c = sk.constraints[index];
+    if (!c || c.value == null) return;
+    if (snapshot) get()._snapshot();
+    c.labelOffset = projectOnto(offset, dimensionLockDir(sk, c.kind, c.refs));
+    get()._bump();
+  },
+
   loadDemo() {
     get()._snapshot();
-    set({ sk: demoSketch(), selection: [], pending: null, pending2: null, snap: null, solveResult: null, error: null });
+    const doc = demoSketch();
+    set({ sk: doc, sketches: get()._docs(doc), selection: [], pending: null, pending2: null, snap: null, solveResult: null, error: null });
     get()._bump();
   },
 
   clear() {
     get()._snapshot();
-    set({ sk: newSketch(), selection: [], pending: null, pending2: null, snap: null, solveResult: null, error: null });
+    const doc = newSketch();
+    set({ sk: doc, sketches: get()._docs(doc), selection: [], pending: null, pending2: null, snap: null, solveResult: null, error: null });
     get()._bump();
   },
 
@@ -1127,8 +1518,133 @@ export const useSketchStore = create((set, get) => ({
     }
     get()._snapshot();
     set({
-      sk, selection: [], pending: null, pending2: null, snap: null,
+      sk, sketches: get()._docs(sk),
+      selection: [], pending: null, pending2: null, snap: null,
       solveResult: null, error: null, dimensionPending: null, editingConstraint: null,
+    });
+    get()._bump();
+    return true;
+  },
+
+  /**
+   * Import a DXF as a new sketch on the current plane.
+   *
+   * A **new** sketch rather than merged into the open one: an imported drawing
+   * arrives with its own origin and its own coordinates, and dropping it on top
+   * of existing geometry produces overlaps nobody asked for. Starting a sketch
+   * for it is reversible in one click; untangling a merge is not.
+   *
+   * Returns the summary so the caller can say what arrived, warnings included —
+   * a file with splines in it imports its lines *and* has to say the splines
+   * were left out, or the operator machines a part with a side missing.
+   */
+  importDxf(text, { name = 'DXF', plane = null } = {}) {
+    let result;
+    try {
+      result = dxfToSketch(text);
+    } catch (e) {
+      set({ error: e?.message || String(e) });
+      return null;
+    }
+    const id = get().addSketch({
+      name,
+      plane: plane || get().activeSketch()?.plane || DEFAULT_PLANE,
+    });
+    set({
+      sk: result.sk,
+      sketches: get()._docs(result.sk),
+      error: result.warnings.length ? result.warnings.join(' ') : null,
+    });
+    get()._bump();
+    return { ...result, id };
+  },
+
+  /**
+   * What the active sketch would build: its closed regions, plus what is stopping
+   * the rest of it from counting. Cheap and pure, so the toolbar can call it on
+   * every render to decide whether Extrude is offered and what to say when it is
+   * not.
+   */
+  regions(combine = null) {
+    const found = sketchRegions(get().sk);
+    if (!combine || found.regions.length < 2) return found;
+    try {
+      return { ...found, regions: combineRegions(found.regions, combine) };
+    } catch (e) {
+      // A bad op is a programming error, not something to take the panel down
+      // for; report it where every other sketch failure is reported.
+      set({ error: e?.message || String(e) });
+      return found;
+    }
+  },
+
+  /**
+   * Every sketch, as a project file carries them: the document plus the plane it
+   * belongs on. `sketch` (singular) stays in the file alongside this for the
+   * benefit of an older build — see `projectFile.js`.
+   */
+  serializeSketches() {
+    const { sketches, activeId } = get();
+    return {
+      active: activeId,
+      // Undo history is deliberately **not** written. It is a stack of whole
+      // serialized documents — the largest thing in the store by far — and it
+      // means nothing in a session that has not happened yet.
+      items: sketches.map((s) => ({
+        id: s.id, name: s.name, plane: s.plane, doc: serialize(s.doc),
+      })),
+    };
+  },
+
+  /**
+   * Replace every sketch from a project file. Falsy input leaves the store
+   * alone, so opening a v1/v2 project (which carries one sketch and no list)
+   * goes through `loadSerialized` as it always did.
+   */
+  loadSketches(data) {
+    const items = Array.isArray(data?.items) ? data.items : null;
+    if (!items || !items.length) return false;
+    const sketches = [];
+    // Ids have to come out unique whatever the file says. They are what every
+    // action addresses a sketch by, so two entries sharing one means editing
+    // either edits neither predictably — and `removeSketch` would take both.
+    const taken = new Set();
+    let free = 1;
+    const claim = (want) => {
+      if (Number.isFinite(want) && want > 0 && !taken.has(want)) { taken.add(want); return want; }
+      while (taken.has(free)) free += 1;
+      taken.add(free);
+      return free;
+    };
+    const remap = new Map();
+    try {
+      items.forEach((raw, i) => {
+        const id = claim(raw.id);
+        if (Number.isFinite(raw.id)) remap.set(raw.id, remap.has(raw.id) ? remap.get(raw.id) : id);
+        sketches.push({
+          id,
+          name: typeof raw.name === 'string' && raw.name.trim() ? raw.name : `Sketch${i + 1}`,
+          plane: parsePlane(raw.plane),
+          doc: deserialize(raw.doc),
+          past: [],
+          future: [],
+        });
+      });
+    } catch (e) {
+      set({ error: `Could not read the sketches in that project: ${e?.message || e}` });
+      return false;
+    }
+    const wantActive = remap.has(data.active) ? remap.get(data.active) : data.active;
+    const active = sketches.find((s) => s.id === wantActive) || sketches[0];
+    set({
+      sketches,
+      activeId: active.id,
+      nextSketchId: Math.max(...sketches.map((s) => s.id)) + 1,
+      sk: active.doc,
+      past: [], future: [],
+      selection: [], pending: null, pending2: null, snap: null, axisSnap: null,
+      lineAngle: null, solveResult: null, error: null,
+      dimensionPending: null, editingConstraint: null,
     });
     get()._bump();
     return true;

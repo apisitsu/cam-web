@@ -8,33 +8,45 @@
  * maps those rows onto JSX and styles them like a readout.
  */
 import { droRows, showDro, droXNote, droFooter } from '../engine/view/dro.js';
+import { CAD } from '../theme.js';
+
+/**
+ * Sizes below are a machine control's, not a web panel's: this is read from a
+ * step or two back while your hands are elsewhere, the same way the DRO on the
+ * machine is, so the position digits are deliberately large and everything else
+ * is sized in proportion to them.
+ */
 
 /** Width of the distance-to-go column, wide enough for -1234.567. */
-const DTG_W = 74;
+const DTG_W = 94;
 
 const PANEL = {
   position: 'absolute', top: 12, right: 12, zIndex: 5,
-  background: 'rgba(15,23,42,0.82)', border: '1px solid #334155',
-  borderRadius: 8, padding: '8px 12px 6px',
-  minWidth: 262, pointerEvents: 'none',
+  background: CAD.glass, border: `1px solid ${CAD.border}`,
+  // A light panel over a light viewport needs the shadow to read as floating;
+  // over the old near-black one, contrast alone did that job.
+  borderRadius: 5, boxShadow: '0 3px 14px rgba(23,42,66,0.20)',
+  backdropFilter: 'blur(2px)',
+  padding: '11px 16px 9px',
+  minWidth: 340, pointerEvents: 'none',
   fontFamily: 'ui-monospace, SFMono-Regular, Menlo, Consolas, monospace',
 };
 
 const HEADING = {
-  display: 'flex', alignItems: 'baseline', gap: 8,
-  color: '#64748b', fontSize: 10, letterSpacing: 0.8,
-  textTransform: 'uppercase', marginBottom: 6, whiteSpace: 'nowrap',
+  display: 'flex', alignItems: 'baseline', gap: 10,
+  color: CAD.muted, fontSize: 11, letterSpacing: 0.8,
+  textTransform: 'uppercase', marginBottom: 7, whiteSpace: 'nowrap',
 };
 
 const ROW = {
-  display: 'flex', alignItems: 'baseline', gap: 8,
-  lineHeight: 1.45,
+  display: 'flex', alignItems: 'baseline', gap: 10,
+  lineHeight: 1.4,
 };
 
-const LABEL = { color: '#38bdf8', fontSize: 13, fontWeight: 700, width: 22 };
+const LABEL = { color: CAD.accent, fontSize: 17, fontWeight: 700, width: 30 };
 
 const VALUE = {
-  color: '#e2e8f0', fontSize: 16, flex: 1, textAlign: 'right',
+  color: CAD.text, fontSize: 23, flex: 1, textAlign: 'right',
   // A live readout whose digits are different widths visibly shimmers as it
   // counts; tabular figures keep the columns still.
   fontVariantNumeric: 'tabular-nums',
@@ -43,21 +55,21 @@ const VALUE = {
 // Dimmer and a size down: the absolute position is what the eye should land on
 // first, with the countdown beside it as support.
 const DTG = {
-  color: '#94a3b8', fontSize: 14, width: DTG_W, textAlign: 'right',
+  color: CAD.label, fontSize: 18, width: DTG_W, textAlign: 'right',
   fontVariantNumeric: 'tabular-nums',
 };
 
-const UNIT = { color: '#475569', fontSize: 10, width: 22 };
+const UNIT = { color: CAD.dim, fontSize: 12, width: 28 };
 
 const FOOTER = {
-  display: 'flex', alignItems: 'baseline', gap: 8, marginTop: 6, paddingTop: 5,
-  borderTop: '1px solid #1e293b', color: '#64748b', fontSize: 11,
+  display: 'flex', alignItems: 'baseline', gap: 10, marginTop: 8, paddingTop: 6,
+  borderTop: `1px solid ${CAD.borderSoft}`, color: CAD.muted, fontSize: 13,
 };
 
 // The tool's own name, one step brighter than the rest of the footer: it is the
 // only line on the panel that cannot be checked against the machine by eye.
 const TOOL_NAME = {
-  color: '#cbd5e1', flex: 1, overflow: 'hidden',
+  color: CAD.icon, flex: 1, overflow: 'hidden',
   textOverflow: 'ellipsis', whiteSpace: 'nowrap',
 };
 
@@ -65,12 +77,19 @@ const TOOL_NAME = {
 // a letter, the number right-aligned under the position column above it, then
 // the unit — so F and S line up with each other and with the axes.
 const RATES = {
-  display: 'flex', alignItems: 'baseline', gap: 8, marginTop: 3,
-  color: '#64748b', fontSize: 11,
+  display: 'flex', alignItems: 'baseline', gap: 10, marginTop: 4,
+  color: CAD.muted, fontSize: 13,
 };
 
 const RATE_VALUE = {
-  color: '#e2e8f0', fontSize: 13, fontVariantNumeric: 'tabular-nums',
+  color: CAD.text, fontSize: 16, fontVariantNumeric: 'tabular-nums',
+};
+
+// The per-rev feed a lathe program actually states, under the mm/min the machine
+// is running at. Small and dim on purpose: the rate above it is the number to
+// read, and this is here to be checked against the program text when asked.
+const FEED_NOTE = {
+  color: CAD.dim, fontSize: 11, textAlign: 'right', marginTop: 1,
 };
 
 /**
@@ -100,7 +119,7 @@ export default function PositionReadout({
   const foot = droFooter({ toolNumber, tool, running, line });
 
   return (
-    <div style={PANEL} data-testid="position-readout">
+    <div style={PANEL} data-cam-overlay="right" data-testid="position-readout">
       {/* Column captions live in the heading rather than a row of their own, so
           the panel still reads as one page and not two stacked tables. */}
       <div style={HEADING}>
@@ -113,7 +132,7 @@ export default function PositionReadout({
           <span style={LABEL}>
             {r.label}
             {r.label === 'X' && xNote ? (
-              <span style={{ color: '#475569', fontWeight: 400 }}>{xNote}</span>
+              <span style={{ color: CAD.dim, fontWeight: 400 }}>{xNote}</span>
             ) : null}
           </span>
           <span style={VALUE}>{r.text}</span>
@@ -133,13 +152,18 @@ export default function PositionReadout({
         <span style={{ ...RATE_VALUE, flex: 1, textAlign: 'right' }} data-dro="feed">
           {foot.feed.text}
         </span>
-        <span style={{ width: 46 }}>{foot.feed.unit}</span>
+        <span style={{ width: 54 }}>{foot.feed.unit}</span>
         <span>S</span>
-        <span style={{ ...RATE_VALUE, width: 52, textAlign: 'right' }} data-dro="spindle">
+        <span style={{ ...RATE_VALUE, width: 62, textAlign: 'right' }} data-dro="spindle">
           {foot.spindle.text}
         </span>
-        <span style={{ width: 22 }}>{foot.spindle.unit}</span>
+        <span style={{ width: 28 }}>{foot.spindle.unit}</span>
       </div>
+      {foot.feed.note && (
+        <div style={FEED_NOTE} data-dro="feedNote">
+          programmed F{foot.feed.note}
+        </div>
+      )}
     </div>
   );
 }

@@ -111,7 +111,7 @@ function reverseLoop(flat) {
  * @returns {object|null}    null when the face cannot be cut this way
  */
 export function faceRegionOp(face, opts) {
-  const { material, tool, machine, safeZ = 10, allowance = 0, stepdown } = opts;
+  const { material, tool, machine, safeZ = 10, allowance = 0 } = opts;
   if (face.facing !== 'up') return null;
 
   const z = face.centroid[2] + allowance;

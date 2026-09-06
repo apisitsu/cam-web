@@ -11,10 +11,20 @@
 export const PROJECT_KIND = 'cam-web.project';
 /**
  * Bump when the shape changes incompatibly; `parseProject` refuses newer files.
- * v2 added the `cam` block — the whole STL→plan setup (part, machine, material,
- * origin, operations). A v1 file still opens: the `cam` block is simply absent.
+ *
+ * - v2 added the `cam` block — the whole STL→plan setup (part, machine,
+ *   material, origin, operations). A v1 file still opens: the block is absent.
+ * - v3 added `sketches`, because a sketch now has a **plane** and there can be
+ *   more than one of them. `sketch` (singular, the active document) is still
+ *   written beside it: it costs a few kB, it is what a v1/v2 file carries, and
+ *   it keeps one shape of "the sketch" for anything reading these files that is
+ *   not this app.
+ * - v4 added `features` — the operations that built the part, so reopening a
+ *   project can still *change* it rather than only look at it. A v3 file opens
+ *   with no tree, which is exactly what it had: a part and no record of how it
+ *   was made.
  */
-export const PROJECT_VERSION = 2;
+export const PROJECT_VERSION = 4;
 
 /** camStore settings worth carrying (everything else is derived). */
 const SETTING_KEYS = [
@@ -65,7 +75,8 @@ export function decodeFloat32(b64) {
  * imported part — a pure sketch or a hand-typed program.
  */
 export function buildProject({
-  gcode = '', fileName = null, sketch = null, settings = {}, cam = null,
+  gcode = '', fileName = null, sketch = null, sketches = null, settings = {},
+  cam = null, features = null,
 } = {}) {
   const kept = {};
   for (const k of SETTING_KEYS) if (settings[k] !== undefined) kept[k] = settings[k];
@@ -76,8 +87,13 @@ export function buildProject({
     fileName,
     gcode,
     sketch,
+    // `{ active, items: [{ id, name, plane, doc }] }` — see sketchStore's
+    // `serializeSketches`. Null for a project saved with nothing drawn.
+    sketches,
     settings: kept,
     cam,
+    // The feature tree (v4). `null` for a project with nothing built.
+    features,
   };
 }
 
@@ -120,6 +136,16 @@ export function parseProject(text) {
     fileName: typeof doc.fileName === 'string' ? doc.fileName : null,
     // The sketch is handed to sketchStore's deserialize, which validates it.
     sketch: doc.sketch ?? null,
+    // v3's sketch list. Confirmed only as far as "an object with a non-empty
+    // items array" — `loadSketches` validates each entry and each plane, and a
+    // v1/v2 file has none of this, which is what makes `sketch` above still the
+    // path that opens one.
+    sketches: doc.sketches && Array.isArray(doc.sketches.items) && doc.sketches.items.length
+      ? doc.sketches
+      : null,
+    // Validated entry by entry in `parseFeatures`; only the shape is confirmed
+    // here, so a malformed tree cannot fail the whole open.
+    features: Array.isArray(doc.features) && doc.features.length ? doc.features : null,
     settings,
     // The CAM setup, if this project has one. Handed to
     // `camPlanStore.restoreSetup`, which validates and rebuilds from it; here we

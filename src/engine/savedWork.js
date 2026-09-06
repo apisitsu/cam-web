@@ -10,10 +10,11 @@
  * tablet on the shop floor it is a file they may not be able to find at all.
  *
  * So the app keeps its own store: names in, names out, no dialog, and it
- * survives a refresh. This module is the pure half of that — the record shape,
- * the naming rules and the list ordering — kept out of `lib/workDb.js` (which
- * owns IndexedDB) for the usual reason: the format is the part worth testing,
- * and a browser database cannot be tested here at all.
+ * survives a refresh — and, since the library moved onto the server, a change of
+ * machine and a change of shift too. This module is the pure half of that — the
+ * record shape, the naming rules and the list ordering — kept out of
+ * `lib/workApi.js` (which owns the transport) for the usual reason: the format
+ * is the part worth testing, and an HTTP round trip cannot be tested here.
  *
  * A record is stored in **two pieces**, and that split is the whole reason
  * listing a library of ten projects is fast:
@@ -26,7 +27,7 @@
  * Reading a cursor over the data to draw a list would deserialize every one of
  * those payloads to show a row of names.
  *
- * Pure: plain data in, plain data out. No DOM, no IndexedDB, no store.
+ * Pure: plain data in, plain data out. No DOM, no transport, no store.
  */
 
 import { PROJECT_KIND } from './projectFile.js';
@@ -37,7 +38,7 @@ export const KINDS = ['program', 'project'];
 /**
  * Bump when the stored shape changes incompatibly. Unlike a project *file*,
  * which arrives from anywhere and may be from a newer build, these records are
- * written by this app into this browser — so the version is here to let a
+ * written by this app into its own table — so the version is here to let a
  * future build migrate them, not to police strangers.
  */
 export const LIBRARY_VERSION = 1;
@@ -236,7 +237,30 @@ export function sortLibrary(metas = []) {
   });
 }
 
-/** The names already taken for one kind — what `uniqueName` needs. */
+/**
+ * The two shelves, out of the one list the server returns.
+ *
+ * A row is on exactly one of them: your own (private), or the shared library.
+ * The server marks each row rather than sending two lists, because everything
+ * else about a row — its name, its note, how it sorts — is identical either way
+ * and only the shelf differs.
+ */
+export function myWork(metas = []) {
+  return metas.filter((m) => m && !m.shared);
+}
+
+export function sharedWork(metas = []) {
+  return metas.filter((m) => m?.shared);
+}
+
+/**
+ * The names already taken for one kind — what `uniqueName` needs.
+ *
+ * Callers pass **their own shelf**, not the whole list. Saving writes to your
+ * shelf and nowhere else, so a name is only "taken" if you took it: dodging a
+ * name because a colleague published one like it would have you saving
+ * "OP10 (2)" while your own OP10 slot sat empty.
+ */
 export function namesOfKind(metas = [], kind) {
   return new Set(metas.filter((m) => m?.kind === kind).map((m) => m.name));
 }

@@ -7,7 +7,8 @@ import {
   chamfer, fillet, filletLineArc, filletArcArc, tangentPoint, nearestTangent,
   deleteEntity, mirror, offsetEntity, angleSpec, interiorAngleToModel,
   axisDimensionGeometry, measureConstraint, axisFromPlacement, arcArcMeet,
-  filletCircleCircle,
+  filletCircleCircle, entityIntersections, nearestIntersection, entitiesInBox,
+  nearestQuadrant, nearestMidpoint,
 } from './edit.js';
 
 const near = (a, b, eps = 1e-6) => Math.abs(a - b) <= eps;
@@ -37,6 +38,164 @@ describe('circleIntersections', () => {
     const b = addPoint(sk, 0, 5); // never reaches r=10
     addLine(sk, a, b);
     expect(circleIntersections(sk, 0, 0, 10, circle).length).toBe(0);
+  });
+});
+
+describe('entityIntersections / nearestIntersection', () => {
+  it('crosses two segments, respecting both spans', () => {
+    const sk = createSketch();
+    const h = addLine(sk, addPoint(sk, -10, 0), addPoint(sk, 10, 0));
+    const v = addLine(sk, addPoint(sk, 2, -10), addPoint(sk, 2, 10));
+    const pts = entityIntersections(sk, sk.entities.get(h), sk.entities.get(v));
+    expect(pts).toHaveLength(1);
+    expect(near(pts[0].x, 2) && near(pts[0].y, 0)).toBe(true);
+  });
+
+  it('does not cross two segments whose lines meet outside a span', () => {
+    const sk = createSketch();
+    const h = addLine(sk, addPoint(sk, -10, 0), addPoint(sk, 10, 0));
+    const v = addLine(sk, addPoint(sk, 50, -5), addPoint(sk, 50, 5)); // x=50, off the h span
+    expect(entityIntersections(sk, sk.entities.get(h), sk.entities.get(v))).toHaveLength(0);
+  });
+
+  it('crosses a segment and a circle at both points', () => {
+    const sk = createSketch();
+    const circle = addCircle(sk, addPoint(sk, 0, 0), 10);
+    const seg = addLine(sk, addPoint(sk, -20, 0), addPoint(sk, 20, 0));
+    const pts = entityIntersections(sk, sk.entities.get(seg), sk.entities.get(circle))
+      .sort((u, v) => u.x - v.x);
+    expect(pts).toHaveLength(2);
+    expect(near(pts[0].x, -10) && near(pts[1].x, 10)).toBe(true);
+  });
+
+  it('keeps only crossings that fall within an arc span', () => {
+    const sk = createSketch();
+    // Quarter arc centre (0,0) r10, from (10,0) CCW to (0,10) — first quadrant only.
+    const arc = addArc(sk, addPoint(sk, 0, 0), addPoint(sk, 10, 0), addPoint(sk, 0, 10), 10);
+    const seg = addLine(sk, addPoint(sk, -20, 5), addPoint(sk, 20, 5)); // y=5 → x=±√75
+    const pts = entityIntersections(sk, sk.entities.get(seg), sk.entities.get(arc));
+    expect(pts).toHaveLength(1); // the −√75 crossing is outside the quarter arc
+    expect(pts[0].x).toBeGreaterThan(0);
+    expect(near(pts[0].y, 5)).toBe(true);
+  });
+
+  it('picks the crossing nearest the cursor, within tolerance', () => {
+    const sk = createSketch();
+    addLine(sk, addPoint(sk, -10, 0), addPoint(sk, 10, 0));
+    addLine(sk, addPoint(sk, 0, -10), addPoint(sk, 0, 10)); // cross at (0,0)
+    addLine(sk, addPoint(sk, 6, -10), addPoint(sk, 6, 10)); // cross at (6,0)
+    const hit = nearestIntersection(sk, 5.5, 0.2, 1.5);
+    expect(near(hit.x, 6) && near(hit.y, 0)).toBe(true);
+    expect(nearestIntersection(sk, 3, 0, 1.5)).toBeNull(); // nothing within 1.5 of (3,0)
+  });
+
+  it('skips the excluded entity', () => {
+    const sk = createSketch();
+    const h = addLine(sk, addPoint(sk, -10, 0), addPoint(sk, 10, 0));
+    addLine(sk, addPoint(sk, 0, -10), addPoint(sk, 0, 10));
+    expect(nearestIntersection(sk, 0, 0, 1.5, h)).toBeNull();
+  });
+});
+
+describe('entitiesInBox — marquee selection', () => {
+  const box = (sk, x0, y0, x1, y1, crossing) => entitiesInBox(sk, x0, y0, x1, y1, { crossing });
+
+  it('takes only fully enclosed entities without crossing', () => {
+    const sk = createSketch();
+    const inside = addLine(sk, addPoint(sk, 1, 1), addPoint(sk, 4, 4));
+    const straddle = addLine(sk, addPoint(sk, 3, 3), addPoint(sk, 20, 20));
+    const got = box(sk, 0, 0, 10, 10, false);
+    expect(got).toContain(inside);
+    expect(got).not.toContain(straddle);
+  });
+
+  it('crossing also takes anything the box touches, but nothing outside it', () => {
+    const sk = createSketch();
+    const straddle = addLine(sk, addPoint(sk, 3, 3), addPoint(sk, 20, 20));
+    const away = addLine(sk, addPoint(sk, 50, 50), addPoint(sk, 60, 60));
+    const got = box(sk, 0, 0, 10, 10, true);
+    expect(got).toContain(straddle);
+    expect(got).not.toContain(away);
+  });
+
+  it('encloses a circle only when its whole bbox fits, but touches count when crossing', () => {
+    const sk = createSketch();
+    const c = addCircle(sk, addPoint(sk, 5, 5), 3); // bbox [2,2]–[8,8]
+    expect(box(sk, 0, 0, 10, 10, false)).toContain(c);
+    expect(box(sk, 0, 0, 6, 10, false)).not.toContain(c); // clips the right side
+    expect(box(sk, 0, 0, 6, 10, true)).toContain(c);
+  });
+
+  it('takes a bare point in the box but never the origin', () => {
+    const sk = createSketch();
+    const o = addPoint(sk, 0, 0, true);
+    sk.entities.get(o).origin = true;
+    const p = addPoint(sk, 2, 2);
+    const got = box(sk, -1, -1, 5, 5, false);
+    expect(got).toContain(p);
+    expect(got).not.toContain(o);
+  });
+
+  it('normalises a box dragged up-and-left', () => {
+    const sk = createSketch();
+    const l = addLine(sk, addPoint(sk, 2, 2), addPoint(sk, 4, 4));
+    expect(box(sk, 10, 10, 0, 0, false)).toContain(l);
+  });
+});
+
+describe('nearestQuadrant — a circle/arc high point', () => {
+  it('snaps to the right quadrant of a circle, tagged as a horizontal one', () => {
+    const sk = createSketch();
+    const circle = addCircle(sk, addPoint(sk, 5, 5), 10); // quadrants at (15,5) (−5,5) (5,15) (5,−5)
+    const q = nearestQuadrant(sk, 14.6, 5.3, 1.5);
+    expect(near(q.x, 15) && near(q.y, 5)).toBe(true);
+    expect(q.axis).toBe('h');
+    expect(q.id).toBe(circle);
+  });
+
+  it('snaps to the top quadrant, tagged vertical', () => {
+    const sk = createSketch();
+    addCircle(sk, addPoint(sk, 0, 0), 8);
+    const q = nearestQuadrant(sk, 0.4, 7.7, 1.5);
+    expect(near(q.x, 0) && near(q.y, 8)).toBe(true);
+    expect(q.axis).toBe('v');
+  });
+
+  it('is null when the cursor is nowhere near a quadrant', () => {
+    const sk = createSketch();
+    addCircle(sk, addPoint(sk, 0, 0), 10);
+    expect(nearestQuadrant(sk, 7, 7, 1.5)).toBeNull(); // on the rim, but at 45°
+  });
+
+  it('only offers an arc quadrant that lies within its span', () => {
+    const sk = createSketch();
+    // Quarter arc centre (0,0) r10, (10,0) CCW to (0,10) — first quadrant only.
+    addArc(sk, addPoint(sk, 0, 0), addPoint(sk, 10, 0), addPoint(sk, 0, 10), 10);
+    expect(near(nearestQuadrant(sk, 10.2, 0.1, 1.5).y, 0)).toBe(true);  // (10,0) is in span
+    expect(nearestQuadrant(sk, -10.2, 0.1, 1.5)).toBeNull();            // (−10,0) is not
+  });
+});
+
+describe('nearestMidpoint — a line-segment midpoint', () => {
+  it('finds the midpoint of the nearest segment', () => {
+    const sk = createSketch();
+    const l = addLine(sk, addPoint(sk, 0, 0), addPoint(sk, 20, 0)); // midpoint (10, 0)
+    const m = nearestMidpoint(sk, 10.3, -0.4, 1.5);
+    expect(near(m.x, 10) && near(m.y, 0)).toBe(true);
+    expect(m.id).toBe(l);
+  });
+
+  it('is null away from any midpoint, and near an endpoint', () => {
+    const sk = createSketch();
+    addLine(sk, addPoint(sk, 0, 0), addPoint(sk, 20, 0));
+    expect(nearestMidpoint(sk, 5, 0, 1.5)).toBeNull();   // quarter-way, not the middle
+    expect(nearestMidpoint(sk, 0.2, 0.1, 1.5)).toBeNull(); // that's an endpoint's job
+  });
+
+  it('skips the excluded segment', () => {
+    const sk = createSketch();
+    const l = addLine(sk, addPoint(sk, 0, 0), addPoint(sk, 20, 0));
+    expect(nearestMidpoint(sk, 10, 0, 1.5, l)).toBeNull();
   });
 });
 

@@ -15,6 +15,7 @@ describe('library', () => {
   it('every material carries the fields the formulas read', () => {
     for (const m of MATERIALS) {
       for (const k of ['vcMill', 'vcTurn', 'fzBase', 'fnTurn', 'apFactor', 'aeFactor']) {
+        // eslint-disable-next-line jest/valid-expect
         expect(typeof m[k], `${m.id}.${k}`).toBe('number');
         expect(m[k]).toBeGreaterThan(0);
       }
@@ -114,6 +115,13 @@ describe('turningSpeeds', () => {
     const r = turningSpeeds({ material: 'mild-steel', diameter: 50 });
     expect(r.rpm).toBe(1273);
     expect(r.feed).toBeCloseTo(0.12, 3); // mm/rev, not mm/min
+  });
+
+  it('also gives the feed in mm/min, so it can be compared with anything else', () => {
+    // 0.12 mm/rev at 1273 rpm is what the slide is actually doing: ~153 mm/min.
+    const r = turningSpeeds({ material: 'mild-steel', diameter: 50 });
+    expect(r.feedPerMin).toBe(Math.round(r.fn * r.rpm));
+    expect(r.feedPerMin).toBeCloseTo(153, 0);
   });
 
   it('rises as the tool works toward centre, and clamps there', () => {

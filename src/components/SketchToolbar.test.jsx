@@ -27,6 +27,7 @@ async function renderWith(patch) {
     version: (useSketchStore.getState().version ?? 0) + 1,
     ...patch,
   });
+  // eslint-disable-next-line testing-library/no-unnecessary-act
   await act(async () => {
     root.render(React.createElement(SketchToolbar));
   });
@@ -78,6 +79,7 @@ describe('SketchToolbar — chamfer / fillet input gate', () => {
 
   it('offers C/R for two lines', async () => {
     const { sk, l1, l2 } = corner();
+    // eslint-disable-next-line testing-library/render-result-naming-convention
     const text = await renderWith({ sk, tool: 'chamfer', selection: [l1, l2] });
     expect(text).toContain('Chamfer');
   });
@@ -87,6 +89,7 @@ describe('SketchToolbar — chamfer / fillet input gate', () => {
     const o = addPoint(sk, 0, 0);
     const line = addLine(sk, o, addPoint(sk, 10, 0));
     const arc = addArc(sk, addPoint(sk, 10, 10), o, addPoint(sk, 20, 10), 10);
+    // eslint-disable-next-line testing-library/render-result-naming-convention
     const text = await renderWith({ sk, tool: 'chamfer', selection: [line, arc] });
     expect(text).toContain('Fillet');
   });
@@ -95,6 +98,7 @@ describe('SketchToolbar — chamfer / fillet input gate', () => {
     // The regression: this used to return null, so picking two circles produced
     // no UI whatsoever and the tool looked broken.
     const { sk, c1, c2 } = twoCircles();
+    // eslint-disable-next-line testing-library/render-result-naming-convention
     const text = await renderWith({ sk, tool: 'chamfer', selection: [c1, c2] });
     expect(text).toContain('Fillet');
     expect(text).not.toBe('');
@@ -104,18 +108,21 @@ describe('SketchToolbar — chamfer / fillet input gate', () => {
     const sk = createSketch();
     const circle = addCircle(sk, addPoint(sk, 0, 0), 50);
     const line = addLine(sk, addPoint(sk, 0, 0), addPoint(sk, 90, 0));
+    // eslint-disable-next-line testing-library/render-result-naming-convention
     const text = await renderWith({ sk, tool: 'chamfer', selection: [circle, line] });
     expect(text).toMatch(/[Tt]rim/);
   });
 
   it('shows nothing when the chamfer tool has an unusable selection', async () => {
     const { sk, l1 } = corner();
+    // eslint-disable-next-line testing-library/render-result-naming-convention
     const text = await renderWith({ sk, tool: 'chamfer', selection: [l1] });
     expect(text).not.toContain('Fillet');
   });
 
   it('shows nothing when the tool is not chamfer, whatever is selected', async () => {
     const { sk, c1, c2 } = twoCircles();
+    // eslint-disable-next-line testing-library/render-result-naming-convention
     const text = await renderWith({ sk, tool: 'select', selection: [c1, c2] });
     expect(text).not.toContain('Fillet');
   });
@@ -126,6 +133,7 @@ describe('SketchToolbar — inline inputs appear only when armed', () => {
     const sk = createSketch();
     const a = addPoint(sk, 0, 0);
     const b = addPoint(sk, 10, 0);
+    // eslint-disable-next-line testing-library/render-result-naming-convention
     const text = await renderWith({
       sk,
       dimensionPending: { kind: 'distance', refs: [a, b], label: 'Distance', current: 10, axial: true },
@@ -137,6 +145,7 @@ describe('SketchToolbar — inline inputs appear only when armed', () => {
     const sk = createSketch();
     const a = addPoint(sk, 0, 0);
     const b = addPoint(sk, 10, 4);
+    // eslint-disable-next-line testing-library/render-result-naming-convention
     const text = await renderWith({
       sk,
       dimensionPending: { kind: 'distance', refs: [a, b], label: 'Distance', current: 10.8, axial: true },
@@ -150,6 +159,7 @@ describe('SketchToolbar — inline inputs appear only when armed', () => {
   it('hides that toggle for a dimension with no axial variant', async () => {
     const sk = createSketch();
     const c = addCircle(sk, addPoint(sk, 0, 0), 5);
+    // eslint-disable-next-line testing-library/render-result-naming-convention
     const text = await renderWith({
       sk,
       dimensionPending: { kind: 'diameter', refs: [c], label: 'Diameter', current: 10 },
@@ -170,6 +180,7 @@ describe('SketchToolbar — inline inputs appear only when armed', () => {
     const a = addPoint(sk, 0, 0);
     const b = addPoint(sk, 10, 0);
     addConstraint(sk, 'distance', [a, b], 10);
+    // eslint-disable-next-line testing-library/render-result-naming-convention
     const text = await renderWith({
       sk,
       editingConstraint: { index: 0, kind: 'distance', label: 'Distance', value: 10, angular: false },
@@ -181,29 +192,34 @@ describe('SketchToolbar — inline inputs appear only when armed', () => {
 describe('SketchToolbar — status readout', () => {
   it('shows the free degrees of freedom while under-defined', async () => {
     const sk = createSketch();
+    // eslint-disable-next-line testing-library/render-result-naming-convention
     const text = await renderWith({ sk, dofState: { state: 'under', free: 4 } });
     expect(text).toContain('4');
   });
 
   it('shows a tick once the sketch is fully defined', async () => {
     const sk = createSketch();
+    // eslint-disable-next-line testing-library/render-result-naming-convention
     const text = await renderWith({ sk, dofState: { state: 'full', free: 0 } });
     expect(text).toContain('✓');
   });
 
   it('flags a failed solve', async () => {
     const sk = createSketch();
+    // eslint-disable-next-line testing-library/render-result-naming-convention
     const text = await renderWith({ sk, solveResult: { success: false, status: 2 } });
     expect(text).toContain('!');
   });
 
   it('flags an error (the message itself lives in the tooltip)', async () => {
     const sk = createSketch();
+    // eslint-disable-next-line testing-library/render-result-naming-convention
     const text = await renderWith({ sk, error: 'R5 is too large to fit that corner' });
     expect(text).toContain('?');
   });
 
   it('shows no status flags when everything is clean', async () => {
+    // eslint-disable-next-line testing-library/render-result-naming-convention
     const text = await renderWith({ sk: createSketch() });
     expect(text).not.toContain('!');
     expect(text).not.toContain('?');

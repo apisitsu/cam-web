@@ -122,6 +122,46 @@ export function perimeterOf(points) {
   return len;
 }
 
+const CLIP_TYPES = {
+  difference: ClipperLib.ClipType.ctDifference,
+  union: ClipperLib.ClipType.ctUnion,
+  intersect: ClipperLib.ClipType.ctIntersection,
+  xor: ClipperLib.ClipType.ctXor,
+};
+
+/**
+ * Boolean of two loop sets.
+ *
+ * Non-zero fill throughout, which is why the outer-CCW / hole-CW convention has
+ * to hold on the way in: an outer counts +1 and a hole −1, so the inside of a
+ * hole nets to zero and stays empty through the operation. Loops handed over the
+ * wrong way round quietly become the opposite of themselves.
+ *
+ * Winding of the *result* is Clipper's, not ours — run it through
+ * `normalizeLoops` before anything downstream reads solid-versus-hole from it.
+ *
+ * @param {string} op  'difference' | 'union' | 'intersect' | 'xor'
+ */
+export function booleanLoops(subject, clip, op = 'difference') {
+  const type = CLIP_TYPES[op];
+  if (type === undefined) throw new Error(`unknown boolean op: ${op}`);
+  const c = new ClipperLib.Clipper();
+  const add = (loops, kind) => {
+    for (const l of loops) {
+      const points = Array.isArray(l) ? l : l.points;
+      if (points.length >= 6) c.AddPath(toPath(points), kind, true);
+    }
+  };
+  add(subject, ClipperLib.PolyType.ptSubject);
+  add(clip, ClipperLib.PolyType.ptClip);
+  const solution = new ClipperLib.Paths();
+  c.Execute(
+    type, solution,
+    ClipperLib.PolyFillType.pftNonZero, ClipperLib.PolyFillType.pftNonZero,
+  );
+  return solution.map(fromPath).filter((p) => p.length >= 6);
+}
+
 /**
  * Boolean difference, `subject` minus `clip`.
  *
@@ -130,21 +170,7 @@ export function perimeterOf(points) {
  * the part section.
  */
 export function differenceLoops(subject, clip) {
-  const c = new ClipperLib.Clipper();
-  const add = (loops, type) => {
-    for (const l of loops) {
-      const points = Array.isArray(l) ? l : l.points;
-      if (points.length >= 6) c.AddPath(toPath(points), type, true);
-    }
-  };
-  add(subject, ClipperLib.PolyType.ptSubject);
-  add(clip, ClipperLib.PolyType.ptClip);
-  const solution = new ClipperLib.Paths();
-  c.Execute(
-    ClipperLib.ClipType.ctDifference, solution,
-    ClipperLib.PolyFillType.pftNonZero, ClipperLib.PolyFillType.pftNonZero,
-  );
-  return solution.map(fromPath).filter((p) => p.length >= 6);
+  return booleanLoops(subject, clip, 'difference');
 }
 
 /** A rectangle as a CCW loop — the usual stock boundary for a milling job. */

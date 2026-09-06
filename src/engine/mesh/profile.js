@@ -49,7 +49,7 @@ export function axialSection(mesh, axis = 'z', opts = {}) {
 
   const { loops, openCount } = sliceLoops(mesh, normal, center, opts);
   // sliceLoops returns the two axes other than `normal`, in ascending order.
-  const [a, b] = [0, 1, 2].filter((k) => k !== normal);
+  const [a] = [0, 1, 2].filter((k) => k !== normal);
   const radialIsFirst = a === t0;
 
   // Re-express every loop as [radius, axial] and shift the radius onto the axis.

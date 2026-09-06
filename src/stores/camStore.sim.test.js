@@ -32,6 +32,7 @@ const worker = {
 };
 
 vi.stubGlobal('Worker', class {
+  // eslint-disable-next-line no-useless-constructor
   constructor() { /* never actually spawned */ }
   terminate() {}
 });

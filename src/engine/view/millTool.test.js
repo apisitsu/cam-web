@@ -209,7 +209,9 @@ describe('endMillGeometry — a cutting body the operator has measured', () => {
     // A body thinner than the renderer can show is a tool that vanished.
     for (const thickness of [0, 0.05, -3]) {
       const g = endMillGeometry({ radius: 20, cutter: 'slot', thickness });
+      // eslint-disable-next-line jest/valid-expect
       expect(g.flutes.length, String(thickness)).toBeGreaterThan(0);
+      // eslint-disable-next-line jest/valid-expect
       expect(g.shank.length, String(thickness)).toBeGreaterThan(0);
     }
   });
@@ -245,7 +247,9 @@ describe('endMillGeometry — a shank the operator has measured', () => {
     // The shank is stated for one type; nothing may move for the rest.
     for (const cutter of ['endmill', 'face', 'ball', 'chamfer']) {
       const g = endMillGeometry({ radius: 8, cutter });
+      // eslint-disable-next-line jest/valid-expect
       expect(g.shank.radius, cutter).toBeCloseTo(Math.max(8 * 0.9, 8 - 0.5), 9);
+      // eslint-disable-next-line jest/valid-expect
       expect(g.arbor.rBottom, cutter).toBeCloseTo(Math.max(8 * 1.8, 8 + 4), 9);
     }
   });
@@ -253,7 +257,9 @@ describe('endMillGeometry — a shank the operator has measured', () => {
   it('draws a hair-thin shank rather than nothing at all', () => {
     for (const shank of [0, 0.05, -4]) {
       const g = endMillGeometry({ radius: 10, cutter: 'slot', shank });
+      // eslint-disable-next-line jest/valid-expect
       expect(g.shank.radius, String(shank)).toBeGreaterThan(0);
+      // eslint-disable-next-line jest/valid-expect
       expect(g.arbor.rBottom, String(shank)).toBeGreaterThan(g.shank.radius);
     }
   });

@@ -8,12 +8,14 @@ import { billetBox } from './billet.js';
 import { cuttingBounds } from './removal.js';
 import { cutterGeometry } from '../cam/cutters.js';
 import { heightmapToSolidMesh } from './mesh.js';
-import { dominantIndex, boundsOf, feedTopZ, toolResolver } from './session.js';
+import {
+  dominantIndex, boundsOf, feedTopZ, toolResolver, advanceCut,
+} from './session.js';
 import { voxelSizeFor, thinnestCut, cellSizeFor, cutterSpan } from './method.js';
 import { createVoxelStock, carveVoxels, voxelSurfaceMesh } from './voxel.js';
 import {
   createTurningStock, carveTurning, carveTurningMove, resetTurningStock,
-  turningMesh, turningNoseResolver, detectFaceZ,
+  turningMesh, detectFaceZ,
 } from './turning.js';
 
 export { createStock, stockFromBounds, resetStock, stamp, cutSegment, simulate } from './dexel.js';
@@ -224,20 +226,37 @@ export function createTurningSession(text, opts = {}) {
     rStock: opts.rStock ?? (fit.max[0] + stockOversize / 2),
   });
   const feeds = segments.filter((s) => s.type !== 'rapid'); // cutting moves, in order
-  return { stock, feeds, cursor: 0, totalFeeds: feeds.length };
+  // `partial` and `removed` are `advanceCut`'s bookkeeping — the fraction of the
+  // move in progress that has been cut, and the running total. Turning kept
+  // neither while it stepped whole moves.
+  return {
+    stock, feeds, cursor: 0, partial: 0, removed: 0, totalFeeds: feeds.length,
+  };
 }
 
-/** Carve the turning session until exactly `k` feed moves have run. */
+/** A point `t` of the way along a turning move (`[radius, _, z]`). */
+function lerpTurn(a, b, t) {
+  return [a[0] + (b[0] - a[0]) * t, a[1] + (b[1] - a[1]) * t, a[2] + (b[2] - a[2]) * t];
+}
+
+/**
+ * Carve the turning session to `k` feed moves — **fractional**.
+ *
+ * It used to round `k` down and step whole moves, which is why the stock came
+ * off a step at a time instead of under the insert: a roughing pass is one long
+ * `G1`, so the tool travelled the length of the part with nothing happening and
+ * then the whole cut appeared at the end of it. Milling and the voxel block had
+ * already been given `advanceCut` for exactly this; turning was the one left
+ * counting whole moves, and it is the model where a single move is longest.
+ */
 export function carveTurningSessionTo(session, k) {
-  const target = Math.max(0, Math.min(k, session.totalFeeds));
-  if (target < session.cursor) {
-    resetTurningStock(session.stock);
-    session.cursor = 0;
-  }
-  for (; session.cursor < target; session.cursor++) {
-    const s = session.feeds[session.cursor];
-    carveTurningMove(session.stock, s.a, s.b, 0); // sharp corner, follows the path
-  }
+  advanceCut(session, k, {
+    reset: () => resetTurningStock(session.stock),
+    // Sharp corner: the envelope follows the programmed path.
+    cut: (seg, t0, t1) => carveTurningMove(
+      session.stock, lerpTurn(seg.a, seg.b, t0), lerpTurn(seg.a, seg.b, t1), 0,
+    ),
+  });
   const mesh = turningMesh(session.stock);
   return {
     positions: mesh.positions,

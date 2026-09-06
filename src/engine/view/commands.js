@@ -8,16 +8,23 @@
  * unrelated words because nobody was looking at them side by side.
  *
  * SolidWorks answers this the way every CAD toolbar does: the button is a
- * **symbol**, and hovering it gives you the command's *name* plus a line of
- * description. Nothing on the toolbar is spelled out; everything on it is
- * explained on demand. That is the whole convention being followed here, and it
- * only works if two things are guaranteed for every single button:
+ * **symbol**, and hovering it names it. Nothing on the toolbar is spelled out;
+ * everything on it is identified on demand. That is the whole convention being
+ * followed here, and it only works if two things are guaranteed for every
+ * single button:
  *
  * 1. it has a **name** — otherwise a screen reader, and anyone who does not
  *    recognise the glyph, gets a button that announces itself as nothing;
- * 2. it has a **hint** that says something the name did not — a tooltip reading
- *    "Auto-plan" over a button whose name is already "Auto-plan" is a tooltip
- *    that wasted the hover.
+ * 2. it has a **hint** that says something the name did not — a hint reading
+ *    "Auto-plan" for a button whose name is already "Auto-plan" is a hint that
+ *    was never written.
+ *
+ * **The hint is not rendered.** `CommandButton`'s tooltip is the name alone: a
+ * rail of a dozen glyphs where every hover opens a paragraph is a rail you read
+ * instead of use, and what a hover is for is *which button is this*. The hint
+ * stays required because writing one is what forces an author to be able to say
+ * what a button is for — it is the catalogue's documentation of intent, and the
+ * place to look when a glyph's purpose is genuinely unclear.
  *
  * Neither can be checked by looking at JSX, which is why the catalogue is data
  * and lives here: `commands.test.js` holds every entry to both rules at once.
@@ -61,14 +68,14 @@ export const COMMANDS = [
 
   // ---- Keeping and handing on work ---------------------------------------
   //
-  // Saving to a FILE is not on this rail. The library keeps the same session in
-  // the browser under a name, with no dialog and no folder to find again, and a
+  // Saving to a FILE is not on this rail. The library keeps the same session on
+  // the server under a name, with no dialog and no folder to find again, and a
   // rail carrying both ways to do one job is a rail on which nobody is sure
   // which one they used. A .camweb.json still opens by dropping it on the
   // window, which is how every other file gets in.
   {
     id: 'openLibrary', group: 'project', label: 'Library',
-    hint: 'Everything saved in this browser — save, open, re-save or delete it',
+    hint: 'Your own saved work, and the shelf everyone shares. Save, open, share or delete it',
   },
   {
     id: 'exportGcode', group: 'project', label: 'Export G-code',
@@ -212,8 +219,16 @@ export const COMMANDS = [
     hint: 'Draw the imported model — hide it to see a toolpath that runs inside it',
   },
   {
+    id: 'showStock', group: 'view', label: 'Show stock',
+    hint: 'Draw the billet and the carved block — hide it to watch the toolpath alone',
+  },
+  {
     id: 'showArbor', group: 'view', label: 'Show holder',
     hint: 'Draw the collet above the cutter — hide it to see the cut it covers',
+  },
+  {
+    id: 'showToolpath', group: 'view', label: 'Show toolpath',
+    hint: 'Draw the programmed moves — hide them to see the cut surface alone',
   },
   {
     id: 'rotateWork', group: 'view', label: 'Rotate work',

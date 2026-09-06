@@ -1,5 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import {
+  // eslint-disable-next-line no-unused-vars
   simMethodFor, undercutting, voxelSizeFor, thinnestCut, VOXEL_LAYERS, MAX_VOXELS,
   cutterSpan, cellSizeFor, CIRCLE_CELLS, MIN_CELL, MAX_CELLS, MAX_STAMPS,
 } from './method.js';
@@ -18,6 +19,7 @@ describe('undercutting — what a height field cannot hold', () => {
       null,
       undefined,
     ]) {
+      // eslint-disable-next-line jest/valid-expect
       expect(undercutting(tool), JSON.stringify(tool)).toBe(false);
     }
   });
@@ -64,6 +66,7 @@ describe('simMethodFor — the model that can show this cut', () => {
     ]) {
       const r = simMethodFor(args);
       expect(r.method).toBe('voxel');
+      // eslint-disable-next-line jest/valid-expect
       expect(r.why.length, JSON.stringify(args)).toBeGreaterThan(20);
     }
   });
@@ -119,6 +122,7 @@ describe('voxelSizeFor — a grid fine enough to hold the cut', () => {
     const big = { min: [0, 0, -150], max: [300, 300, 0] };
     for (const requested of [1, 2, 0.5]) {
       const r = voxelSizeFor({ requested, thickness: 0.2, bounds: big });
+      // eslint-disable-next-line jest/valid-expect
       expect(r.sizeZ, String(requested)).toBeLessThanOrEqual(requested);
     }
     // A grid already over budget with no undercutting tool is left alone: it is
@@ -141,7 +145,9 @@ describe('voxelSizeFor — a grid fine enough to hold the cut', () => {
       {},
     ]) {
       const r = voxelSizeFor(args);
+      // eslint-disable-next-line jest/valid-expect
       expect(Number.isFinite(r.size), JSON.stringify(args)).toBe(true);
+      // eslint-disable-next-line jest/valid-expect
       expect(Number.isFinite(r.sizeZ), JSON.stringify(args)).toBe(true);
       expect(r.size).toBeGreaterThan(0);
       expect(r.sizeZ).toBeGreaterThan(0);

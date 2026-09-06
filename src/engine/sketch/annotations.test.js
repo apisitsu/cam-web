@@ -3,6 +3,7 @@ import {
   createSketch, addPoint, addLine, addCircle, addArc, addConstraint,
 } from './model.js';
 import { dimensionAnnotations, fmtDim } from './annotations.js';
+import { dimensionLockDir } from './edit.js';
 
 const DEG = Math.PI / 180;
 /** Distance from a label to a point, for "is it near the geometry" checks. */
@@ -89,6 +90,94 @@ describe('dimensionAnnotations — distance', () => {
     const dim = segs[2];
     expect(labels[0].pos[0]).toBeCloseTo((dim.pts[0][0] + dim.pts[1][0]) / 2, 9);
     expect(labels[0].pos[1]).toBeCloseTo(dim.pts[0][1], 9);
+  });
+});
+
+describe('dimensionLockDir — the axis a placed dimension may be slid along', () => {
+  it('locks a horizontal dimension to vertical movement, and vice versa', () => {
+    const s = createSketch();
+    const a = addPoint(s, 0, 0);
+    const b = addPoint(s, 10, 0);
+    expect(dimensionLockDir(s, 'distanceX', [a, b])).toEqual([0, 1]);
+    expect(dimensionLockDir(s, 'distanceY', [a, b])).toEqual([1, 0]);
+  });
+
+  it('locks an aligned distance to the perpendicular of the measured pair', () => {
+    const s = createSketch();
+    const a = addPoint(s, 0, 0);
+    const b = addPoint(s, 0, 10); // measured along +Y → perpendicular is ±X
+    const [ux, uy] = dimensionLockDir(s, 'distance', [a, b]);
+    expect(Math.abs(ux)).toBeCloseTo(1, 9);
+    expect(uy).toBeCloseTo(0, 9);
+  });
+
+  it('locks radius / diameter to the 45° leader', () => {
+    expect(dimensionLockDir(null, 'radius', [])).toEqual([Math.SQRT1_2, Math.SQRT1_2]);
+    expect(dimensionLockDir(null, 'diameter', [])).toEqual([Math.SQRT1_2, Math.SQRT1_2]);
+  });
+});
+
+describe('dimensionAnnotations — a dragged dimension is locked to its axis', () => {
+  it('slides a distance line and its centred value along the perpendicular only', () => {
+    const s = createSketch();
+    const a = addPoint(s, 0, 0);
+    const b = addPoint(s, 10, 0); // measured along X → locked to Y
+    const ci = addConstraint(s, 'distance', [a, b], 10);
+    const base = dimensionAnnotations(s);
+    s.constraints[ci].labelOffset = [3, 7]; // a free 2-D drag
+    const moved = dimensionAnnotations(s);
+
+    // Only the Y component (7) is applied; X (3) is dropped.
+    for (const i of [0, 1]) {
+      expect(moved.segs[2].pts[i][0]).toBeCloseTo(base.segs[2].pts[i][0], 9);
+      expect(moved.segs[2].pts[i][1]).toBeCloseTo(base.segs[2].pts[i][1] + 7, 9);
+    }
+    // The value stays centred on the (moved) dimension line.
+    expect(moved.labels[0].pos[0]).toBeCloseTo((moved.segs[2].pts[0][0] + moved.segs[2].pts[1][0]) / 2, 9);
+    expect(moved.labels[0].pos[1]).toBeCloseTo(moved.segs[2].pts[0][1], 9);
+    // Witness lines still start on the two measured points.
+    expect(moved.segs[0].pts[0]).toEqual([0, 0, 0]);
+    expect(moved.segs[1].pts[0]).toEqual([10, 0, 0]);
+  });
+
+  it('slides a radius label along its 45° leader only', () => {
+    const sk = createSketch();
+    const c = addCircle(sk, addPoint(sk, 0, 0), 10);
+    const ci = addConstraint(sk, 'radius', [c], 10);
+    const before = dimensionAnnotations(sk).labels[0].pos;
+    sk.constraints[ci].labelOffset = [-5, 2];
+    const after = dimensionAnnotations(sk).labels[0].pos;
+    // [-5, 2] projected onto [√½, √½] → t = -3·√½, so dx = dy = -1.5.
+    expect(after[0]).toBeCloseTo(before[0] - 1.5, 9);
+    expect(after[1]).toBeCloseTo(before[1] - 1.5, 9);
+  });
+
+  it('keeps the diameter line on the circle and runs a leader out to the value', () => {
+    const sk = createSketch();
+    const c = addCircle(sk, addPoint(sk, 0, 0), 10);
+    const ci = addConstraint(sk, 'diameter', [c], 20);
+    const base = dimensionAnnotations(sk);
+    sk.constraints[ci].labelOffset = [8, 8]; // dragged well outside the circle
+    const moved = dimensionAnnotations(sk);
+
+    // The diameter chord is untouched — still a 20-long line through the centre.
+    expect(moved.segs[0].pts).toEqual(base.segs[0].pts);
+    const [p, q] = moved.segs[0].pts;
+    expect(Math.hypot(q[0] - p[0], q[1] - p[1])).toBeCloseTo(20, 6);
+    // A leader now joins the rim to the moved value.
+    const leader = moved.segs[1];
+    expect(leader.pts[0]).toEqual(q);                 // starts at the rim
+    expect(moved.labels[0].pos).toEqual(leader.pts[1]); // ends at the label
+  });
+
+  it('is inert when the offset is absent or zero', () => {
+    const s = createSketch();
+    const a = addPoint(s, 0, 0);
+    const b = addPoint(s, 10, 0);
+    const ci = addConstraint(s, 'distance', [a, b], 10);
+    const base = JSON.stringify(dimensionAnnotations(s));
+    s.constraints[ci].labelOffset = [0, 0];
+    expect(JSON.stringify(dimensionAnnotations(s))).toBe(base);
   });
 });
 

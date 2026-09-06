@@ -141,7 +141,6 @@ function stampVoxel(v, px, py, pz, ax, ay, az, tool, length) {
  * @param {object} tool  { radius, type:'flat'|'ball'|'cone', angle?, thickness?, length? }
  */
 export function carveVoxelMove(v, a, b, axis, tool) {
-  const r = tool.radius;
   // How far up the tool actually cuts. A stated cutting-body thickness is the
   // tightest and truest answer — a slot cutter that only cuts for its first few
   // mm leaves material standing above that, which is the one place a voxel

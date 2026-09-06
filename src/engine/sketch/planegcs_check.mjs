@@ -23,9 +23,14 @@ const wasmPath = createRequire(import.meta.url).resolve(
   '@salusoft89/planegcs/dist/planegcs_dist/planegcs.wasm'
 );
 
+// Node loads the emscripten glue straight from the package; only the bundled
+// worker has to go the long way round (see workers/sketch.worker.js).
+const initModule = async (opts) =>
+  (await import('@salusoft89/planegcs/dist/planegcs_dist/planegcs.js')).default(opts);
+
 let solver;
 test('load solver (WASM)', async () => {
-  solver = await createSolver({ wasmPath });
+  solver = await createSolver({ wasmPath, initModule });
   assert.equal(typeof solver.solve, 'function');
 });
 

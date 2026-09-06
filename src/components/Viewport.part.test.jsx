@@ -78,6 +78,7 @@ function mount(extra = {}) {
  * that was not there.
  */
 function partMeshes(renderer) {
+  // eslint-disable-next-line testing-library/await-async-query
   return renderer.scene.findAllByType('Mesh').filter((m) => m.instance.name === 'imported-part');
 }
 

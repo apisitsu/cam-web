@@ -34,16 +34,24 @@ export function stockStated({ stockEnabled = false, stockSize = null } = {}) {
 }
 
 /**
- * Has the operator set an origin?
+ * Has the operator set an origin the sim can trust?
  *
- * Per-axis touch-off, the way a setter actually works: X0 off one face, Y0 off
- * another, Z0 off the top. Any one of them is a datum the program is now
- * measured against, so any one of them counts. A part carrying a datum point
- * from an older project counts too, which is what `point` covers.
+ * Touch-off is per axis — X0 off one face, Y0 off another, Z0 off the top — and
+ * a *partly* set origin is worse than none: the sim carves against a datum that
+ * is right in X and still at the model's native zero in Y and Z, then re-carves
+ * (a different wrong answer each time) on the next two picks. So **milling waits
+ * for all three linear axes**. Turning only measures along the spindle axis (the
+ * profile re-centres itself radially), so one axis there is already a complete
+ * datum. A part carrying a bare datum `point` from an older project — no
+ * per-axis record — is taken as complete either way.
+ *
+ * @param {object|null} datum
+ * @param {'mill'|'turn'} [mode]
  */
-export function originStated(datum = null) {
+export function originStated(datum = null, mode = 'mill') {
   if (!datum) return false;
-  if (Array.isArray(datum.axesSet) && datum.axesSet.some(Boolean)) return true;
+  const axes = Array.isArray(datum.axesSet) ? datum.axesSet : [false, false, false];
+  if (axes.some(Boolean)) return mode === 'turn' ? true : axes.every(Boolean);
   return Boolean(datum.point);
 }
 
@@ -55,15 +63,16 @@ export function originStated(datum = null) {
  * into, no origin to run it against.
  *
  * @param {{gcode?:string, stockEnabled?:boolean, stockSize?:object,
- *   stockOrigin?:object, datum?:object, aIndex?:number|null}} args
+ *   stockOrigin?:object, datum?:object, aIndex?:number|null,
+ *   mode?:'mill'|'turn'}} args
  */
 export function autoSimKey({
   gcode = '', stockEnabled = false, stockSize = null, stockOrigin = null,
-  datum = null, aIndex = null,
+  datum = null, aIndex = null, mode = 'mill',
 } = {}) {
   if (!gcode || !gcode.trim()) return null;
   if (!stockStated({ stockEnabled, stockSize })) return null;
-  if (!originStated(datum)) return null;
+  if (!originStated(datum, mode)) return null;
   const size = ['x', 'y', 'z'].map((k) => stockSize?.[k] ?? '-').join(',');
   const at = ['x', 'y', 'z'].map((k) => stockOrigin?.[k] ?? '-').join(',');
   const point = Array.isArray(datum?.point) ? datum.point.map((v) => Number(v).toFixed(4)).join(',') : '-';
@@ -71,7 +80,7 @@ export function autoSimKey({
   // The program itself, not a version counter: every counter in the store is
   // bumped by the simulation writing its own result back, which would make this
   // key change because it ran and run again because it changed.
-  return [gcode.length, size, at, point, axes, aIndex ?? '-'].join('|');
+  return [gcode.length, size, at, point, axes, aIndex ?? '-', mode].join('|');
 }
 
 /**

@@ -70,7 +70,9 @@ describe('viewBasis — the degenerate case that broke the lathe views', () => {
         const { right, up, forward } = viewBasis(mode, view);
         for (const [name, v] of [['right', right], ['up', up], ['forward', forward]]) {
           const len = Math.hypot(...v);
+          // eslint-disable-next-line jest/valid-expect
           expect(Number.isFinite(len), `${mode}/${view} ${name} is finite`).toBe(true);
+          // eslint-disable-next-line jest/valid-expect
           expect(near(len, 1, 1e-9), `${mode}/${view} ${name} is unit (got ${len})`).toBe(true);
         }
       }
@@ -96,6 +98,7 @@ describe('viewBasis — the degenerate case that broke the lathe views', () => {
       for (const view of Object.keys(VIEW_DIRS)) {
         const { up, forward } = viewBasis(mode, view);
         const cos = Math.abs(up[0] * forward[0] + up[1] * forward[1] + up[2] * forward[2]);
+        // eslint-disable-next-line jest/valid-expect
         expect(cos, `${mode}/${view}`).toBeLessThan(0.99);
       }
     }
@@ -183,5 +186,81 @@ describe('unionBounds', () => {
     expect(unionBounds(a, null)).toBe(a);
     expect(unionBounds(null, a)).toBe(a);
     expect(unionBounds(null, null)).toBeNull();
+  });
+});
+
+describe('framing — fitting around the floating chrome', () => {
+  const CANVAS = { width: 1200, height: 800 };
+  const BOX = { min: [0, 0, 0], max: [100, 60, 20] };
+
+  /** Where a world point lands on screen, in pixels from the canvas centre. */
+  const screen = (f, p) => {
+    const d = [0, 1, 2].map((i) => p[i] - f.target[i]);
+    const dot = (a, b) => a[0] * b[0] + a[1] * b[1] + a[2] * b[2];
+    return { x: dot(d, f.right) * f.zoom, y: dot(d, f.up) * f.zoom };
+  };
+
+  it('leaves the fit unchanged when nothing is covering the canvas', () => {
+    const a = framing('mill', 'top', BOX, CANVAS);
+    const b = framing('mill', 'top', BOX, CANVAS, { inset: {} });
+    expect(b.zoom).toBeCloseTo(a.zoom, 9);
+    expect(b.target).toEqual(a.center);
+  });
+
+  it('zooms out to fit what is left, not the whole canvas', () => {
+    // The rail covers the top 70 px and the playback bar the bottom 60: fitting
+    // to the full height put the geometry under both.
+    const plain = framing('mill', 'top', BOX, CANVAS);
+    const inset = framing('mill', 'top', BOX, CANVAS, { inset: { top: 70, bottom: 60 } });
+    expect(inset.zoom).toBeLessThan(plain.zoom);
+  });
+
+  it('centres the geometry in the visible rectangle, not the canvas', () => {
+    // A top-only overlay must push the geometry *down*, or a smaller fit is
+    // still clipped — only more politely.
+    const f = framing('mill', 'top', BOX, CANVAS, { inset: { top: 100 } });
+    const centre = screen(f, f.center);
+    expect(centre.x).toBeCloseTo(0, 6);
+    expect(centre.y).toBeCloseTo(-50, 6); // half the covered strip, downward
+  });
+
+  it('pushes the geometry away from a right-hand panel', () => {
+    const f = framing('mill', 'top', BOX, CANVAS, { inset: { right: 200 } });
+    expect(screen(f, f.center).x).toBeCloseTo(-100, 6);
+  });
+
+  it('keeps every corner of the box inside the visible rectangle', () => {
+    const inset = { top: 70, bottom: 60, right: 240 };
+    const f = framing('mill', 'top', BOX, CANVAS, { inset });
+    const limit = {
+      // Pixels from the canvas centre to each edge of the *visible* area.
+      right: CANVAS.width / 2 - inset.right,
+      left: -CANVAS.width / 2,
+      up: CANVAS.height / 2 - inset.top,
+      down: -(CANVAS.height / 2 - inset.bottom),
+    };
+    for (const xi of [0, 1]) {
+      for (const yi of [0, 1]) {
+        for (const zi of [0, 1]) {
+          const p = [xi ? BOX.max[0] : BOX.min[0], yi ? BOX.max[1] : BOX.min[1], zi ? BOX.max[2] : BOX.min[2]];
+          const s = screen(f, p);
+          // eslint-disable-next-line jest/valid-expect
+          expect(s.x, `corner x ${s.x}`).toBeGreaterThanOrEqual(limit.left - 1e-6);
+          // eslint-disable-next-line jest/valid-expect
+          expect(s.x, `corner x ${s.x}`).toBeLessThanOrEqual(limit.right + 1e-6);
+          // eslint-disable-next-line jest/valid-expect
+          expect(s.y, `corner y ${s.y}`).toBeGreaterThanOrEqual(limit.down - 1e-6);
+          // eslint-disable-next-line jest/valid-expect
+          expect(s.y, `corner y ${s.y}`).toBeLessThanOrEqual(limit.up + 1e-6);
+        }
+      }
+    }
+  });
+
+  it('refuses to let the chrome squeeze the fit to nothing', () => {
+    // A rail taller than the viewport would otherwise drive the zoom to zero.
+    const f = framing('mill', 'top', BOX, CANVAS, { inset: { top: 2000, left: 2000 } });
+    expect(f.zoom).toBeGreaterThan(0);
+    expect(Number.isFinite(f.zoom)).toBe(true);
   });
 });

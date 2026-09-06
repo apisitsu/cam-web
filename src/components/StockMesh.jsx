@@ -53,7 +53,9 @@ export default function StockMesh({ simVer, visible }) {
         // White under vertex colours, so the palette comes through unshifted.
         color={hasColors ? '#ffffff' : '#9aa4b2'}
         vertexColors={hasColors}
-        metalness={0.35}
+        // Kept low for the same reason as `theme.js`'s `metal()`: there is no
+        // environment map, so metalness costs the billet its own colour.
+        metalness={0.2}
         roughness={0.6}
         flatShading={!smooth}
         side={THREE.DoubleSide}

@@ -85,7 +85,9 @@ describe('turning, per control', () => {
   it('keeps the G96/G50 pair on every control', () => {
     for (const d of DIALECT_LIST) {
       const nc = turnNc(d.id);
+      // eslint-disable-next-line jest/valid-expect
       expect(nc, d.id).toMatch(/G50 S\d+/);
+      // eslint-disable-next-line jest/valid-expect
       expect(nc, d.id).toMatch(/G96 S\d+ M03/);
     }
   });

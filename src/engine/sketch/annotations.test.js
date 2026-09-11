@@ -46,6 +46,17 @@ describe('dimensionAnnotations — what gets drawn at all', () => {
     expect(new Set(keys).size).toBe(keys.length);
   });
 
+  it('tags every segment with its constraint index too, for select/delete', () => {
+    const sk = createSketch();
+    const a = addPoint(sk, 0, 0);
+    const b = addPoint(sk, 10, 0);
+    addConstraint(sk, 'horizontal', [a, b]);   // index 0, not drawn
+    addConstraint(sk, 'distance', [a, b], 10); // index 1
+    const { segs } = dimensionAnnotations(sk);
+    expect(segs.length).toBeGreaterThan(0);
+    expect(segs.every((s) => s.ci === 1)).toBe(true);
+  });
+
   it('tags each label with the constraint index, so double-click can edit it', () => {
     const sk = createSketch();
     const a = addPoint(sk, 0, 0);

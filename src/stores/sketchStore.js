@@ -21,10 +21,10 @@ import {
   getOrCreatePoint, hitTestPoint, hitTestLine, hitTestCircle, hitTestArc,
   deleteEntity, removeConstraint, chamfer as chamferEdit, fillet as filletEdit,
   filletLineArc as filletLineArcEdit, filletArcArc as filletArcArcEdit,
-  filletCircleCircle as filletCircleCircleEdit,
+  filletCircleCircle as filletCircleCircleEdit, linesShareCorner,
   trimLine, trimCircle, trimArc, mirror as mirrorEdit, offsetChain,
   distancePointToLine, farEndpointFromLine, nearestRimPoint, nearestTangent,
-  nearestIntersection, nearestQuadrant, nearestMidpoint, entitiesInBox,
+  nearestIntersection, nearestQuadrant, nearestMidpoint, entitiesInBox, angleGuide,
   measureConstraint, lineArcMeet, arcArcMeet, angleSpec, interiorAngleToModel,
   axisFromPlacement, dimensionLockDir, projectOnto,
 } from '../engine/sketch/edit.js';
@@ -40,7 +40,11 @@ import { useCamPlanStore } from './camPlanStore.js';
 const DEG = Math.PI / 180;
 
 const SNAP = 1.5; // mm — click snap / pick tolerance
-const ANGLE_SNAP_DEG = 5; // ° — lock the line rubber-band to the nearest 45° axis within this
+// The line rubber-band's angle inference: the guide is *shown* within ANGLE_GUIDE_DEG
+// but only *grabs* the endpoint within the tighter ANGLE_LOCK_DEG, so a
+// deliberately off-axis angle is a hint, not a snap.
+const ANGLE_GUIDE_DEG = 8;
+const ANGLE_LOCK_DEG = 2;
 const HISTORY = 50; // max undo depth
 
 /** Pin `pointId` onto a line / circle / arc with the matching relation. No-op on any other type; a redundant relation is swallowed. */
@@ -128,6 +132,7 @@ export const useSketchStore = create((set, get) => ({
   dimensionAxis: 'aligned', // 'aligned' true distance | 'x' horizontal (dX) | 'y' vertical (dY) — SW's dimension orientation
   hoverId: null, // entity id a click would pick right now — drives the pre-select highlight
   selection: [], // selected entity ids — points, lines, circles, and/or arcs (mixed)
+  selectedDims: [], // indices into sk.constraints of dimensions selected in the viewport (Delete removes them)
   dimensionPending: null, // { kind, refs, label, current } set on a dimension-mode empty-click → shows the inline value input
   offsetPending: false, // true while the Offset rail button is waiting for its distance
   editingConstraint: null, // { index, kind, label, angular, value } set when a placed dimension is double-clicked → shows the edit input
@@ -304,7 +309,10 @@ export const useSketchStore = create((set, get) => ({
   _snapshot() {
     const past = get().past.concat([serialize(get().sk)]);
     if (past.length > HISTORY) past.shift();
-    set({ past, future: [] });
+    // Any edit can add/remove constraints and shift their indices, so a
+    // viewport dimension selection cannot be trusted past this point.
+    // (`deleteSelected` reads it *before* snapshotting.)
+    set({ past, future: [], selectedDims: [] });
   },
 
   undo() {
@@ -336,7 +344,7 @@ export const useSketchStore = create((set, get) => ({
   },
 
   setTool(tool) {
-    set({ tool, pending: null, pending2: null, cursor: null, snap: null, axisSnap: null, lineAngle: null, hoverId: null, error: null, dimensionPending: null, editingConstraint: null, offsetPending: false, boxSelect: null, _boxStart: null });
+    set({ tool, pending: null, pending2: null, cursor: null, snap: null, axisSnap: null, lineAngle: null, hoverId: null, error: null, dimensionPending: null, editingConstraint: null, offsetPending: false, boxSelect: null, _boxStart: null, selectedDims: [] });
   },
 
   /** Show a message on the sketcher's error line (used by save/open failures). */
@@ -438,20 +446,30 @@ export const useSketchStore = create((set, get) => ({
       if (rim) snap = { x: rim.x, y: rim.y, onCurve: rim.id, curveType: rim.type };
     }
 
-    // Angle guide (line only): report the current rubber-band angle, and — when no
-    // positional snap already owns the endpoint — lock it to the nearest standard
-    // 45° axis (0/45/90/…/315) once it's within ANGLE_SNAP_DEG.
+    // Angle guide (line only): a SolidWorks-style inference line for a standard
+    // 0/45/90/… axis or for **parallel / perpendicular to an existing line**. It
+    // is shown as a hint from a wide band but only *grabs* the endpoint from a
+    // narrow one (`axisSnap.locked`) — a deliberately off-axis angle is not
+    // pulled straight. When it grabs, the click adds the matching relation
+    // (`axisSnap.kind` / `.ref` / `.hv`).
     let axisSnap = null;
     let lineAngle = null;
     if (anchor) {
       let deg = ((Math.atan2(y - anchor.y, x - anchor.x) / DEG) % 360 + 360) % 360;
       if (!snap) {
-        const step = ((Math.round(deg / 45) * 45) % 360 + 360) % 360;
-        if (Math.abs(deg - Math.round(deg / 45) * 45) <= ANGLE_SNAP_DEG) {
-          const lockRad = step * DEG;
+        const g = angleGuide(sk, anchor, x, y, {
+          showDeg: ANGLE_GUIDE_DEG, lockDeg: ANGLE_LOCK_DEG, nearTol: tol,
+        });
+        if (g) {
           const len = Math.hypot(x - anchor.x, y - anchor.y);
-          axisSnap = { x: anchor.x + Math.cos(lockRad) * len, y: anchor.y + Math.sin(lockRad) * len, deg: step };
-          deg = step;
+          axisSnap = g.locked
+            ? {
+              x: anchor.x + Math.cos(g.deg * DEG) * len,
+              y: anchor.y + Math.sin(g.deg * DEG) * len,
+              deg: g.deg, kind: g.kind, ref: g.ref, hv: g.hv, locked: true,
+            }
+            : { x, y, deg: g.deg, kind: g.kind, ref: g.ref, hv: g.hv, locked: false };
+          if (g.locked) deg = g.deg;
         }
       }
       lineAngle = deg;
@@ -599,6 +617,7 @@ export const useSketchStore = create((set, get) => ({
         let p;
         let tangentKind = null;
         let hvKind = null; // auto horizontal/vertical relation from an orthogonal axis lock
+        let relKind = null; // auto parallel/perpendicular relation from an inference lock
         if (snap?.tangent) {
           p = addPoint(sk, snap.x, snap.y);
           const onKind = snap.curveType === 'arc' ? 'pointOnArc' : 'pointOnCircle';
@@ -615,13 +634,18 @@ export const useSketchStore = create((set, get) => ({
           p = addPoint(sk, snap.x, snap.y);
           const onKind = snap.curveType === 'arc' ? 'pointOnArc' : 'pointOnCircle';
           try { addConstraint(sk, onKind, [p, snap.onCurve]); } catch { /* leave endpoint free */ }
-        } else if (axisSnap) {
+        } else if (axisSnap && axisSnap.locked) {
           p = addPoint(sk, axisSnap.x, axisSnap.y);
-          // SolidWorks-style automatic relation: a line locked to a horizontal or
-          // vertical axis gets a real Horizontal/Vertical constraint, so drawing
-          // + dimensioning alone can fully define the sketch.
-          if (axisSnap.deg === 0 || axisSnap.deg === 180) hvKind = 'horizontal';
-          else if (axisSnap.deg === 90 || axisSnap.deg === 270) hvKind = 'vertical';
+          // SolidWorks-style automatic relation, but only when the inference
+          // actually *grabbed* (a shown-but-not-locked guide adds nothing): a
+          // horizontal/vertical axis → Horizontal/Vertical; parallel or
+          // perpendicular to a reference line → that relation between the two
+          // lines. Drawing + dimensioning alone can then fully define the sketch.
+          if (axisSnap.kind === 'parallel' || axisSnap.kind === 'perpendicular') {
+            relKind = { kind: axisSnap.kind, ref: axisSnap.ref };
+          } else if (axisSnap.hv) {
+            hvKind = axisSnap.hv;
+          }
         } else {
           p = get()._pointAt(x, y);
         }
@@ -634,10 +658,13 @@ export const useSketchStore = create((set, get) => ({
           if (hvKind) {
             try { addConstraint(sk, hvKind, [pending, p]); } catch { /* skip if redundant */ }
           }
+          if (relKind && relKind.ref != null && relKind.ref !== line) {
+            try { addConstraint(sk, relKind.kind, [line, relKind.ref]); } catch { /* skip if redundant */ }
+          }
         }
         set({ pending: null, snap: null, axisSnap: null, lineAngle: null });
         get()._bump();
-        if (tangentKind || hvKind) get().solve();
+        if (tangentKind || hvKind || relKind) get().solve();
       }
     } else if (tool === 'circle') {
       // Circle tool: first click sets the centre (held in `pending`, same as the
@@ -1119,11 +1146,18 @@ export const useSketchStore = create((set, get) => ({
       set({ error: 'Chamfer needs exactly 2 lines' });
       return;
     }
+    // Endpoints drawn to the same spot but never merged still count as a corner:
+    // `chamferEdit` welds a pair within this tolerance before it cuts.
+    const touchTol = Math.min(Math.max(get().pickTol || 1.5, 0.75), 3);
     get()._snapshot();
-    const res = chamferEdit(sk, lines[0], lines[1], dist);
+    const res = chamferEdit(sk, lines[0], lines[1], dist, touchTol);
     if (res == null) {
       get()._undoSnapshot();
-      set({ error: 'Lines must share a corner and the distance must fit' });
+      set({
+        error: linesShareCorner(sk, lines[0], lines[1], touchTol)
+          ? `${dist} mm is too large to fit that corner — try a smaller distance.`
+          : "The two lines don't meet at a corner — draw them to a shared endpoint, or add a Coincident first.",
+      });
       return;
     }
     set({ selection: [], error: null });
@@ -1179,8 +1213,10 @@ export const useSketchStore = create((set, get) => ({
     let run = null;
     // `meets` = do the two picks actually touch at a corner? (drives the message)
     let meets = true;
-    if (lines.length === 2) run = (s) => filletEdit(s, lines[0], lines[1], radius);
-    else if (lines.length === 1 && arcs.length === 1) {
+    if (lines.length === 2) {
+      meets = linesShareCorner(sk, lines[0], lines[1], touchTol);
+      run = (s) => filletEdit(s, lines[0], lines[1], radius, touchTol);
+    } else if (lines.length === 1 && arcs.length === 1) {
       meets = lineArcMeet(sk, lines[0], arcs[0], touchTol);
       run = (s) => filletLineArcEdit(s, lines[0], arcs[0], radius, touchTol);
     } else if (arcs.length === 2) {
@@ -1195,7 +1231,9 @@ export const useSketchStore = create((set, get) => ({
       set({
         error: meets
           ? `R${radius} is too large to fit that corner — try a smaller radius.`
-          : "The two picks don't meet at a corner — trim them so they touch first (the arc's end must lie on the line).",
+          : (lines.length === 2
+            ? "The two lines don't meet at a corner — draw them to a shared endpoint, or add a Coincident first."
+            : "The two picks don't meet at a corner — trim them so they touch first (the arc's end must lie on the line)."),
       });
       return;
     }
@@ -1344,15 +1382,31 @@ export const useSketchStore = create((set, get) => ({
   },
 
   deleteSelected() {
-    const { sk, selection } = get();
+    const { sk, selection, selectedDims } = get();
     // The origin is a fixed reference — never delete it.
     const ids = selection.filter((id) => !sk.entities.get(id)?.origin);
-    if (!ids.length) { set({ selection: [] }); return; }
+    const dims = [...new Set(selectedDims)].filter((i) => sk.constraints[i]?.value != null);
+    if (!ids.length && !dims.length) { set({ selection: [], selectedDims: [] }); return; }
     get()._snapshot();
     ids.forEach((id) => deleteEntity(sk, id, true)); // prune dangling endpoints (SW-style)
-    set({ selection: [] });
+    // Descending order so earlier removals don't shift the indices still to go.
+    dims.sort((a, b) => b - a).forEach((i) => removeConstraint(sk, i));
+    set({ selection: [], selectedDims: [] });
     get()._bump();
     get().solve();
+  },
+
+  /** Toggle a placed dimension (by its constraint index) in/out of the viewport selection. */
+  toggleDimSelect(index) {
+    if (get().sk.constraints[index]?.value == null) return;
+    const sel = get().selectedDims.slice();
+    const i = sel.indexOf(index);
+    if (i >= 0) sel.splice(i, 1); else sel.push(index);
+    set({ selectedDims: sel });
+  },
+
+  clearDimSelect() {
+    if (get().selectedDims.length) set({ selectedDims: [] });
   },
 
   /** Remove one constraint (by its index in sk.constraints), then re-solve. */

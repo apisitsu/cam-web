@@ -8,7 +8,7 @@ import {
   deleteEntity, mirror, offsetEntity, angleSpec, interiorAngleToModel,
   axisDimensionGeometry, measureConstraint, axisFromPlacement, arcArcMeet,
   filletCircleCircle, entityIntersections, nearestIntersection, entitiesInBox,
-  nearestQuadrant, nearestMidpoint,
+  nearestQuadrant, nearestMidpoint, linesShareCorner, angleGuide,
 } from './edit.js';
 
 const near = (a, b, eps = 1e-6) => Math.abs(a - b) <= eps;
@@ -418,6 +418,103 @@ describe('chamfer', () => {
     // The chamfer is pinned parametrically: B on both edges + two 4 mm setbacks.
     expect(sk.constraints.filter((c) => c.kind === 'pointOnLine' && c.refs.includes(B)).length).toBe(2);
     expect(sk.constraints.filter((c) => c.kind === 'distance' && c.refs.includes(B) && c.value === 4).length).toBe(2);
+  });
+
+  it('welds two lines drawn to the same corner but never merged', () => {
+    const sk = createSketch();
+    // Corner endpoints coincide on screen but are SEPARATE points.
+    const l1 = addLine(sk, addPoint(sk, 0, 0), addPoint(sk, 20, 0));
+    const l2 = addLine(sk, addPoint(sk, 0.003, -0.002), addPoint(sk, 0, 20));
+    expect(linesShareCorner(sk, l1, l2)).toBe(false);        // beyond the µm default
+    expect(linesShareCorner(sk, l1, l2, 0.05)).toBe(true);   // within a pick tolerance
+
+    // Without the weld this returns null; with it the corner is chamfered.
+    expect(chamfer(sk, l1, l2, 4, 1e-6)).toBeNull();
+    expect(chamfer(sk, l1, l2, 4, 0.05)).not.toBeNull();
+  });
+});
+
+describe('angleGuide — inference direction while drawing a line', () => {
+  const OPT = { showDeg: 8, lockDeg: 2, nearTol: 1.5 };
+  /** An anchor point object with an id, standing at (x, y). */
+  const at = (sk, x, y) => sk.entities.get(addPoint(sk, x, y));
+
+  it('grabs a 45° axis only from the tight lock band, but shows it from the wide one', () => {
+    const sk = createSketch();
+    const anchor = at(sk, 0, 0);
+    const near90 = angleGuide(sk, anchor, 0.3, 10, OPT); // ~88.3° → within 2°
+    expect(near90.kind).toBe('axis');
+    expect(near90.deg).toBe(90);
+    expect(near90.hv).toBe('vertical');
+    expect(near90.locked).toBe(true);
+
+    expect(angleGuide(sk, anchor, 1.5, 10, OPT)).toBeNull(); // ~81.5° → outside show
+    const shown = angleGuide(sk, anchor, 1.1, 10, OPT); // ~83.7° → in show band, not lock
+    expect(shown.deg).toBe(90);
+    expect(shown.locked).toBe(false);
+  });
+
+  it('returns null when no candidate is within the show band', () => {
+    const sk = createSketch();
+    expect(angleGuide(sk, at(sk, 0, 0), 10, 5.77, OPT)).toBeNull(); // ~30°
+  });
+
+  it('locks parallel to the line the anchor continues, pointing the way the cursor pulls', () => {
+    const sk = createSketch();
+    const p0 = addPoint(sk, 0, 0);
+    const p1 = addPoint(sk, 10, 6); // ref ~31°
+    const ref = addLine(sk, p0, p1);
+    const anchor = sk.entities.get(p1); // drawing on from the ref's far end
+    const refDeg = (Math.atan2(6, 10) * 180) / Math.PI;
+    const g1 = angleGuide(sk, anchor, 20, 12.1, OPT); // continuing ~31°
+    expect(g1.kind).toBe('parallel');
+    expect(g1.ref).toBe(ref);
+    expect(g1.locked).toBe(true);
+    expect(Math.abs(g1.deg - refDeg)).toBeLessThan(0.01);
+    const g2 = angleGuide(sk, anchor, 0, -0.1, OPT); // back the other way ~211°
+    expect(g2.kind).toBe('parallel');
+    expect(Math.abs(g2.deg - (refDeg + 180))).toBeLessThan(0.01);
+  });
+
+  it('locks perpendicular to the anchor line', () => {
+    const sk = createSketch();
+    const p0 = addPoint(sk, 0, 0);
+    const p1 = addPoint(sk, 10, 6);
+    const ref = addLine(sk, p0, p1);
+    const anchor = sk.entities.get(p1);
+    const perp = ((Math.atan2(6, 10) * 180) / Math.PI + 90) * (Math.PI / 180);
+    const g = angleGuide(sk, anchor, anchor.x + Math.cos(perp) * 15, anchor.y + Math.sin(perp) * 15, OPT);
+    expect(g.kind).toBe('perpendicular');
+    expect(g.ref).toBe(ref);
+  });
+
+  it('does not infer from a line the operator is not near', () => {
+    const sk = createSketch();
+    addLine(sk, addPoint(sk, 0, 0), addPoint(sk, 10, 6)); // ~31°, off in the corner
+    const anchor = at(sk, 0, 200); // nowhere near it
+    // ~31° from the anchor, but the ref line is far → not eligible → no guide.
+    expect(angleGuide(sk, anchor, 100, 260, OPT)).toBeNull();
+  });
+
+  it('infers from a line the cursor is sitting on, wherever the anchor is', () => {
+    const sk = createSketch();
+    const ref = addLine(sk, addPoint(sk, 0, 0), addPoint(sk, 20, 12)); // ~31°
+    // Anchor along the perpendicular from the ref's midpoint (10, 6).
+    const perp = ((Math.atan2(12, 20) * 180) / Math.PI + 90) * (Math.PI / 180);
+    const anchor = { x: 10 + Math.cos(perp) * 15, y: 6 + Math.sin(perp) * 15, id: -1 };
+    const g = angleGuide(sk, anchor, 10, 6, OPT); // cursor back on the ref → ⊥ direction
+    expect(g.kind).toBe('perpendicular');
+    expect(g.ref).toBe(ref);
+  });
+
+  it('ignores an axis-aligned reference (the 45° axis already covers it)', () => {
+    const sk = createSketch();
+    const p0 = addPoint(sk, 0, 0);
+    const p1 = addPoint(sk, 10, 0);
+    addLine(sk, p0, p1); // horizontal
+    const g = angleGuide(sk, sk.entities.get(p1), 20, 0.2, OPT); // ~1°, continuing it
+    expect(g.kind).toBe('axis');
+    expect(g.ref).toBeNull();
   });
 });
 

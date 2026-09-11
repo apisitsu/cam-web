@@ -249,6 +249,48 @@ describe('editing a placed dimension (double-click)', () => {
   });
 });
 
+describe('deleting a placed dimension from the viewport', () => {
+  const dimensioned = () => {
+    const sk = createSketch();
+    const a = addPoint(sk, 0, 0);
+    const b = addPoint(sk, 10, 0);
+    addLine(sk, a, b);
+    addConstraint(sk, 'horizontal', [a, b]);              // idx 0 — not a dimension
+    const di = addConstraint(sk, 'distance', [a, b], 10); // idx 1 — a dimension
+    useSketchStore.setState({ sk, selection: [], selectedDims: [], past: [], future: [] });
+    return { sk, di };
+  };
+
+  it('toggleDimSelect only takes a dimensional constraint', () => {
+    const { di } = dimensioned();
+    useSketchStore.getState().toggleDimSelect(0); // horizontal — not a dim
+    expect(useSketchStore.getState().selectedDims).toEqual([]);
+    useSketchStore.getState().toggleDimSelect(di);
+    expect(useSketchStore.getState().selectedDims).toEqual([di]);
+    useSketchStore.getState().toggleDimSelect(di); // toggle off
+    expect(useSketchStore.getState().selectedDims).toEqual([]);
+  });
+
+  it('Delete removes the selected dimension, leaving the other constraints', () => {
+    const { sk, di } = dimensioned();
+    useSketchStore.getState().toggleDimSelect(di);
+    const before = sk.constraints.length;
+    useSketchStore.getState().deleteSelected();
+    expect(sk.constraints.length).toBe(before - 1);
+    expect(sk.constraints.some((c) => c.kind === 'distance')).toBe(false);
+    expect(sk.constraints.some((c) => c.kind === 'horizontal')).toBe(true);
+    expect(useSketchStore.getState().selectedDims).toEqual([]);
+    expect(useSketchStore.getState().past.length).toBe(1); // one undo step
+  });
+
+  it('an edit invalidates a stale dimension selection', () => {
+    const { di } = dimensioned();
+    useSketchStore.getState().toggleDimSelect(di);
+    useSketchStore.getState()._snapshot();
+    expect(useSketchStore.getState().selectedDims).toEqual([]);
+  });
+});
+
 describe('setDimensionOffset — dragging a placed dimension', () => {
   const withDim = () => {
     const sk = createSketch();
@@ -403,6 +445,49 @@ describe('fillet (R) between two curves', () => {
     useSketchStore.getState().fillet(3);
     expect(useSketchStore.getState().error).toMatch(/don't meet|do not meet/i);
   });
+
+  it('fillets two lines whose corner points coincide but were never merged', () => {
+    const sk = createSketch();
+    const l1 = addLine(sk, addPoint(sk, 0, 0), addPoint(sk, 30, 0));
+    const l2 = addLine(sk, addPoint(sk, 0.4, -0.3), addPoint(sk, 0, 30)); // corner ≈ l1's, separate point
+    useSketchStore.setState({ sk, selection: [l1, l2], past: [], error: null, pickTol: 1.5 });
+    useSketchStore.getState().fillet(5);
+    expect(filletError(useSketchStore.getState().error)).toBeNull();
+    expect(arcCount(sk)).toBe(1); // the fillet arc got made — the weld worked
+  });
+
+  it('tells two loose lines to share an endpoint, not "R too large"', () => {
+    const sk = createSketch();
+    const l1 = addLine(sk, addPoint(sk, 0, 0), addPoint(sk, 30, 0));
+    const l2 = addLine(sk, addPoint(sk, 50, 5), addPoint(sk, 50, 30)); // nowhere near l1
+    useSketchStore.setState({ sk, selection: [l1, l2], past: [], error: null, pickTol: 1.5 });
+    useSketchStore.getState().fillet(5);
+    expect(useSketchStore.getState().error).toMatch(/don't meet|shared endpoint|Coincident/i);
+    expect(useSketchStore.getState().error).not.toMatch(/too large/i);
+  });
+});
+
+describe('chamfer via the store', () => {
+  it('welds a coincident-but-separate corner, and names the real failure otherwise', () => {
+    const sk = createSketch();
+    const l1 = addLine(sk, addPoint(sk, 0, 0), addPoint(sk, 30, 0));
+    const l2 = addLine(sk, addPoint(sk, 0.5, 0.2), addPoint(sk, 0, 30));
+    useSketchStore.setState({ sk, selection: [l1, l2], past: [], error: null, pickTol: 1.5 });
+    useSketchStore.getState().chamfer(4);
+    // The chamfer went through (a `solve()` error from the missing Worker in
+    // node is unrelated) — no "don't meet / too large" refusal, and a 3rd line
+    // (the chamfer edge) now exists.
+    expect(useSketchStore.getState().error || '').not.toMatch(/too large|don't meet|shared endpoint|Coincident/i);
+    expect([...sk.entities.values()].filter((x) => x.type === 'line').length).toBe(3);
+
+    // Two lines that genuinely don't touch → the corner message, not the size one.
+    const sk2 = createSketch();
+    const a = addLine(sk2, addPoint(sk2, 0, 0), addPoint(sk2, 30, 0));
+    const b = addLine(sk2, addPoint(sk2, 100, 0), addPoint(sk2, 100, 30));
+    useSketchStore.setState({ sk: sk2, selection: [a, b], past: [], error: null, pickTol: 1.5 });
+    useSketchStore.getState().chamfer(4);
+    expect(useSketchStore.getState().error).toMatch(/don't meet|shared endpoint/i);
+  });
 });
 
 describe('drag-to-modify (arm / end)', () => {
@@ -438,22 +523,31 @@ describe('drag-to-modify (arm / end)', () => {
 });
 
 describe('line guides — angle lock & tangent snap (hover)', () => {
-  it('locks the rubber-band to the nearest 45° axis when close, and reports the angle', () => {
+  it('grabs the vertical axis from the tight band; only shows a guide from the wide one', () => {
     const sk = createSketch();
     const anchor = addPoint(sk, 0, 0);
     useSketchStore.setState({ sk, tool: 'line', pending: anchor, snap: null, axisSnap: null });
-    // Cursor at ~87° — within 5° of the vertical axis → lock to 90°.
-    useSketchStore.getState().hover(0.5, 9.9);
+
+    // ~89° — inside the lock band → the endpoint snaps onto the axis.
+    useSketchStore.getState().hover(0.15, 9.9);
     const s1 = useSketchStore.getState();
-    expect(s1.axisSnap).not.toBeNull();
+    expect(s1.axisSnap.locked).toBe(true);
     expect(s1.axisSnap.deg).toBe(90);
     expect(near(s1.axisSnap.x, 0)).toBe(true); // snapped onto the vertical axis
     expect(near(s1.lineAngle, 90)).toBe(true);
-    // Cursor at 30° — far from any 45° axis → no lock, raw angle reported.
-    useSketchStore.getState().hover(10, 5.77);
+
+    // ~84° — in the show band, not the lock band → a hint only: the point stays
+    // where the cursor is and the raw angle is reported.
+    useSketchStore.getState().hover(1.05, 9.9);
     const s2 = useSketchStore.getState();
-    expect(s2.axisSnap).toBeNull();
-    expect(near(s2.lineAngle, 30, 0.2)).toBe(true);
+    expect(s2.axisSnap.locked).toBe(false);
+    expect(s2.axisSnap.deg).toBe(90);        // guide still points at vertical
+    expect(near(s2.axisSnap.x, 1.05)).toBe(true); // ...but the endpoint is not pulled
+    expect(near(s2.lineAngle, 84, 1)).toBe(true);
+
+    // ~30° — nothing near → no guide at all.
+    useSketchStore.getState().hover(10, 5.77);
+    expect(useSketchStore.getState().axisSnap).toBeNull();
   });
 
   it('offers a tangent snap when the line approaches a circle rim', () => {
@@ -469,6 +563,67 @@ describe('line guides — angle lock & tangent snap (hover)', () => {
     expect(snap.tangent).toBe(true);
     expect(snap.tangentOf).toBe(circle);
     expect(near(Math.hypot(snap.x, snap.y), 10, 1e-6)).toBe(true); // lies on the rim
+  });
+
+  it('locks parallel to the line the anchor continues, and the click adds the relation', () => {
+    const sk = createSketch();
+    const p0 = addPoint(sk, 0, 0);
+    const p1 = addPoint(sk, 10, 6); // ref ~31°
+    const ref = addLine(sk, p0, p1);
+    const refDeg = (Math.atan2(6, 10) * 180) / Math.PI;
+    useSketchStore.setState({ sk, tool: 'line', pending: p1, snap: null, axisSnap: null, selection: [], pickTol: 1.5 });
+    // Draw on from the ref's far end, roughly along the same 31°.
+    useSketchStore.getState().hover(20, 12.15);
+    const s = useSketchStore.getState();
+    expect(s.axisSnap.kind).toBe('parallel');
+    expect(s.axisSnap.ref).toBe(ref);
+    expect(s.axisSnap.locked).toBe(true);
+    expect(near(s.axisSnap.deg, refDeg, 0.01)).toBe(true);
+
+    useSketchStore.getState().clickAt(20, 12.15);
+    const st = useSketchStore.getState();
+    const newLine = [...st.sk.entities.values()].find((e) => e.type === 'line' && e.id !== ref);
+    const par = st.sk.constraints.find((c) => c.kind === 'parallel');
+    expect(par).toBeTruthy();
+    expect(par.refs).toEqual(expect.arrayContaining([ref, newLine.id]));
+  });
+
+  it('does NOT infer parallel from a line far from the anchor and the cursor', () => {
+    const sk = createSketch();
+    addLine(sk, addPoint(sk, 0, 0), addPoint(sk, 10, 6)); // ~31°, but off in a corner
+    const anchor = addPoint(sk, 0, 200);
+    useSketchStore.setState({ sk, tool: 'line', pending: anchor, snap: null, axisSnap: null, pickTol: 1.5 });
+    useSketchStore.getState().hover(100, 260); // ~31° from the anchor, nowhere near the ref line
+    // No axis is close either, so no guide at all.
+    expect(useSketchStore.getState().axisSnap).toBeNull();
+  });
+
+  it('locks perpendicular to the anchor line', () => {
+    const sk = createSketch();
+    const p0 = addPoint(sk, 0, 0);
+    const p1 = addPoint(sk, 10, 6);
+    const ref = addLine(sk, p0, p1);
+    const perpRad = ((Math.atan2(6, 10) * 180) / Math.PI + 90) * (Math.PI / 180);
+    const anchor = sk.entities.get(p1);
+    useSketchStore.setState({ sk, tool: 'line', pending: p1, snap: null, axisSnap: null, pickTol: 1.5 });
+    useSketchStore.getState().hover(anchor.x + Math.cos(perpRad) * 15, anchor.y + Math.sin(perpRad) * 15);
+    const s = useSketchStore.getState();
+    expect(s.axisSnap.kind).toBe('perpendicular');
+    expect(s.axisSnap.ref).toBe(ref);
+  });
+
+  it('locks to the plain horizontal axis, not "parallel to a horizontal line"', () => {
+    const sk = createSketch();
+    const a = addPoint(sk, 0, 0);
+    const b = addPoint(sk, 20, 0);
+    addLine(sk, a, b); // axis-aligned — skipped as a parallel/perp reference
+    useSketchStore.setState({ sk, tool: 'line', pending: b, snap: null, axisSnap: null, pickTol: 1.5 });
+    // Continue from the horizontal line's end, ~1° above horizontal.
+    useSketchStore.getState().hover(30, 0.17);
+    const s = useSketchStore.getState();
+    expect(s.axisSnap.kind).toBe('axis');
+    expect(s.axisSnap.hv).toBe('horizontal');
+    expect(s.axisSnap.ref).toBeNull();
   });
 });
 

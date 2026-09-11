@@ -34,7 +34,7 @@ export { axisDimensionGeometry } from './edit.js';
  *
  * @param {object} sk  sketch document
  * @param {{z?:number}} [opts]  z to lift the drawing off the pick plane
- * @returns {{segs:{key:string,pts:number[][]}[], labels:{key:string,ci:number,pos:number[],text:string}[]}}
+ * @returns {{segs:{key:string,ci:number,pts:number[][]}[], labels:{key:string,ci:number,pos:number[],text:string}[]}}
  */
 export function dimensionAnnotations(sk, { z: Z = 0 } = {}) {
   const P = (id) => sk?.entities?.get(id);
@@ -58,6 +58,7 @@ export function dimensionAnnotations(sk, { z: Z = 0 } = {}) {
       Array.isArray(c.labelOffset) ? c.labelOffset : [0, 0],
       dimensionLockDir(sk, c.kind, c.refs),
     );
+    const segStart = segs.length; // tag every seg this constraint pushes with `ci` below
 
     if (c.kind === 'distance') {
       const a = P(c.refs[0]);
@@ -206,6 +207,7 @@ export function dimensionAnnotations(sk, { z: Z = 0 } = {}) {
         pos: [p.x + 1.6 + ox, p.y + dyOff + oy, Z],
       });
     }
+    for (let s = segStart; s < segs.length; s += 1) segs[s].ci = ci;
   });
 
   return { segs, labels };

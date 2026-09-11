@@ -160,7 +160,10 @@ const angleReadoutStyle = (locked) => ({
 function DimensionAnnotations({ sk, version }) {
   const beginEditConstraint = useSketchStore((s) => s.beginEditConstraint);
   const setDimensionOffset = useSketchStore((s) => s.setDimensionOffset);
+  const selectedDims = useSketchStore((s) => s.selectedDims);
+  const toggleDimSelect = useSketchStore((s) => s.toggleDimSelect);
   const camera = useThree((s) => s.camera);
+  const selDim = new Set(selectedDims);
   // The geometry is built by a pure module (`engine/sketch/annotations.js`) so
   // it can be tested without a renderer; this component only maps it to drei.
   const { segs, labels } = useMemo(
@@ -201,32 +204,61 @@ function DimensionAnnotations({ sk, version }) {
     );
     d.moved = true;
   };
+  // A no-move release is a click → toggle this dimension's selection (Delete
+  // then removes it). A release that moved was a reposition, so it does not.
+  const clickWasDrag = useRef(false);
   const onLabelUp = (e) => {
-    if (drag.current) e.currentTarget.releasePointerCapture?.(e.pointerId);
+    if (drag.current) {
+      e.currentTarget.releasePointerCapture?.(e.pointerId);
+      clickWasDrag.current = drag.current.moved;
+    }
     drag.current = null;
   };
-
+  const onLabelClick = (e, ci) => {
+    e.stopPropagation();
+    if (clickWasDrag.current) { clickWasDrag.current = false; return; }
+    toggleDimSelect(ci);
+  };
 
   return (
     <group>
-      {segs.map((s) => (
-        <Line key={s.key} points={s.pts} color={DIM_COLOR} lineWidth={1} dashed dashSize={0.6} gapSize={0.4} transparent opacity={0.85} raycast={noRaycast} />
-      ))}
+      {segs.map((s) => {
+        const sel = selDim.has(s.ci);
+        return (
+          <Line
+            key={s.key}
+            points={s.pts}
+            color={sel ? SELECTED : DIM_COLOR}
+            lineWidth={sel ? 2 : 1}
+            dashed={!sel}
+            dashSize={0.6}
+            gapSize={0.4}
+            transparent
+            opacity={sel ? 1 : 0.85}
+            raycast={noRaycast}
+          />
+        );
+      })}
       {labels.map((b) => {
         // A driven (reference) dimension is shown in parentheses and a muted
         // purple, like SolidWorks reference dimensions.
         const driven = sk.constraints[b.ci]?.driven;
+        const sel = selDim.has(b.ci);
+        const base = driven
+          ? { ...dimLabelStyle, color: CAD.skDriven, borderColor: CAD.skDriven, fontStyle: 'italic' }
+          : dimLabelStyle;
         return (
           <Html key={b.key} position={b.pos} center zIndexRange={[2, 0]}>
             <div
-              style={driven
-                ? { ...dimLabelStyle, color: CAD.skDriven, borderColor: CAD.skDriven, fontStyle: 'italic' }
-                : dimLabelStyle}
-              title={driven ? 'Driven (reference) — drag to move, double-click to edit' : 'Drag to move · double-click to edit'}
+              style={sel ? { ...base, borderColor: SELECTED, color: SELECTED, boxShadow: `0 0 0 1px ${SELECTED}` } : base}
+              title={sel
+                ? 'Selected — press Delete to remove · drag to move · double-click to edit'
+                : 'Click to select (Delete removes) · drag to move · double-click to edit'}
               onPointerDown={(e) => onLabelDown(e, b.ci)}
               onPointerMove={onLabelMove}
               onPointerUp={onLabelUp}
               onPointerCancel={onLabelUp}
+              onClick={(e) => onLabelClick(e, b.ci)}
               onDoubleClick={(e) => { e.stopPropagation(); beginEditConstraint(b.ci); }}
             >
               {driven ? `(${b.text})` : b.text}
@@ -288,6 +320,7 @@ export default function SketchLayer() {
   const updateBoxSelect = useSketchStore((s) => s.updateBoxSelect);
   const endBoxSelect = useSketchStore((s) => s.endBoxSelect);
   const cancelBoxSelect = useSketchStore((s) => s.cancelBoxSelect);
+  const clearDimSelect = useSketchStore((s) => s.clearDimSelect);
 
   const { points, lines, circles, arcs } = useMemo(() => {
     const pts = [];
@@ -370,6 +403,7 @@ export default function SketchLayer() {
       if (e.key === 'Escape') {
         cancelPending();
         cancelBoxSelect();
+        clearDimSelect();
       } else if (e.key === 'Delete' || e.key === 'Backspace') {
         deleteSelected();
       } else if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'z') {
@@ -382,7 +416,7 @@ export default function SketchLayer() {
     };
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
-  }, [cancelPending, cancelBoxSelect, deleteSelected, undo, redo]);
+  }, [cancelPending, cancelBoxSelect, clearDimSelect, deleteSelected, undo, redo]);
 
   const drawing = tool === 'point' || tool === 'line' || tool === 'rectangle'
     || tool === 'circle' || tool === 'arc' || tool === 'slot' || tool === 'polygon';
@@ -550,33 +584,66 @@ export default function SketchLayer() {
         );
       })()}
 
-      {/* Angle-lock guide: a cyan axis through the anchor along the locked
-          standard direction, so it's obvious the line snapped to 0/45/90/…°. */}
+      {/* Angle guide: a cyan axis through the anchor along an inference
+          direction — a standard 0/45/90/…° axis, or parallel / perpendicular to
+          an existing line. Faint when it is only a *hint*; when the cursor is
+          on it (`locked`) it firms up, the reference line is highlighted and a
+          ∥ / ⊥ glyph shows, SolidWorks-style. */}
       {tool === 'line' && anchor && axisSnap && (() => {
         const a = axisSnap.deg * (Math.PI / 180);
         const L = Math.max(Math.hypot(tip.x - anchor.x, tip.y - anchor.y) * 1.5, 12);
+        const on = !!axisSnap.locked;
+        const ref = on && axisSnap.ref != null ? sk.entities.get(axisSnap.ref) : null;
+        const ra = ref && sk.entities.get(ref.p1);
+        const rb = ref && sk.entities.get(ref.p2);
+        const glyph = on
+          ? (axisSnap.kind === 'parallel' ? '∥' : axisSnap.kind === 'perpendicular' ? '⊥' : null)
+          : null;
         return (
-          <Line
-            points={[
-              [anchor.x - Math.cos(a) * L, anchor.y - Math.sin(a) * L, Z],
-              [anchor.x + Math.cos(a) * L, anchor.y + Math.sin(a) * L, Z],
-            ]}
-            color={AXIS_COLOR}
-            lineWidth={1}
-            dashed
-            dashSize={1.2}
-            gapSize={0.8}
-            transparent
-            opacity={0.7}
-            raycast={noRaycast}
-          />
+          <>
+            <Line
+              points={[
+                [anchor.x - Math.cos(a) * L, anchor.y - Math.sin(a) * L, Z],
+                [anchor.x + Math.cos(a) * L, anchor.y + Math.sin(a) * L, Z],
+              ]}
+              color={AXIS_COLOR}
+              lineWidth={1}
+              dashed
+              dashSize={1.2}
+              gapSize={0.8}
+              transparent
+              opacity={on ? 0.7 : 0.28}
+              raycast={noRaycast}
+            />
+            {ra && rb && (
+              <Line
+                points={[[ra.x, ra.y, Z], [rb.x, rb.y, Z]]}
+                color={AXIS_COLOR}
+                lineWidth={2.5}
+                transparent
+                opacity={0.6}
+                raycast={noRaycast}
+              />
+            )}
+            {glyph && (
+              <Html position={[anchor.x, anchor.y, Z]} zIndexRange={[3, 0]}>
+                <div style={{
+                  color: CAD.surface, background: AXIS_COLOR, borderRadius: 4,
+                  font: '600 11px monospace', padding: '0 4px', whiteSpace: 'nowrap',
+                  userSelect: 'none', pointerEvents: 'none', transform: 'translate(10px, -20px)',
+                }}>
+                  {glyph}
+                </div>
+              </Html>
+            )}
+          </>
         );
       })()}
 
       {/* Live angle / length readout at the tip while drawing a line. */}
       {tool === 'line' && anchor && tip && lineAngle != null && (
         <Html position={[tip.x, tip.y, Z]} zIndexRange={[3, 0]}>
-          <div style={angleReadoutStyle(!!axisSnap)}>
+          <div style={angleReadoutStyle(!!axisSnap?.locked)}>
             {lineAngle.toFixed(1)}° · {Math.hypot(tip.x - anchor.x, tip.y - anchor.y).toFixed(1)} mm
           </div>
         </Html>

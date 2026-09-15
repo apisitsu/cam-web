@@ -11,7 +11,7 @@ import { useMemo, useEffect, useRef } from 'react';
 import { Line, Html } from '@react-three/drei';
 import { invalidate, useFrame, useThree } from '@react-three/fiber';
 import * as THREE from 'three';
-import { useSketchStore } from '../stores/sketchStore.js';
+import { useSketchStore, AXIS_LOCK_FACTOR } from '../stores/sketchStore.js';
 import { dimensionAnnotations } from '../engine/sketch/annotations.js';
 import { polygonPreview, slotPreview, axisDistance } from '../engine/sketch/shapes.js';
 import { tessellateArc, CHORD_TOL } from '../engine/sketch/loops.js';
@@ -311,6 +311,7 @@ export default function SketchLayer() {
   const dragTo = useSketchStore((s) => s.dragTo);
   const endDrag = useSketchStore((s) => s.endDrag);
   const setPickTol = useSketchStore((s) => s.setPickTol);
+  const pickTol = useSketchStore((s) => s.pickTol);
   const cancelPending = useSketchStore((s) => s.cancelPending);
   const deleteSelected = useSketchStore((s) => s.deleteSelected);
   const undo = useSketchStore((s) => s.undo);
@@ -374,6 +375,39 @@ export default function SketchLayer() {
   // is just a selection click. Refs (not state) so the handlers don't churn.
   const dragId = useRef(null);
   const swallowClick = useRef(false); // eat the synthetic click after a no-move grab
+  const planeMeshRef = useRef(null); // the pick-plane mesh — see resolvePointerPoint below
+  const ownRaycaster = useRef(null);
+  if (!ownRaycaster.current) ownRaycaster.current = new THREE.Raycaster();
+  const ownNdc = useRef(null);
+  if (!ownNdc.current) ownNdc.current = new THREE.Vector2();
+  const { camera: threeCamera, gl } = useThree();
+
+  /**
+   * Sketch coordinates for a pointer event, computed independently of R3F's
+   * own `event.point` — reject-the-bad-sample was tried three ways (compare
+   * to the last accepted point; force a resync after N rejections; compare to
+   * a live-computed "known bad corner" point) and every one of them either
+   * missed real bad samples or, worse, could reject good ones and then have
+   * nothing left to accept ever again, since a history-based check has no way
+   * back once its own baseline is wrong.
+   *
+   * This sidesteps the question of *why* `event.point` is sometimes wrong
+   * (never pinned down — inside R3F's event pipeline, not this file) by never
+   * reading it: `clientX`/`clientY` plus the canvas's own bounding rect give
+   * NDC directly, and raycasting that against the *live* camera and the same
+   * pick-plane mesh is the same math R3F uses internally, just done here
+   * where it can't be stale. No history, no state, nothing to get stuck on.
+   */
+  const resolvePointerPoint = (e) => {
+    if (!planeMeshRef.current) return localPoint(e);
+    const rect = gl.domElement.getBoundingClientRect();
+    ownNdc.current.x = ((e.clientX - rect.left) / rect.width) * 2 - 1;
+    ownNdc.current.y = -((e.clientY - rect.top) / rect.height) * 2 + 1;
+    ownRaycaster.current.setFromCamera(ownNdc.current, threeCamera);
+    const hits = ownRaycaster.current.intersectObject(planeMeshRef.current);
+    if (!hits.length) return localPoint(e);
+    return localPoint({ point: hits[0].point, object: planeMeshRef.current });
+  };
   useEffect(() => {
     const onUp = () => {
       if (dragId.current != null) {
@@ -508,22 +542,23 @@ export default function SketchLayer() {
           Select is active so the drag is ours). */}
       {(drawing || picking) && (
         <mesh
+          ref={planeMeshRef}
           onPointerDown={(e) => {
             if (drawing) {
               e.stopPropagation();
-              const p = localPoint(e);
+              const p = resolvePointerPoint(e);
               clickAt(p.x, p.y);
               return;
             }
             // Arm a marquee. No stopPropagation: a bare press must still reach
             // `onClick` for a tap-select.
             if (tool === 'select') {
-              const p = localPoint(e);
+              const p = resolvePointerPoint(e);
               beginBoxSelect(p.x, p.y);
             }
           }}
           onPointerMove={(e) => {
-            const p = localPoint(e);
+            const p = resolvePointerPoint(e);
             // A drag in progress steers the pinned point; check the store live so
             // we never miss a move to a stale render.
             if (useSketchStore.getState().dragging) { dragTo(p.x, p.y); return; }
@@ -545,7 +580,7 @@ export default function SketchLayer() {
             if (!picking) return;
             e.stopPropagation();
             if (swallowClick.current) { swallowClick.current = false; return; }
-            const p = localPoint(e);
+            const p = resolvePointerPoint(e);
             clickAt(p.x, p.y);
           }}
         >
@@ -607,10 +642,17 @@ export default function SketchLayer() {
                 [anchor.x + Math.cos(a) * L, anchor.y + Math.sin(a) * L, Z],
               ]}
               color={AXIS_COLOR}
-              lineWidth={1}
+              lineWidth={2}
               dashed
-              dashSize={1.2}
-              gapSize={0.8}
+              // A dotted look (short square dashes, wide gaps) rather than a
+              // dashed one — reads as a row of points, not a broken line. Sized off
+              // `pickTol * AXIS_LOCK_FACTOR` — the same screen-constant distance
+              // `hover()` actually locks against, not a second, drifting guess —
+              // so the dots visually mark the true (tight) lock band instead of
+              // the looser point-pick tolerance. A fixed world size shrinks toward
+              // invisible zoomed out, same failure `ScreenRing`/`Vertex` avoid.
+              dashSize={pickTol * AXIS_LOCK_FACTOR * 0.3}
+              gapSize={pickTol * AXIS_LOCK_FACTOR}
               transparent
               opacity={on ? 0.7 : 0.28}
               raycast={noRaycast}

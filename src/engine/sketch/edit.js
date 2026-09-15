@@ -1441,16 +1441,22 @@ function angleGap(a, b) {
  * free angle. An axis-aligned reference is skipped (the 45° axes cover it, with
  * a simpler relation).
  *
- * The guide **appears** within `showDeg` but only **grabs** within `lockDeg` —
- * so a deliberately off-axis angle is not pulled straight, the guide is just a
- * hint. `deg` is the guide direction (pointed the way the cursor pulls);
+ * The guide **appears** within `showDeg` — an angle, so it is visible from
+ * further off the longer the rubber-band gets, the way a real extension line
+ * is easier to spot at a glance from across the sketch. It only **grabs**
+ * within `lockTol`, a **world-unit distance from the candidate's infinite ray**
+ * through the anchor, not an angle: an angular lock tolerance widens into a
+ * bigger and bigger sideways gap the further out you click, so a point that
+ * looked clearly off the line on screen was still being pulled onto it. A
+ * fixed-distance lock behaves like every other snap's screen-pixel tolerance
+ * instead. `deg` is the guide direction (pointed the way the cursor pulls);
  * `locked` says whether the endpoint should snap onto it and the relation be
  * added. Returns null when nothing is close enough to even show.
  *
  * @returns {{deg:number, kind:'axis'|'parallel'|'perpendicular',
  *   ref:(string|number|null), hv:('horizontal'|'vertical'|null), locked:boolean}|null}
  */
-export function angleGuide(sk, anchor, x, y, { showDeg = 8, lockDeg = 2, nearTol = 1.5 } = {}) {
+export function angleGuide(sk, anchor, x, y, { showDeg = 8, lockTol = 1.5, nearTol = 1.5 } = {}) {
   if (!anchor) return null;
   const dx = x - anchor.x;
   const dy = y - anchor.y;
@@ -1496,8 +1502,14 @@ export function angleGuide(sk, anchor, x, y, { showDeg = 8, lockDeg = 2, nearTol
   const gapTo = (d) => { const g = Math.abs(wrap360(cur - d)); return g > 180 ? 360 - g : g; };
   const flip = wrap360(best.deg + 180);
   const deg = gapTo(best.deg) <= gapTo(flip) ? best.deg : flip;
+
+  // Perpendicular distance from the cursor to the infinite line through the
+  // anchor at `deg` — the actual on-screen gap, unlike the angle used above
+  // only to pick *which* candidate and *which* facing.
+  const rad = (deg * Math.PI) / 180;
+  const perp = Math.abs(dx * Math.sin(rad) - dy * Math.cos(rad));
   return {
-    deg, kind: best.kind, ref: best.ref, hv: best.hv, locked: best.o <= lockDeg,
+    deg, kind: best.kind, ref: best.ref, hv: best.hv, locked: perp <= lockTol,
   };
 }
 

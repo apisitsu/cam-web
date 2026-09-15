@@ -322,10 +322,11 @@ describe('dimensionAnnotations — locks', () => {
 });
 
 describe('fmtDim', () => {
-  it('rounds to two decimals and drops trailing noise', () => {
+  it('rounds to three decimals and drops trailing noise', () => {
     expect(fmtDim(10)).toBe('10');
-    expect(fmtDim(10.004)).toBe('10');
-    expect(fmtDim(10.006)).toBe('10.01');
+    expect(fmtDim(10.0004)).toBe('10');
+    expect(fmtDim(10.0006)).toBe('10.001');
+    expect(fmtDim(10.006)).toBe('10.006');
     expect(fmtDim(0.1 + 0.2)).toBe('0.3');
   });
 });

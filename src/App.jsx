@@ -721,7 +721,7 @@ export default function App() {
         message: 'Unsaved work from a previous session',
         description: `Last change ${new Date(draft.at).toLocaleString()}.`,
         duration: 0,
-        btn: (
+        actions: (
           <Space>
             <Button
               size="small"

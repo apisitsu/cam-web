@@ -271,6 +271,37 @@ function ConstraintsPanel() {
   );
 }
 
+// `InputNumber`'s `addonAfter` is deprecated in this antd version in favour of
+// `Space.Compact` — this is that replacement: the input plus a plain span
+// styled to match antd's own addon look, reused everywhere a value needs a
+// unit suffix (dimension entry, chamfer/fillet, offset).
+function UnitInput({
+  value, onChange, onPressEnter, unit, width = 96, autoFocus,
+}) {
+  return (
+    <Space.Compact>
+      <InputNumber
+        controls={false}
+        autoFocus={autoFocus}
+        size="small"
+        value={value}
+        onChange={onChange}
+        onPressEnter={onPressEnter}
+        style={{ width }}
+      />
+      <span style={{
+        display: 'inline-flex', alignItems: 'center', padding: '0 8px',
+        border: `1px solid ${CAD.border}`, borderLeft: 'none',
+        borderRadius: '0 4px 4px 0', background: CAD.glass, color: CAD.muted,
+        fontSize: 12, whiteSpace: 'nowrap',
+      }}
+      >
+        {unit}
+      </span>
+    </Space.Compact>
+  );
+}
+
 /**
  * Inline dimension value entry — appears under the toolbar when a dimension-mode
  * empty-click captured a dimensionable selection (`dimensionPending`). Replaces
@@ -334,14 +365,12 @@ function DimensionInput() {
           />
         </Tooltip>
       )}
-      <InputNumber controls={false}
+      <UnitInput
         autoFocus
-        size="small"
         value={val}
         onChange={(v) => setVal(v ?? 0)}
         onPressEnter={apply}
-        style={{ width: 96 }}
-        addonAfter={dimensionPending.unit ?? 'mm'}
+        unit={dimensionPending.unit ?? 'mm'}
       />
       <Button size="small" type="primary" onClick={apply}>Set</Button>
       <Button size="small" type="text" style={{ color: CAD.label }} onClick={cancelDimension}>✕</Button>
@@ -383,14 +412,12 @@ function EditDimensionInput() {
       }}
     >
       <Text style={{ color: CAD.icon, fontSize: 12 }}>Edit {editingConstraint.label}</Text>
-      <InputNumber controls={false}
+      <UnitInput
         autoFocus
-        size="small"
         value={val}
         onChange={(v) => setVal(v ?? 0)}
         onPressEnter={apply}
-        style={{ width: 96 }}
-        addonAfter={editingConstraint.angular ? '°' : 'mm'}
+        unit={editingConstraint.angular ? '°' : 'mm'}
       />
       <Button size="small" type="primary" onClick={apply}>Set</Button>
       <Button size="small" type="text" style={{ color: CAD.label }} onClick={cancelEditConstraint}>✕</Button>
@@ -478,14 +505,12 @@ function ChamferInput() {
           <Tag color="orange" style={{ margin: 0 }}>R</Tag>
         </Tooltip>
       )}
-      <InputNumber controls={false}
+      <UnitInput
         autoFocus
-        size="small"
         value={val}
         onChange={(v) => setVal(v ?? 0)}
         onPressEnter={apply}
-        style={{ width: 96 }}
-        addonAfter={rounded ? 'R mm' : 'mm'}
+        unit={rounded ? 'R mm' : 'mm'}
       />
       <Button size="small" type="primary" onClick={apply}>Set</Button>
     </div>
@@ -517,14 +542,12 @@ function OffsetInput() {
       }}
     >
       <Text style={{ color: CAD.icon, fontSize: 12 }}>Offset</Text>
-      <InputNumber controls={false}
+      <UnitInput
         autoFocus
-        size="small"
         value={val}
         onChange={(v) => setVal(v ?? 0)}
         onPressEnter={apply}
-        style={{ width: 96 }}
-        addonAfter="mm"
+        unit="mm"
       />
       <Button size="small" type="primary" onClick={apply}>Set</Button>
       <Button size="small" type="text" style={{ color: CAD.label }} onClick={cancelOffset}>✕</Button>
@@ -583,7 +606,9 @@ export default function SketchToolbar() {
   const geomSelected = selectedTypes.some((t) => t === 'line' || t === 'circle' || t === 'arc');
   const canMirror = selection.length >= 2 && selectedTypes.filter((t) => t === 'line').length >= 1;
 
-  const railBtn = () => ({ width: 34, height: 34 });
+  // `pointerEvents: 'auto'` opts each button back in after the rail container
+  // below turns itself off — see that div's comment for why.
+  const railBtn = () => ({ width: 34, height: 34, pointerEvents: 'auto' });
   // Vertical hairline separating groups in the horizontal rail.
   const sep = <div style={{ width: 1, height: 24, background: CAD.border, margin: '0 2px' }} />;
 
@@ -595,6 +620,21 @@ export default function SketchToolbar() {
       background: CAD.glass, border: `1px solid ${CAD.border}`,
       padding: 6, borderRadius: 4, boxShadow: FLOAT_SHADOW,
       maxWidth: 'calc(100% - 24px)',
+      // The rail sits over the top-left of the viewport, on top of the 3D
+      // canvas underneath it (they overlap, this one on top). A solid
+      // `pointer-events: auto` here (the default) swallows every pointer
+      // event anywhere inside this box — the padding and the gaps between
+      // buttons included, since the DOM hit-test only sees this div's
+      // background there, not the canvas behind it. A line dragged toward
+      // this corner would hit that box before reaching where the operator was
+      // actually aiming, and stop dead at whatever edge of it the cursor last
+      // crossed — which reads as "my second point jumped to some other spot
+      // near the toolbar" and was mistaken for the angle-guide misbehaving in
+      // several rounds of bug reports before this was found. `none` here lets
+      // pointer events fall through the empty parts of the rail to the
+      // viewport below; each button opts back in with its own
+      // `pointerEvents: 'auto'` (`railBtn()` for the plain ones).
+      pointerEvents: 'none',
     }}>
       {TOOLS.map((t) => (
         <Tooltip key={t.value} title={`${t.label} — ${t.hint}`} placement="bottom">
@@ -618,7 +658,7 @@ export default function SketchToolbar() {
             max={64}
             value={polygonSides}
             onChange={(v) => setPolygonSides(v)}
-            style={{ width: 62 }}
+            style={{ width: 62, pointerEvents: 'auto' }}
             data-polygon-sides
           />
         </Tooltip>
@@ -771,7 +811,10 @@ export default function SketchToolbar() {
           >
             <Tag
               color={dofState.state === 'full' ? 'green' : dofState.state === 'over' ? 'red' : 'blue'}
-              style={{ margin: 0, minWidth: 28, textAlign: 'center', fontSize: 10, padding: '0 4px' }}
+              style={{
+                margin: 0, minWidth: 28, textAlign: 'center', fontSize: 10, padding: '0 4px',
+                pointerEvents: 'auto',
+              }}
             >
               {dofState.state === 'full' ? '✓' : dofState.free}
             </Tag>
@@ -779,12 +822,12 @@ export default function SketchToolbar() {
         )}
         {solveResult && !solveResult.success && (
           <Tooltip title={`solve status ${solveResult.status}`} placement="bottom">
-            <Tag color="red" style={{ margin: 0, minWidth: 20, textAlign: 'center', fontSize: 10, padding: '0 4px' }}>!</Tag>
+            <Tag color="red" style={{ margin: 0, minWidth: 20, textAlign: 'center', fontSize: 10, padding: '0 4px', pointerEvents: 'auto' }}>!</Tag>
           </Tooltip>
         )}
         {error && (
           <Tooltip title={error} placement="bottom">
-            <Tag color="orange" style={{ margin: 0, minWidth: 20, textAlign: 'center', fontSize: 10, padding: '0 4px' }}>?</Tag>
+            <Tag color="orange" style={{ margin: 0, minWidth: 20, textAlign: 'center', fontSize: 10, padding: '0 4px', pointerEvents: 'auto' }}>?</Tag>
           </Tooltip>
         )}
       </Space>

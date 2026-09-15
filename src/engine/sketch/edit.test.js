@@ -435,23 +435,39 @@ describe('chamfer', () => {
 });
 
 describe('angleGuide — inference direction while drawing a line', () => {
-  const OPT = { showDeg: 8, lockDeg: 2, nearTol: 1.5 };
+  const OPT = { showDeg: 8, lockTol: 1.5, nearTol: 1.5 };
   /** An anchor point object with an id, standing at (x, y). */
   const at = (sk, x, y) => sk.entities.get(addPoint(sk, x, y));
 
-  it('grabs a 45° axis only from the tight lock band, but shows it from the wide one', () => {
+  it('grabs a 45° axis only within the pick tolerance, but shows a wider hint', () => {
     const sk = createSketch();
     const anchor = at(sk, 0, 0);
-    const near90 = angleGuide(sk, anchor, 0.3, 10, OPT); // ~88.3° → within 2°
+    const near90 = angleGuide(sk, anchor, 0.3, 10, OPT); // ~88.3°, 0.3 mm off the axis
     expect(near90.kind).toBe('axis');
     expect(near90.deg).toBe(90);
     expect(near90.hv).toBe('vertical');
     expect(near90.locked).toBe(true);
 
-    expect(angleGuide(sk, anchor, 1.5, 10, OPT)).toBeNull(); // ~81.5° → outside show
-    const shown = angleGuide(sk, anchor, 1.1, 10, OPT); // ~83.7° → in show band, not lock
+    expect(angleGuide(sk, anchor, 1.5, 10, OPT)).toBeNull(); // ~81.5° → outside the show angle
+
+    // ~84.3° — inside the show angle, but 2 mm off the vertical axis on screen
+    // (past the 1.5 mm pick tolerance): a lock here would grab from an
+    // ever-widening gap the further out the rubber-band reaches, which is
+    // exactly the bug a distance lock (not an angle) rules out.
+    const shown = angleGuide(sk, anchor, 2, 20, OPT);
     expect(shown.deg).toBe(90);
     expect(shown.locked).toBe(false);
+  });
+
+  it('does not grab from far away just because the angle is close (long rubber-band)', () => {
+    const sk = createSketch();
+    const anchor = at(sk, 0, 0);
+    // ~88.6° — under 1.5° off vertical, but 200 mm out that is a ~5 mm sideways
+    // gap on screen: clearly off the line, so it must stay a hint, never a grab.
+    const g = angleGuide(sk, anchor, 5, 200, OPT);
+    expect(g.kind).toBe('axis');
+    expect(g.deg).toBe(90);
+    expect(g.locked).toBe(false);
   });
 
   it('returns null when no candidate is within the show band', () => {

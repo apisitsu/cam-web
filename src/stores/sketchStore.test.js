@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { useSketchStore } from './sketchStore.js';
+import { useSketchStore, AXIS_LOCK_FACTOR } from './sketchStore.js';
 import {
   createSketch, addPoint, addLine, addCircle, addArc, addConstraint, dof,
 } from '../engine/sketch/model.js';
@@ -523,12 +523,12 @@ describe('drag-to-modify (arm / end)', () => {
 });
 
 describe('line guides — angle lock & tangent snap (hover)', () => {
-  it('grabs the vertical axis from the tight band; only shows a guide from the wide one', () => {
+  it('grabs the vertical axis only within the pick tolerance; shows a wider hint', () => {
     const sk = createSketch();
     const anchor = addPoint(sk, 0, 0);
-    useSketchStore.setState({ sk, tool: 'line', pending: anchor, snap: null, axisSnap: null });
+    useSketchStore.setState({ sk, tool: 'line', pending: anchor, snap: null, axisSnap: null, pickTol: 1.5 });
 
-    // ~89° — inside the lock band → the endpoint snaps onto the axis.
+    // ~89° AND close on screen (0.15 mm off the vertical) → grabs.
     useSketchStore.getState().hover(0.15, 9.9);
     const s1 = useSketchStore.getState();
     expect(s1.axisSnap.locked).toBe(true);
@@ -536,18 +536,44 @@ describe('line guides — angle lock & tangent snap (hover)', () => {
     expect(near(s1.axisSnap.x, 0)).toBe(true); // snapped onto the vertical axis
     expect(near(s1.lineAngle, 90)).toBe(true);
 
-    // ~84° — in the show band, not the lock band → a hint only: the point stays
-    // where the cursor is and the raw angle is reported.
-    useSketchStore.getState().hover(1.05, 9.9);
+    // ~84° — within the show angle, but 2 mm off the vertical axis on screen,
+    // past the 1.5 mm pick tolerance: a lock here would grab from further and
+    // further away the longer the rubber-band gets, which is the bug this
+    // guards — a click that looks well off the line must not jump onto it.
+    useSketchStore.getState().hover(2, 20);
     const s2 = useSketchStore.getState();
     expect(s2.axisSnap.locked).toBe(false);
-    expect(s2.axisSnap.deg).toBe(90);        // guide still points at vertical
-    expect(near(s2.axisSnap.x, 1.05)).toBe(true); // ...but the endpoint is not pulled
-    expect(near(s2.lineAngle, 84, 1)).toBe(true);
+    expect(s2.axisSnap.deg).toBe(90);      // guide still points at vertical
+    expect(near(s2.axisSnap.x, 2)).toBe(true); // ...but the endpoint is not pulled
+    expect(near(s2.lineAngle, 84.3, 0.1)).toBe(true);
 
     // ~30° — nothing near → no guide at all.
     useSketchStore.getState().hover(10, 5.77);
     expect(useSketchStore.getState().axisSnap).toBeNull();
+  });
+
+  it('locks the guide well inside pickTol itself, not just inside pickTol', () => {
+    // The guide's own lock band is a fraction of pickTol (`AXIS_LOCK_FACTOR`) —
+    // deliberately tighter than the pick tolerance used to hit-test a click on a
+    // point. Reusing the full pickTol as the guide's lock distance was the bug:
+    // 9 px is forgiving for an imprecise click on a point, but the same gap read
+    // as "clearly off the line" once judged against a long guide, so a click
+    // that visibly missed the dotted line still got pulled onto it.
+    const sk = createSketch();
+    const anchor = addPoint(sk, 0, 0);
+    const pickTol = 1.5;
+    useSketchStore.setState({ sk, tool: 'line', pending: anchor, snap: null, axisSnap: null, pickTol });
+
+    // 1 mm off the vertical axis — inside pickTol (1.5 mm) but outside the
+    // guide's own tighter lock band (pickTol * AXIS_LOCK_FACTOR ≈ 0.675 mm).
+    expect(1).toBeGreaterThan(pickTol * AXIS_LOCK_FACTOR);
+    expect(1).toBeLessThan(pickTol);
+    useSketchStore.getState().hover(1, 20);
+    expect(useSketchStore.getState().axisSnap.locked).toBe(false);
+
+    // Half that gap sits inside the lock band and still grabs.
+    useSketchStore.getState().hover(0.2, 20);
+    expect(useSketchStore.getState().axisSnap.locked).toBe(true);
   });
 
   it('offers a tangent snap when the line approaches a circle rim', () => {

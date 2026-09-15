@@ -19,8 +19,8 @@ import { axisDimensionGeometry, dimensionLockDir, projectOnto } from './edit.js'
 const TWO_PI = Math.PI * 2;
 const normAngle = (a) => ((a % TWO_PI) + TWO_PI) % TWO_PI;
 
-/** Round a dimension for display — two decimals, no trailing noise. */
-export const fmtDim = (v) => String(Math.round(v * 100) / 100);
+/** Round a dimension for display — three decimals, no trailing noise. */
+export const fmtDim = (v) => String(Math.round(v * 1000) / 1000);
 
 /**
  * Geometry for an axis-locked (distanceX / distanceY) dimension: the on-axis

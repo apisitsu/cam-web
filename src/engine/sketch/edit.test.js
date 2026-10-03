@@ -9,6 +9,7 @@ import {
   axisDimensionGeometry, measureConstraint, axisFromPlacement, arcArcMeet,
   filletCircleCircle, entityIntersections, nearestIntersection, entitiesInBox,
   nearestQuadrant, nearestMidpoint, linesShareCorner, angleGuide,
+  snapshotEntities, hydrateSnapshot,
 } from './edit.js';
 
 const near = (a, b, eps = 1e-6) => Math.abs(a - b) <= eps;
@@ -1042,5 +1043,104 @@ describe('filletCircleCircle — fillet two whole circles, auto-trimming them', 
     const t1 = addCircle(sk, addPoint(sk, 0, 200), 10);
     const t2 = addCircle(sk, addPoint(sk, 20, 200), 10); // exactly tangent
     expect(filletCircleCircle(sk, t1, t2, 3, null)).toBeNull();
+  });
+});
+
+describe('snapshotEntities / hydrateSnapshot (Copy/Paste, Pattern)', () => {
+  it('returns null for an empty or all-missing selection', () => {
+    const sk = createSketch();
+    expect(snapshotEntities(sk, [])).toBeNull();
+    expect(snapshotEntities(sk, [999])).toBeNull();
+  });
+
+  it('duplicates a line at a translated position, preserving construction flag', () => {
+    const sk = createSketch();
+    const l = addLine(sk, addPoint(sk, 0, 0), addPoint(sk, 10, 0));
+    sk.entities.get(l).construction = true;
+    const snap = snapshotEntities(sk, [l]);
+    expect(snap).toBeTruthy();
+    const created = hydrateSnapshot(sk, snap, (x, y) => ({ x: x + 5, y: y + 2 }));
+    expect(created.length).toBe(1);
+    const nl = sk.entities.get(created[0]);
+    expect(nl.type).toBe('line');
+    expect(nl.construction).toBe(true);
+    const a = sk.entities.get(nl.p1);
+    const b = sk.entities.get(nl.p2);
+    const xs = [a.x, b.x].sort((p, q) => p - q);
+    const ys = [a.y, b.y].sort((p, q) => p - q);
+    expect(near(xs[0], 5)).toBe(true);
+    expect(near(xs[1], 15)).toBe(true);
+    expect(near(ys[0], 2)).toBe(true);
+    expect(near(ys[1], 2)).toBe(true);
+  });
+
+  it('duplicates a circle with its radius unchanged', () => {
+    const sk = createSketch();
+    const c = addCircle(sk, addPoint(sk, 0, 0), 25);
+    const snap = snapshotEntities(sk, [c]);
+    const [nc] = hydrateSnapshot(sk, snap, (x, y) => ({ x: x + 100, y }));
+    const circle = sk.entities.get(nc);
+    expect(circle.type).toBe('circle');
+    expect(near(circle.r, 25)).toBe(true);
+    const center = sk.entities.get(circle.center);
+    expect(near(center.x, 100)).toBe(true);
+    expect(near(center.y, 0)).toBe(true);
+  });
+
+  it('carries internal relations (horizontal/vertical) over a 4-line rectangle', () => {
+    const sk = createSketch();
+    const p1 = addPoint(sk, 0, 0);
+    const p2 = addPoint(sk, 10, 0);
+    const p3 = addPoint(sk, 10, 10);
+    const p4 = addPoint(sk, 0, 10);
+    const lines = [addLine(sk, p1, p2), addLine(sk, p2, p3), addLine(sk, p3, p4), addLine(sk, p4, p1)];
+    addConstraint(sk, 'horizontal', [p1, p2]);
+    addConstraint(sk, 'horizontal', [p4, p3]);
+    addConstraint(sk, 'vertical', [p2, p3]);
+    addConstraint(sk, 'vertical', [p1, p4]);
+    const before = sk.constraints.length;
+    const snap = snapshotEntities(sk, lines);
+    expect(snap.constraints.length).toBe(4);
+    const created = hydrateSnapshot(sk, snap, (x, y) => ({ x: x + 50, y: y + 50 }));
+    expect(created.length).toBe(4);
+    expect(sk.constraints.length).toBe(before + 4);
+    // The new constraints reference only the newly created geometry's own points.
+    const newPointIds = new Set(created.flatMap((id) => {
+      const e = sk.entities.get(id);
+      return [e.p1, e.p2];
+    }));
+    const newConstraints = sk.constraints.slice(before);
+    expect(newConstraints.every((c) => c.refs.every((r) => newPointIds.has(r)))).toBe(true);
+  });
+
+  it('drops lockX/lockY — an absolute pin means nothing on a copy', () => {
+    const sk = createSketch();
+    const p = addPoint(sk, 5, 5);
+    addConstraint(sk, 'lockX', [p], 5);
+    const snap = snapshotEntities(sk, [p]);
+    expect(snap.constraints.length).toBe(0);
+  });
+
+  it("does not carry a relation that reaches outside the copied selection", () => {
+    const sk = createSketch();
+    const l1 = addLine(sk, addPoint(sk, 0, 0), addPoint(sk, 10, 0));
+    const l2 = addLine(sk, addPoint(sk, 0, 5), addPoint(sk, 10, 5));
+    addConstraint(sk, 'parallel', [l1, l2]);
+    const snap = snapshotEntities(sk, [l1]); // l2 not included
+    expect(snap.constraints.length).toBe(0);
+  });
+
+  it('a copy of geometry through the origin becomes free (not re-pinned)', () => {
+    const sk = createSketch();
+    const origin = addPoint(sk, 0, 0, true);
+    sk.entities.get(origin).origin = true;
+    const l = addLine(sk, origin, addPoint(sk, 10, 0));
+    const snap = snapshotEntities(sk, [l]);
+    const [nl] = hydrateSnapshot(sk, snap, (x, y) => ({ x: x + 20, y }));
+    const line = sk.entities.get(nl);
+    const p1 = sk.entities.get(line.p1);
+    expect(p1.fixed).toBeFalsy();
+    expect(p1.origin).toBeFalsy();
+    expect(near(p1.x, 20)).toBe(true);
   });
 });

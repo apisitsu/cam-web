@@ -860,3 +860,162 @@ describe('swapDimensionRefs', () => {
     expect(useSketchStore.getState().dimensionPending).toBe(spec);
   });
 });
+
+describe('copySelection / paste', () => {
+  it('errors with nothing to copy, and leaves any existing clipboard alone', () => {
+    const sk = createSketch();
+    useSketchStore.setState({ sk, selection: [], error: null, clipboard: null });
+    useSketchStore.getState().copySelection();
+    expect(useSketchStore.getState().error).toMatch(/select something/i);
+    expect(useSketchStore.getState().clipboard).toBeNull();
+  });
+
+  it('errors on paste with an empty clipboard', () => {
+    const sk = createSketch();
+    useSketchStore.setState({ sk, past: [], error: null, clipboard: null });
+    useSketchStore.getState().paste();
+    expect(useSketchStore.getState().error).toMatch(/nothing to paste/i);
+    expect(useSketchStore.getState().past.length).toBe(0);
+  });
+
+  it('copies a line then pastes it offset, stepping further on repeated pastes', () => {
+    const sk = createSketch();
+    const l = addLine(sk, addPoint(sk, 0, 0), addPoint(sk, 10, 0));
+    useSketchStore.setState({
+      sk, selection: [l], past: [], error: null, clipboard: null, pasteCount: 0,
+    });
+    useSketchStore.getState().copySelection();
+    expect(useSketchStore.getState().clipboard).toBeTruthy();
+
+    useSketchStore.getState().paste();
+    const st1 = useSketchStore.getState();
+    expect(st1.selection.length).toBe(1);
+    const line1 = sk.entities.get(st1.selection[0]);
+    const a1 = sk.entities.get(line1.p1);
+    expect(near(a1.x, 10)).toBe(true); // +PASTE_STEP*1
+    expect(near(a1.y, -10)).toBe(true);
+
+    useSketchStore.getState().paste();
+    const st2 = useSketchStore.getState();
+    const line2 = sk.entities.get(st2.selection[0]);
+    const a2 = sk.entities.get(line2.p1);
+    expect(near(a2.x, 20)).toBe(true); // +PASTE_STEP*2 — cascades further out
+    expect(near(a2.y, -20)).toBe(true);
+
+    // Two independent copies now exist besides the original.
+    expect([...sk.entities.values()].filter((e) => e.type === 'line').length).toBe(3);
+  });
+
+  it('a fresh copy resets the paste cascade', () => {
+    const sk = createSketch();
+    const l = addLine(sk, addPoint(sk, 0, 0), addPoint(sk, 10, 0));
+    useSketchStore.setState({
+      sk, selection: [l], past: [], error: null, clipboard: null, pasteCount: 3,
+    });
+    useSketchStore.getState().copySelection();
+    expect(useSketchStore.getState().pasteCount).toBe(0);
+  });
+});
+
+describe('linearPattern', () => {
+  it('stamps count-1 copies along (dx, dy), leaving the original in place', () => {
+    const sk = createSketch();
+    const l = addLine(sk, addPoint(sk, 0, 0), addPoint(sk, 10, 0));
+    useSketchStore.setState({ sk, selection: [l], past: [], error: null });
+    useSketchStore.getState().linearPattern(3, 20, 0);
+    const st = useSketchStore.getState();
+    // solve() needs a Worker, which node has no notion of — it sets its own
+    // error after the geometry is already built; only the pattern's own
+    // refusals matter here (none expected).
+    expect(st.error || '').not.toMatch(/count|spacing|select/i);
+    expect(st.selection.length).toBe(2); // the two new copies
+    const lines = [...sk.entities.values()].filter((e) => e.type === 'line');
+    expect(lines.length).toBe(3); // original + 2 copies
+    const xsOf = (line) => {
+      const a = sk.entities.get(line.p1);
+      const b = sk.entities.get(line.p2);
+      return [a.x, b.x].sort((p, q) => p - q);
+    };
+    const starts = lines.map((line) => xsOf(line)[0]).sort((a, b) => a - b);
+    expect(starts.map((x) => Math.round(x))).toEqual([0, 20, 40]);
+  });
+
+  it('rejects an out-of-range count without mutating anything', () => {
+    const sk = createSketch();
+    const l = addLine(sk, addPoint(sk, 0, 0), addPoint(sk, 10, 0));
+    useSketchStore.setState({ sk, selection: [l], past: [], error: null });
+    useSketchStore.getState().linearPattern(1, 10, 0);
+    expect(useSketchStore.getState().error).toMatch(/count/i);
+    expect(useSketchStore.getState().past.length).toBe(0);
+  });
+
+  it('rejects zero spacing', () => {
+    const sk = createSketch();
+    const l = addLine(sk, addPoint(sk, 0, 0), addPoint(sk, 10, 0));
+    useSketchStore.setState({ sk, selection: [l], past: [], error: null });
+    useSketchStore.getState().linearPattern(3, 0, 0);
+    expect(useSketchStore.getState().error).toMatch(/spacing/i);
+  });
+
+  it('errors when nothing patternable is selected', () => {
+    const sk = createSketch();
+    const p = addPoint(sk, 0, 0);
+    useSketchStore.setState({ sk, selection: [p], past: [], error: null });
+    useSketchStore.getState().linearPattern(3, 10, 0);
+    expect(useSketchStore.getState().error).toMatch(/select/i);
+  });
+});
+
+describe('circularPattern', () => {
+  it('spaces copies evenly around the origin on a full 360° sweep', () => {
+    const { sk, origin } = withOrigin();
+    const c = addCircle(sk, addPoint(sk, 20, 0), 3);
+    useSketchStore.setState({ sk, selection: [c], past: [], error: null });
+    useSketchStore.getState().circularPattern(4, 360);
+    const st = useSketchStore.getState();
+    // solve() needs a Worker, which node has no notion of — see linearPattern's test.
+    expect(st.error || '').not.toMatch(/count|sweep|select|centre/i);
+    expect(st.selection.length).toBe(3);
+    const circles = [...sk.entities.values()].filter((e) => e.type === 'circle');
+    expect(circles.length).toBe(4);
+    const centers = circles.map((cc) => sk.entities.get(cc.center));
+    // Every centre sits 20mm from the origin, at 90° apart.
+    for (const ct of centers) expect(near(Math.hypot(ct.x, ct.y), 20, 1e-6)).toBe(true);
+    const angles = centers.map((ct) => Math.atan2(ct.y, ct.x) * (180 / Math.PI)).sort((a, b) => a - b);
+    expect(angles.map((a) => Math.round(a))).toEqual([-90, 0, 90, 180]);
+    void origin;
+  });
+
+  it('fans copies from the original across a partial sweep', () => {
+    const { sk } = withOrigin();
+    const c = addCircle(sk, addPoint(sk, 10, 0), 2);
+    useSketchStore.setState({ sk, selection: [c], past: [], error: null });
+    useSketchStore.getState().circularPattern(4, 90);
+    const circles = [...sk.entities.values()].filter((e) => e.type === 'circle');
+    const centers = circles.map((cc) => sk.entities.get(cc.center));
+    const angles = centers.map((ct) => Math.round(Math.atan2(ct.y, ct.x) * (180 / Math.PI))).sort((a, b) => a - b);
+    expect(angles).toEqual([0, 30, 60, 90]);
+  });
+
+  it('patterns about a selected point instead of the origin, when one is selected', () => {
+    const { sk } = withOrigin();
+    const centerPt = addPoint(sk, 100, 100);
+    const c = addCircle(sk, addPoint(sk, 110, 100), 2); // 10mm right of the custom centre
+    useSketchStore.setState({ sk, selection: [c, centerPt], past: [], error: null });
+    useSketchStore.getState().circularPattern(2, 360);
+    const circles = [...sk.entities.values()].filter((e) => e.type === 'circle');
+    expect(circles.length).toBe(2);
+    const second = circles.find((cc) => cc.id !== c);
+    const ct = sk.entities.get(second.center);
+    expect(near(ct.x, 90, 1e-6)).toBe(true); // 180° around (100,100) from (110,100)
+    expect(near(ct.y, 100, 1e-6)).toBe(true);
+  });
+
+  it('errors when the sketch has no origin and no centre point is selected', () => {
+    const sk = createSketch(); // no origin seeded
+    const c = addCircle(sk, addPoint(sk, 10, 0), 2);
+    useSketchStore.setState({ sk, selection: [c], past: [], error: null });
+    useSketchStore.getState().circularPattern(3, 360);
+    expect(useSketchStore.getState().error).toMatch(/centre/i);
+  });
+});

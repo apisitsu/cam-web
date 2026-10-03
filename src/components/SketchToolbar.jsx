@@ -49,6 +49,14 @@ const ChamferIcon = glyph(<path d="M5 20V10L11 4H20" />);
 const ConstructionIcon = glyph(<path d="M4 18L20 6" strokeDasharray="3 2.5" />);
 const MirrorIcon = glyph(<><path d="M12 3v18" strokeDasharray="3 2" /><path d="M9 7L4 12l5 5z" /><path d="M15 7l5 5-5 5z" /></>);
 const OffsetIcon = glyph(<><path d="M4 16c4-8 12-8 16 0" /><path d="M4 20c4-8 12-8 16 0" opacity="0.55" /></>);
+// Linear Pattern: a shape repeating along a line, fading out — the repeats,
+// not the direction, are the point, so no arrow is drawn.
+const LinearPatternIcon = glyph(<><rect x="3.5" y="9" width="5" height="6" /><rect x="10" y="9" width="5" height="6" opacity="0.6" /><rect x="16.5" y="9" width="4" height="6" opacity="0.3" /></>);
+// Circular Pattern: the same repeats, arranged around a centre.
+const CircularPatternIcon = glyph(<><rect x="10" y="3.3" width="4" height="4" /><rect x="16.7" y="7.3" width="4" height="4" opacity="0.6" /><rect x="16.7" y="14.7" width="4" height="4" opacity="0.3" /><rect x="10" y="18.7" width="4" height="4" opacity="0.3" /><rect x="3.3" y="14.7" width="4" height="4" opacity="0.3" /><rect x="3.3" y="7.3" width="4" height="4" opacity="0.6" /></>);
+// Copy / Paste: the familiar stacked-rectangle and clipboard glyphs.
+const CopyIcon = glyph(<><rect x="8.5" y="8.5" width="11" height="11" rx="1" /><path d="M5.5 15.5V5.5a1 1 0 0 1 1-1h10" opacity="0.55" /></>);
+const PasteIcon = glyph(<><rect x="6" y="5" width="12" height="15" rx="1" /><path d="M9.5 5V3.8a.8.8 0 0 1 .8-.8h3.4a.8.8 0 0 1 .8.8V5" /></>);
 // 2D→3D. Planes: two sheets at an angle, the way a CAD tree draws its reference
 // planes. Extrude: a profile with the solid pushed off it.
 const PlanesIcon = glyph(<><path d="M3 8.5l8-3.5 10 3-8 3.5z" /><path d="M3 8.5v7l8 3.5v-7" /><path d="M21 8v7l-10 4" opacity="0.55" /></>);
@@ -555,6 +563,81 @@ function OffsetInput() {
   );
 }
 
+/**
+ * Inline count/spacing entry for Linear Pattern — the rail button arms it
+ * (`linearPatternPending`), matching how Offset takes its distance. `dX`/`dY`
+ * are the step between consecutive copies (either may be 0, not both).
+ */
+function LinearPatternInput() {
+  const linearPatternPending = useSketchStore((s) => s.linearPatternPending);
+  const linearPattern = useSketchStore((s) => s.linearPattern);
+  const cancelLinearPattern = useSketchStore((s) => s.cancelLinearPattern);
+  const [count, setCount] = useState(3);
+  const [dx, setDx] = useState(10);
+  const [dy, setDy] = useState(0);
+
+  if (!linearPatternPending) return null;
+  const apply = () => { if (Number.isFinite(count)) linearPattern(count, dx ?? 0, dy ?? 0); };
+
+  return (
+    <div
+      onKeyDown={(e) => { if (e.key === 'Escape') cancelLinearPattern(); }}
+      style={{
+        position: 'absolute', top: 60, left: 12, zIndex: 6,
+        display: 'flex', gap: 6, alignItems: 'center',
+        background: CAD.glassSolid, border: `1px solid ${CAD.skTangent}`,
+        padding: '6px 10px', borderRadius: 4, boxShadow: FLOAT_SHADOW,
+      }}
+    >
+      <Text style={{ color: CAD.icon, fontSize: 12 }}>Linear Pattern</Text>
+      <Tooltip title="Instances — total copies including the original">
+        <InputNumber controls={false} size="small" min={2} max={200} value={count} onChange={(v) => setCount(v ?? 2)} style={{ width: 56 }} />
+      </Tooltip>
+      <UnitInput autoFocus value={dx} onChange={(v) => setDx(v ?? 0)} onPressEnter={apply} unit="dX mm" width={110} />
+      <UnitInput value={dy} onChange={(v) => setDy(v ?? 0)} onPressEnter={apply} unit="dY mm" width={110} />
+      <Button size="small" type="primary" onClick={apply}>Set</Button>
+      <Button size="small" type="text" style={{ color: CAD.label }} onClick={cancelLinearPattern}>✕</Button>
+    </div>
+  );
+}
+
+/**
+ * Inline count/angle entry for Circular Pattern — same arming pattern as
+ * Linear Pattern. The centre is whichever selected point isn't part of the
+ * geometry being patterned, else the sketch origin (`circularPattern` picks
+ * it); there's nothing to configure for it here.
+ */
+function CircularPatternInput() {
+  const circularPatternPending = useSketchStore((s) => s.circularPatternPending);
+  const circularPattern = useSketchStore((s) => s.circularPattern);
+  const cancelCircularPattern = useSketchStore((s) => s.cancelCircularPattern);
+  const [count, setCount] = useState(6);
+  const [angle, setAngle] = useState(360);
+
+  if (!circularPatternPending) return null;
+  const apply = () => { if (Number.isFinite(count) && Number.isFinite(angle) && angle !== 0) circularPattern(count, angle); };
+
+  return (
+    <div
+      onKeyDown={(e) => { if (e.key === 'Escape') cancelCircularPattern(); }}
+      style={{
+        position: 'absolute', top: 60, left: 12, zIndex: 6,
+        display: 'flex', gap: 6, alignItems: 'center',
+        background: CAD.glassSolid, border: `1px solid ${CAD.skTangent}`,
+        padding: '6px 10px', borderRadius: 4, boxShadow: FLOAT_SHADOW,
+      }}
+    >
+      <Text style={{ color: CAD.icon, fontSize: 12 }}>Circular Pattern</Text>
+      <Tooltip title="Instances — total copies including the original">
+        <InputNumber controls={false} size="small" min={2} max={200} value={count} onChange={(v) => setCount(v ?? 2)} style={{ width: 56 }} />
+      </Tooltip>
+      <UnitInput autoFocus value={angle} onChange={(v) => setAngle(v ?? 0)} onPressEnter={apply} unit="° sweep" width={110} />
+      <Button size="small" type="primary" onClick={apply}>Set</Button>
+      <Button size="small" type="text" style={{ color: CAD.label }} onClick={cancelCircularPattern}>✕</Button>
+    </div>
+  );
+}
+
 export default function SketchToolbar() {
   const tool = useSketchStore((s) => s.tool);
   const selection = useSketchStore((s) => s.selection);
@@ -575,6 +658,11 @@ export default function SketchToolbar() {
   const toggleConstruction = useSketchStore((s) => s.toggleConstruction);
   const mirror = useSketchStore((s) => s.mirror);
   const beginOffset = useSketchStore((s) => s.beginOffset);
+  const beginLinearPattern = useSketchStore((s) => s.beginLinearPattern);
+  const beginCircularPattern = useSketchStore((s) => s.beginCircularPattern);
+  const copySelection = useSketchStore((s) => s.copySelection);
+  const paste = useSketchStore((s) => s.paste);
+  const clipboard = useSketchStore((s) => s.clipboard);
   const polygonSides = useSketchStore((s) => s.polygonSides);
   const setPolygonSides = useSketchStore((s) => s.setPolygonSides);
 
@@ -694,6 +782,42 @@ export default function SketchToolbar() {
           disabled={!geomSelected}
           onClick={() => beginOffset()}
           style={{ ...railBtn(), color: geomSelected ? CAD.icon : undefined }}
+        />
+      </Tooltip>
+      <Tooltip title="Linear Pattern — stamp copies of the selection in a straight line" placement="bottom">
+        <Button
+          type="text"
+          icon={<LinearPatternIcon />}
+          disabled={!geomSelected}
+          onClick={() => beginLinearPattern()}
+          style={{ ...railBtn(), color: geomSelected ? CAD.icon : undefined }}
+        />
+      </Tooltip>
+      <Tooltip title="Circular Pattern — stamp copies of the selection around a centre (a selected point, else the origin)" placement="bottom">
+        <Button
+          type="text"
+          icon={<CircularPatternIcon />}
+          disabled={!geomSelected}
+          onClick={() => beginCircularPattern()}
+          style={{ ...railBtn(), color: geomSelected ? CAD.icon : undefined }}
+        />
+      </Tooltip>
+      <Tooltip title="Copy (Ctrl+C) — capture the selection to the sketch clipboard" placement="bottom">
+        <Button
+          type="text"
+          icon={<CopyIcon />}
+          disabled={!selection.length}
+          onClick={() => copySelection()}
+          style={{ ...railBtn(), color: selection.length ? CAD.icon : undefined }}
+        />
+      </Tooltip>
+      <Tooltip title="Paste (Ctrl+V) — drop the last copy into this sketch, stepped out from where it was copied" placement="bottom">
+        <Button
+          type="text"
+          icon={<PasteIcon />}
+          disabled={!clipboard}
+          onClick={() => paste()}
+          style={{ ...railBtn(), color: clipboard ? CAD.icon : undefined }}
         />
       </Tooltip>
 
@@ -836,6 +960,8 @@ export default function SketchToolbar() {
     <EditDimensionInput />
     <ChamferInput />
     <OffsetInput />
+    <LinearPatternInput />
+    <CircularPatternInput />
     </>
   );
 }

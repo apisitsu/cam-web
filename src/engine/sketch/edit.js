@@ -2165,3 +2165,114 @@ export function projectOnto(offset, dir) {
   // `+ 0` folds a `-0` (from a zero component of `dir`) back to plain `0`.
   return [t * dir[0] + 0, t * dir[1] + 0];
 }
+
+/**
+ * Capture a self-contained copy of `ids` (points/lines/circles/arcs) — pulling
+ * in every point a selected line/circle/arc references, so the capture never
+ * dangles — plus every constraint whose refs land entirely inside that set
+ * (an endpoint pulled in counts). `lockX`/`lockY` are dropped: they pin an
+ * absolute coordinate, which means nothing once the copy is placed somewhere
+ * else. A point's `fixed`/`origin` flag is dropped too, for the same reason —
+ * a copy of geometry anchored to the origin becomes ordinary free geometry.
+ *
+ * Pure — never touches `sk`. `entities`/`constraints` address each other by
+ * **local** id (1-based, assigned here), not real sketch ids, so the result is
+ * detached and safe to hold onto (Copy, for a later Paste) or replay several
+ * times at different placements (a Pattern). `hydrateSnapshot` is the other
+ * half: it assigns fresh real ids when the capture is recreated.
+ *
+ * @returns {{entities: Array<object>, constraints: Array<object>} | null}
+ */
+export function snapshotEntities(sk, ids) {
+  const selected = new Set(ids.filter((id) => sk.entities.has(id)));
+  if (!selected.size) return null;
+
+  const localOf = new Map(); // real sketch id -> local id
+  let nextLocal = 1;
+  const assign = (id) => {
+    if (localOf.has(id)) return localOf.get(id);
+    const n = nextLocal++;
+    localOf.set(id, n);
+    return n;
+  };
+  const POINT_REFS = { line: ['p1', 'p2'], circle: ['center'], arc: ['center', 'start', 'end'] };
+
+  // Pull in every point a selected line/circle/arc references — `selected`
+  // grows as this walks the original `ids`, so a constraint on one of those
+  // endpoints (e.g. a dimension on a line's own point) still counts as
+  // "internal" below.
+  for (const id of ids) {
+    const e = sk.entities.get(id);
+    const refFields = e && POINT_REFS[e.type];
+    if (refFields) for (const f of refFields) selected.add(e[f]);
+  }
+
+  const entities = [];
+  for (const id of selected) {
+    const e = sk.entities.get(id);
+    if (e?.type === 'point') entities.push({ local: assign(id), type: 'point', x: e.x, y: e.y, construction: !!e.construction });
+  }
+  for (const id of ids) {
+    const e = sk.entities.get(id);
+    if (!e || e.type === 'point') continue;
+    const rec = { local: assign(id), type: e.type, construction: !!e.construction };
+    if (e.type === 'line') { rec.p1 = localOf.get(e.p1); rec.p2 = localOf.get(e.p2); } else if (e.type === 'circle') { rec.center = localOf.get(e.center); rec.r = e.r; } else if (e.type === 'arc') { rec.center = localOf.get(e.center); rec.start = localOf.get(e.start); rec.end = localOf.get(e.end); rec.r = e.r; }
+    entities.push(rec);
+  }
+
+  const constraints = [];
+  for (const c of sk.constraints) {
+    if (c.kind === 'lockX' || c.kind === 'lockY') continue;
+    if (!c.refs.every((r) => localOf.has(r))) continue;
+    constraints.push({
+      kind: c.kind, value: c.value ?? null, driven: !!c.driven, refs: c.refs.map((r) => localOf.get(r)),
+    });
+  }
+  return entities.length ? { entities, constraints } : null;
+}
+
+/**
+ * Recreate a `snapshotEntities` capture into `sk`, passing every point's
+ * (x, y) through `transform` — translate for Copy/Paste and a Linear Pattern,
+ * rotate about a centre for a Circular Pattern. Assigns fresh real ids for
+ * everything (never reuses the originals, even for a same-sketch paste) and
+ * replays the captured constraints against them, silently skipping any that
+ * no longer fit (shouldn't happen — the capture only ever holds internally-
+ * consistent relations — but a solver-level mismatch is a skip, not a crash).
+ *
+ * @param {(x:number, y:number) => {x:number, y:number}} transform
+ * @returns {number[]} the new geometry ids (lines/circles/arcs only, in
+ *   capture order) — the caller typically selects these
+ */
+export function hydrateSnapshot(sk, snapshot, transform) {
+  if (!snapshot) return [];
+  const real = new Map(); // local id -> real sketch id
+  const created = [];
+  const stampConstruction = (id, construction) => { if (construction) sk.entities.get(id).construction = true; };
+  for (const e of snapshot.entities) {
+    if (e.type !== 'point') continue;
+    const t = transform(e.x, e.y);
+    const id = addPoint(sk, t.x, t.y);
+    stampConstruction(id, e.construction);
+    real.set(e.local, id);
+  }
+  for (const e of snapshot.entities) {
+    let id = null;
+    if (e.type === 'line') id = addLine(sk, real.get(e.p1), real.get(e.p2));
+    else if (e.type === 'circle') id = addCircle(sk, real.get(e.center), e.r);
+    else if (e.type === 'arc') id = addArc(sk, real.get(e.center), real.get(e.start), real.get(e.end), e.r);
+    if (id == null) continue;
+    stampConstruction(id, e.construction);
+    real.set(e.local, id);
+    created.push(id);
+  }
+  for (const c of snapshot.constraints) {
+    const refs = c.refs.map((r) => real.get(r));
+    if (refs.some((r) => r == null)) continue;
+    try {
+      const idx = addConstraint(sk, c.kind, refs, c.value ?? undefined);
+      if (c.driven) sk.constraints[idx].driven = true;
+    } catch { /* a relation that no longer type-checks against the new geometry is dropped, not fatal */ }
+  }
+  return created;
+}

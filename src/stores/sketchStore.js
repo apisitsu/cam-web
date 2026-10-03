@@ -26,7 +26,7 @@ import {
   distancePointToLine, farEndpointFromLine, nearestRimPoint, nearestTangent,
   nearestIntersection, nearestQuadrant, nearestMidpoint, entitiesInBox, angleGuide,
   measureConstraint, lineArcMeet, arcArcMeet, angleSpec, interiorAngleToModel,
-  axisFromPlacement, dimensionLockDir, projectOnto,
+  axisFromPlacement, dimensionLockDir, projectOnto, snapshotEntities, hydrateSnapshot,
 } from '../engine/sketch/edit.js';
 import {
   DEFAULT_PLANE, parsePlane, planeFromFace, planeLabel,
@@ -55,6 +55,9 @@ const ANGLE_GUIDE_DEG = 8;
 // actually locks against, instead of a second, drifting guess.
 export const AXIS_LOCK_FACTOR = 0.45;
 const HISTORY = 50; // max undo depth
+// mm — each Paste steps the copy this far (diagonally) from the last, so
+// repeated pastes of the same clipboard don't pile up on one spot (SW-style).
+const PASTE_STEP = 10;
 
 /** Pin `pointId` onto a line / circle / arc with the matching relation. No-op on any other type; a redundant relation is swallowed. */
 function pinPointOn(sk, pointId, entId) {
@@ -145,6 +148,10 @@ export const useSketchStore = create((set, get) => ({
   contextMenu: null, // { x, y } screen position of an open right-click menu, or null
   dimensionPending: null, // { kind, refs, label, current } set on a dimension-mode empty-click → shows the inline value input
   offsetPending: false, // true while the Offset rail button is waiting for its distance
+  linearPatternPending: false, // true while the Linear Pattern rail button is waiting for count/spacing
+  circularPatternPending: false, // true while the Circular Pattern rail button is waiting for count/angle
+  clipboard: null, // snapshotEntities() capture from the last Copy — lives on the store (not per sketch), so Paste works after switching sketches
+  pasteCount: 0, // successive pastes of the same clipboard step further out each time; reset on a fresh Copy
   editingConstraint: null, // { index, kind, label, angular, value } set when a placed dimension is double-clicked → shows the edit input
   pickTol: SNAP, // world-unit pick/snap tolerance — kept ~constant on screen (set per camera zoom)
   dragging: null, // { id, wasFixed, moved } while a point is being dragged (SW drag-to-modify)
@@ -354,7 +361,9 @@ export const useSketchStore = create((set, get) => ({
   },
 
   setTool(tool) {
-    set({ tool, pending: null, pending2: null, cursor: null, snap: null, axisSnap: null, lineAngle: null, hoverId: null, error: null, dimensionPending: null, editingConstraint: null, offsetPending: false, boxSelect: null, _boxStart: null, selectedDims: [], contextMenu: null });
+    set({
+      tool, pending: null, pending2: null, cursor: null, snap: null, axisSnap: null, lineAngle: null, hoverId: null, error: null, dimensionPending: null, editingConstraint: null, offsetPending: false, linearPatternPending: false, circularPatternPending: false, boxSelect: null, _boxStart: null, selectedDims: [], contextMenu: null,
+    });
   },
 
   /** Show a message on the sketcher's error line (used by save/open failures). */
@@ -1505,7 +1514,9 @@ export const useSketchStore = create((set, get) => ({
       return t === 'line' || t === 'circle' || t === 'arc';
     });
     if (!geom.length) { set({ error: 'Select lines/circles/arcs to offset' }); return; }
-    set({ offsetPending: true, error: null });
+    set({
+      offsetPending: true, linearPatternPending: false, circularPatternPending: false, error: null,
+    });
   },
 
   /** Dismiss the inline offset input without applying. */
@@ -1531,6 +1542,169 @@ export const useSketchStore = create((set, get) => ({
     const created = offsetChain(sk, geom, dist);
     if (!created.length) { get()._undoSnapshot(); set({ error: 'Nothing could be offset (radius would collapse?)' }); return; }
     set({ selection: [], error: null, offsetPending: false });
+    get()._bump();
+    get().solve();
+  },
+
+  /**
+   * Copy the current selection to the sketch clipboard (SW "Copy") — every
+   * selected point/line/circle/arc plus any relation entirely inside that set
+   * (see `snapshotEntities`). Lives on the store rather than per sketch, so a
+   * copy survives switching the active sketch — paste into a different one.
+   * Resets the paste step-out counter, so the next Paste lands at the base
+   * offset again rather than continuing a previous clipboard's cascade.
+   */
+  copySelection() {
+    const { sk, selection } = get();
+    const snap = snapshotEntities(sk, selection);
+    if (!snap) { set({ error: 'Select something to copy' }); return; }
+    set({ clipboard: snap, pasteCount: 0, error: null });
+  },
+
+  /**
+   * Paste the clipboard into the active sketch, stepped `PASTE_STEP` mm
+   * diagonally from where it was copied — SW drops a paste a fixed step away
+   * rather than exactly on top of the original, so it's visible and pickable
+   * right away. Repeated pastes of the same clipboard step further each time
+   * (`pasteCount`), so stamping out several copies doesn't pile them on one
+   * spot; a fresh Copy resets the count. The new entities become the
+   * selection, so a paste can be immediately dragged into place.
+   */
+  paste() {
+    const { sk, clipboard, pasteCount } = get();
+    if (!clipboard) { set({ error: 'Nothing to paste — copy something first' }); return; }
+    get()._snapshot();
+    const n = pasteCount + 1;
+    const dx = PASTE_STEP * n;
+    const dy = -PASTE_STEP * n;
+    const created = hydrateSnapshot(sk, clipboard, (x, y) => ({ x: x + dx, y: y + dy }));
+    if (!created.length) { get()._undoSnapshot(); set({ error: 'Nothing could be pasted' }); return; }
+    set({ selection: created, error: null, pasteCount: n });
+    get()._bump();
+    get().solve();
+  },
+
+  /** Open the inline count/spacing entry for Linear Pattern (the rail button). */
+  beginLinearPattern() {
+    const { sk, selection } = get();
+    const geom = selection.filter((id) => {
+      const t = sk.entities.get(id)?.type;
+      return t === 'line' || t === 'circle' || t === 'arc';
+    });
+    if (!geom.length) { set({ error: 'Select lines/circles/arcs to pattern' }); return; }
+    set({
+      linearPatternPending: true, circularPatternPending: false, offsetPending: false, error: null,
+    });
+  },
+
+  /** Dismiss the inline Linear Pattern input without applying. */
+  cancelLinearPattern() {
+    set({ linearPatternPending: false });
+  },
+
+  /**
+   * Stamp `count` copies of the selected lines/circles/arcs in a straight
+   * line, (`dx`, `dy`) mm apart (SW "Linear Pattern" — one direction; run it
+   * twice for a grid). `count` is the total instances **including** the
+   * original, which stays exactly where it is — only `count - 1` new copies
+   * are stamped, at i·(dx, dy) for i = 1..count-1. Each copy keeps whatever
+   * relations were entirely internal to the selection (e.g. a patterned
+   * rectangle is still a rectangle), via the same capture/replay
+   * `copySelection`/`paste` use.
+   */
+  linearPattern(count, dx, dy) {
+    const { sk, selection } = get();
+    const geom = selection.filter((id) => {
+      const t = sk.entities.get(id)?.type;
+      return t === 'line' || t === 'circle' || t === 'arc';
+    });
+    if (!geom.length) { set({ error: 'Select lines/circles/arcs to pattern' }); return; }
+    const n = Math.round(count);
+    if (!(n >= 2 && n <= 200)) { set({ error: 'Count must be 2–200' }); return; }
+    if (!Number.isFinite(dx) || !Number.isFinite(dy) || (dx === 0 && dy === 0)) {
+      set({ error: 'Pattern needs a non-zero spacing' });
+      return;
+    }
+    const snap = snapshotEntities(sk, geom);
+    if (!snap) { set({ error: 'Nothing could be patterned' }); return; }
+    get()._snapshot();
+    const created = [];
+    for (let i = 1; i < n; i += 1) {
+      created.push(...hydrateSnapshot(sk, snap, (x, y) => ({ x: x + dx * i, y: y + dy * i })));
+    }
+    if (!created.length) { get()._undoSnapshot(); set({ error: 'Nothing could be patterned' }); return; }
+    set({
+      selection: created, error: null, linearPatternPending: false,
+    });
+    get()._bump();
+    get().solve();
+  },
+
+  /** Open the inline count/angle entry for Circular Pattern (the rail button). */
+  beginCircularPattern() {
+    const { sk, selection } = get();
+    const geom = selection.filter((id) => {
+      const t = sk.entities.get(id)?.type;
+      return t === 'line' || t === 'circle' || t === 'arc';
+    });
+    if (!geom.length) { set({ error: 'Select lines/circles/arcs to pattern' }); return; }
+    set({
+      circularPatternPending: true, linearPatternPending: false, offsetPending: false, error: null,
+    });
+  },
+
+  /** Dismiss the inline Circular Pattern input without applying. */
+  cancelCircularPattern() {
+    set({ circularPatternPending: false });
+  },
+
+  /**
+   * Stamp `count` copies of the selected lines/circles/arcs in a circle about
+   * a centre — a point in the selection besides the geometry being patterned,
+   * if there is one, else the sketch origin (SW "Circular Pattern"). `count`
+   * includes the original, same convention as `linearPattern`. A full 360°
+   * sweep (the default) spaces every copy evenly all the way around; a
+   * smaller `angleDeg` fans them out from the original across just that much.
+   */
+  circularPattern(count, angleDeg) {
+    const { sk, selection } = get();
+    const geom = selection.filter((id) => {
+      const t = sk.entities.get(id)?.type;
+      return t === 'line' || t === 'circle' || t === 'arc';
+    });
+    if (!geom.length) { set({ error: 'Select lines/circles/arcs to pattern' }); return; }
+    const n = Math.round(count);
+    if (!(n >= 2 && n <= 200)) { set({ error: 'Count must be 2–200' }); return; }
+    if (!Number.isFinite(angleDeg) || angleDeg === 0) { set({ error: 'Pattern needs a non-zero sweep angle' }); return; }
+    const centerPointId = selection.find((id) => !geom.includes(id) && sk.entities.get(id)?.type === 'point');
+    const originId = [...sk.entities.values()].find((e) => e.origin)?.id;
+    const cid = centerPointId ?? originId;
+    const center = cid != null ? sk.entities.get(cid) : null;
+    if (!center) { set({ error: 'No centre to pattern about' }); return; }
+    const snap = snapshotEntities(sk, geom);
+    if (!snap) { set({ error: 'Nothing could be patterned' }); return; }
+    get()._snapshot();
+    // A full sweep spaces n copies evenly all the way around (step = 360°/n,
+    // so the gap from the last copy back to the original matches every other
+    // gap); a partial sweep fans them from the original to the sweep's far
+    // end (step = angle/(n-1)).
+    const full = Math.abs(angleDeg) >= 360 - 1e-6;
+    const step = (full ? 360 / n : angleDeg / (n - 1)) * DEG;
+    const created = [];
+    for (let i = 1; i < n; i += 1) {
+      const a = step * i;
+      const cos = Math.cos(a);
+      const sin = Math.sin(a);
+      created.push(...hydrateSnapshot(sk, snap, (x, y) => {
+        const rx = x - center.x;
+        const ry = y - center.y;
+        return { x: center.x + rx * cos - ry * sin, y: center.y + rx * sin + ry * cos };
+      }));
+    }
+    if (!created.length) { get()._undoSnapshot(); set({ error: 'Nothing could be patterned' }); return; }
+    set({
+      selection: created, error: null, circularPatternPending: false,
+    });
     get()._bump();
     get().solve();
   },

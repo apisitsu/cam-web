@@ -316,6 +316,8 @@ export default function SketchLayer() {
   const deleteSelected = useSketchStore((s) => s.deleteSelected);
   const undo = useSketchStore((s) => s.undo);
   const redo = useSketchStore((s) => s.redo);
+  const copySelection = useSketchStore((s) => s.copySelection);
+  const paste = useSketchStore((s) => s.paste);
   const boxSelect = useSketchStore((s) => s.boxSelect);
   const beginBoxSelect = useSketchStore((s) => s.beginBoxSelect);
   const updateBoxSelect = useSketchStore((s) => s.updateBoxSelect);
@@ -431,7 +433,8 @@ export default function SketchLayer() {
   }, [endDrag, toggleSelect, endBoxSelect]);
 
   // Keyboard: Esc cancels a pending draw, Delete removes the selection,
-  // Ctrl/Cmd+Z undoes and Ctrl/Cmd+Y (or Shift+Z) redoes. Ignore while typing.
+  // Ctrl/Cmd+Z undoes and Ctrl/Cmd+Y (or Shift+Z) redoes, Ctrl/Cmd+C/V copy
+  // and paste the selection. Ignore while typing.
   useEffect(() => {
     const onKey = (e) => {
       const tag = e.target?.tagName;
@@ -449,11 +452,17 @@ export default function SketchLayer() {
       } else if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'y') {
         e.preventDefault();
         redo();
+      } else if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'c') {
+        e.preventDefault();
+        copySelection();
+      } else if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'v') {
+        e.preventDefault();
+        paste();
       }
     };
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
-  }, [cancelPending, cancelBoxSelect, clearDimSelect, closeContextMenu, deleteSelected, undo, redo]);
+  }, [cancelPending, cancelBoxSelect, clearDimSelect, closeContextMenu, deleteSelected, undo, redo, copySelection, paste]);
 
   // Right-click: SolidWorks-style context menu for the Select tool only — the
   // other tools (draw, trim, chamfer) have their own click semantics and no

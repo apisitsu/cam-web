@@ -20,7 +20,7 @@
  */
 import { useState } from 'react';
 import {
-  Button, Tooltip, Space, Typography, InputNumber, Segmented, Badge, Alert,
+  Button, Tooltip, Space, Typography, InputNumber, Segmented, Badge, Alert, Dropdown,
 } from 'antd';
 import {
   DeleteOutlined, ArrowUpOutlined, ArrowDownOutlined,
@@ -142,6 +142,7 @@ export default function FeatureTree({ embedded = false }) {
   const sketches = useSketchStore((s) => s.sketches);
   const activeSketchId = useSketchStore((s) => s.activeId);
   const setActiveSketch = useSketchStore((s) => s.setActiveSketch);
+  const removeSketch = useSketchStore((s) => s.removeSketch);
 
   const open = useFeatureStore((s) => s.treeOpen);
   const setOpen = useFeatureStore((s) => s.setTreeOpen);
@@ -176,24 +177,43 @@ export default function FeatureTree({ embedded = false }) {
 
   /** One sketch row, as a child of a feature or on its own. */
   const sketchRow = (sk, indented) => (
-    <Button
+    <Dropdown
       key={`sk${sk.id}`}
-      size="small"
-      type="text"
-      onClick={() => setActiveSketch(sk.id)}
-      style={{
-        width: '100%',
-        textAlign: 'left',
-        paddingLeft: indented ? 26 : 8,
-        height: 24,
-        color: sk.id === activeSketchId ? CAD.accent : CAD.icon,
-        fontWeight: sk.id === activeSketchId ? 600 : 400,
+      trigger={['contextMenu']}
+      menu={{
+        items: [
+          { key: 'open', label: 'Open' },
+          {
+            key: 'delete',
+            label: 'Delete',
+            danger: true,
+            disabled: sketches.length <= 1,
+          },
+        ],
+        onClick: ({ key }) => {
+          if (key === 'open') setActiveSketch(sk.id);
+          else if (key === 'delete') removeSketch(sk.id);
+        },
       }}
-      data-tree-sketch={sk.id}
     >
-      <span style={{ fontSize: 11 }}>✎ {sk.name}</span>
-      <Text style={{ color: CAD.dim, fontSize: 10, marginLeft: 6 }}>{planeLabel(sk.plane)}</Text>
-    </Button>
+      <Button
+        size="small"
+        type="text"
+        onClick={() => setActiveSketch(sk.id)}
+        style={{
+          width: '100%',
+          textAlign: 'left',
+          paddingLeft: indented ? 26 : 8,
+          height: 24,
+          color: sk.id === activeSketchId ? CAD.accent : CAD.icon,
+          fontWeight: sk.id === activeSketchId ? 600 : 400,
+        }}
+        data-tree-sketch={sk.id}
+      >
+        <span style={{ fontSize: 11 }}>✎ {sk.name}</span>
+        <Text style={{ color: CAD.dim, fontSize: 10, marginLeft: 6 }}>{planeLabel(sk.plane)}</Text>
+      </Button>
+    </Dropdown>
   );
 
   return (
@@ -253,42 +273,62 @@ export default function FeatureTree({ embedded = false }) {
           const shut = collapsed[f.id];
           return (
             <div key={f.id}>
-              <div style={{ display: 'flex', alignItems: 'center', gap: 1 }}>
-                <Button
-                  size="small"
-                  type="text"
-                  icon={shut ? <RightOutlined /> : <DownOutlined />}
-                  onClick={() => setCollapsed((c) => ({ ...c, [f.id]: !c[f.id] }))}
-                  style={{ width: 18, minWidth: 18, height: 24, color: CAD.dim, visibility: sketch ? 'visible' : 'hidden' }}
-                  data-tree-expand={f.id}
-                />
-                <Button
-                  size="small"
-                  type={isSel ? 'primary' : 'text'}
-                  onClick={() => select(isSel ? null : f.id)}
-                  style={{
-                    flex: 1,
-                    textAlign: 'left',
-                    height: 24,
-                    opacity: f.suppressed ? 0.45 : 1,
-                    textDecoration: f.suppressed ? 'line-through' : undefined,
-                  }}
-                  data-feature-item={f.id}
-                >
-                  {failed && <Badge status="error" style={{ marginRight: 4 }} />}
-                  <span style={{ fontSize: 11 }}>{f.name}</span>
-                </Button>
-                <Tooltip title={f.suppressed ? 'Include again' : 'Leave out of the rebuild'}>
+              <Dropdown
+                trigger={['contextMenu']}
+                menu={{
+                  items: [
+                    { key: 'suppress', label: f.suppressed ? 'Include again' : 'Suppress' },
+                    { type: 'divider' },
+                    { key: 'up', label: 'Move earlier', disabled: i === 0 },
+                    { key: 'down', label: 'Move later', disabled: i === features.length - 1 },
+                    { type: 'divider' },
+                    { key: 'delete', label: 'Delete', danger: true },
+                  ],
+                  onClick: ({ key }) => {
+                    if (key === 'suppress') toggleSuppress(f.id);
+                    else if (key === 'up') move(f.id, -1);
+                    else if (key === 'down') move(f.id, 1);
+                    else if (key === 'delete') remove(f.id);
+                  },
+                }}
+              >
+                <div style={{ display: 'flex', alignItems: 'center', gap: 1 }}>
                   <Button
                     size="small"
                     type="text"
-                    icon={f.suppressed ? <EyeInvisibleOutlined /> : <EyeOutlined />}
-                    onClick={() => toggleSuppress(f.id)}
-                    style={{ width: 22, minWidth: 22, height: 24 }}
-                    data-feature-suppress={f.id}
+                    icon={shut ? <RightOutlined /> : <DownOutlined />}
+                    onClick={() => setCollapsed((c) => ({ ...c, [f.id]: !c[f.id] }))}
+                    style={{ width: 18, minWidth: 18, height: 24, color: CAD.dim, visibility: sketch ? 'visible' : 'hidden' }}
+                    data-tree-expand={f.id}
                   />
-                </Tooltip>
-              </div>
+                  <Button
+                    size="small"
+                    type={isSel ? 'primary' : 'text'}
+                    onClick={() => select(isSel ? null : f.id)}
+                    style={{
+                      flex: 1,
+                      textAlign: 'left',
+                      height: 24,
+                      opacity: f.suppressed ? 0.45 : 1,
+                      textDecoration: f.suppressed ? 'line-through' : undefined,
+                    }}
+                    data-feature-item={f.id}
+                  >
+                    {failed && <Badge status="error" style={{ marginRight: 4 }} />}
+                    <span style={{ fontSize: 11 }}>{f.name}</span>
+                  </Button>
+                  <Tooltip title={f.suppressed ? 'Include again' : 'Leave out of the rebuild'}>
+                    <Button
+                      size="small"
+                      type="text"
+                      icon={f.suppressed ? <EyeInvisibleOutlined /> : <EyeOutlined />}
+                      onClick={() => toggleSuppress(f.id)}
+                      style={{ width: 22, minWidth: 22, height: 24 }}
+                      data-feature-suppress={f.id}
+                    />
+                  </Tooltip>
+                </div>
+              </Dropdown>
 
               {!shut && sketch && sketchRow(sketch, true)}
 

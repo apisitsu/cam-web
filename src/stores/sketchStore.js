@@ -142,6 +142,7 @@ export const useSketchStore = create((set, get) => ({
   hoverId: null, // entity id a click would pick right now — drives the pre-select highlight
   selection: [], // selected entity ids — points, lines, circles, and/or arcs (mixed)
   selectedDims: [], // indices into sk.constraints of dimensions selected in the viewport (Delete removes them)
+  contextMenu: null, // { x, y } screen position of an open right-click menu, or null
   dimensionPending: null, // { kind, refs, label, current } set on a dimension-mode empty-click → shows the inline value input
   offsetPending: false, // true while the Offset rail button is waiting for its distance
   editingConstraint: null, // { index, kind, label, angular, value } set when a placed dimension is double-clicked → shows the edit input
@@ -353,7 +354,7 @@ export const useSketchStore = create((set, get) => ({
   },
 
   setTool(tool) {
-    set({ tool, pending: null, pending2: null, cursor: null, snap: null, axisSnap: null, lineAngle: null, hoverId: null, error: null, dimensionPending: null, editingConstraint: null, offsetPending: false, boxSelect: null, _boxStart: null, selectedDims: [] });
+    set({ tool, pending: null, pending2: null, cursor: null, snap: null, axisSnap: null, lineAngle: null, hoverId: null, error: null, dimensionPending: null, editingConstraint: null, offsetPending: false, boxSelect: null, _boxStart: null, selectedDims: [], contextMenu: null });
   },
 
   /** Show a message on the sketcher's error line (used by save/open failures). */
@@ -1446,6 +1447,27 @@ export const useSketchStore = create((set, get) => ({
     geom.forEach((id) => { sk.entities.get(id).construction = makeConstruction; });
     set({ error: null });
     get()._bump();
+  },
+
+  /**
+   * Open the viewport's right-click menu at a screen position. Right-clicking
+   * an entity that is not already part of the selection replaces the
+   * selection with it — the same "act on what's under the cursor" rule
+   * SolidWorks uses — but right-clicking inside an existing multi-selection
+   * (or on empty space with one already made) leaves it alone, so the menu
+   * acts on the whole group.
+   */
+  openContextMenu(x, y) {
+    const { selection, hoverId } = get();
+    if (hoverId != null && !selection.includes(hoverId)) {
+      set({ selection: [hoverId], contextMenu: { x, y } });
+    } else {
+      set({ contextMenu: { x, y } });
+    }
+  },
+
+  closeContextMenu() {
+    if (get().contextMenu) set({ contextMenu: null });
   },
 
   /**

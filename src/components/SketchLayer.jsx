@@ -322,6 +322,8 @@ export default function SketchLayer() {
   const endBoxSelect = useSketchStore((s) => s.endBoxSelect);
   const cancelBoxSelect = useSketchStore((s) => s.cancelBoxSelect);
   const clearDimSelect = useSketchStore((s) => s.clearDimSelect);
+  const openContextMenu = useSketchStore((s) => s.openContextMenu);
+  const closeContextMenu = useSketchStore((s) => s.closeContextMenu);
 
   const { points, lines, circles, arcs } = useMemo(() => {
     const pts = [];
@@ -438,6 +440,7 @@ export default function SketchLayer() {
         cancelPending();
         cancelBoxSelect();
         clearDimSelect();
+        closeContextMenu();
       } else if (e.key === 'Delete' || e.key === 'Backspace') {
         deleteSelected();
       } else if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'z') {
@@ -450,7 +453,27 @@ export default function SketchLayer() {
     };
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
-  }, [cancelPending, cancelBoxSelect, clearDimSelect, deleteSelected, undo, redo]);
+  }, [cancelPending, cancelBoxSelect, clearDimSelect, closeContextMenu, deleteSelected, undo, redo]);
+
+  // Right-click: SolidWorks-style context menu for the Select tool only — the
+  // other tools (draw, trim, chamfer) have their own click semantics and no
+  // menu-worthy actions yet. A native `contextmenu` listener on the canvas
+  // itself, not an R3F `onContextMenu` prop on the pick plane: the menu needs
+  // to act on `selection`/`hoverId` as they stand at the moment of the
+  // right-click, which this reads directly from the store rather than from
+  // whatever this render's closure captured.
+  useEffect(() => {
+    const el = gl.domElement;
+    const onCtx = (e) => {
+      const st = useSketchStore.getState();
+      if (st.tool !== 'select') return;
+      if (st.selection.length === 0 && st.hoverId == null) return;
+      e.preventDefault();
+      openContextMenu(e.clientX, e.clientY);
+    };
+    el.addEventListener('contextmenu', onCtx);
+    return () => el.removeEventListener('contextmenu', onCtx);
+  }, [gl, openContextMenu]);
 
   const drawing = tool === 'point' || tool === 'line' || tool === 'rectangle'
     || tool === 'circle' || tool === 'arc' || tool === 'slot' || tool === 'polygon';

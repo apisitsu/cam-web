@@ -362,6 +362,41 @@ describe('construction geometry & driven dimensions', () => {
   });
 });
 
+describe('viewport right-click menu', () => {
+  it('opens at the given position, acting on the existing selection', () => {
+    const sk = createSketch();
+    const a = addPoint(sk, 0, 0);
+    const b = addPoint(sk, 10, 0);
+    const line = addLine(sk, a, b);
+    useSketchStore.setState({ sk, selection: [line], hoverId: line, contextMenu: null });
+    useSketchStore.getState().openContextMenu(100, 200);
+    expect(useSketchStore.getState().contextMenu).toEqual({ x: 100, y: 200 });
+    expect(useSketchStore.getState().selection).toEqual([line]); // unchanged — already selected
+  });
+
+  it('right-clicking something not yet selected replaces the selection with it', () => {
+    const sk = createSketch();
+    const a = addPoint(sk, 0, 0);
+    const b = addPoint(sk, 10, 0);
+    const line = addLine(sk, a, b);
+    useSketchStore.setState({ sk, selection: [a], hoverId: line, contextMenu: null });
+    useSketchStore.getState().openContextMenu(5, 5);
+    expect(useSketchStore.getState().selection).toEqual([line]);
+  });
+
+  it('closeContextMenu clears it', () => {
+    useSketchStore.setState({ contextMenu: { x: 1, y: 1 } });
+    useSketchStore.getState().closeContextMenu();
+    expect(useSketchStore.getState().contextMenu).toBeNull();
+  });
+
+  it('setTool dismisses an open menu along with the rest of the transient UI state', () => {
+    useSketchStore.setState({ contextMenu: { x: 1, y: 1 } });
+    useSketchStore.getState().setTool('line');
+    expect(useSketchStore.getState().contextMenu).toBeNull();
+  });
+});
+
 describe('fillet (R) between two curves', () => {
   /** Two trimmed circles meeting at (40, ±30) — endpoints coincident, not merged. */
   const lens = () => {

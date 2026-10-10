@@ -58,6 +58,9 @@ import { SAMPLE_GCODE, SAMPLE_TURNING } from './SAMPLE_GCODE.js';
 import Viewport from './components/Viewport.jsx';
 import PositionReadout from './components/PositionReadout.jsx';
 import SketchToolbar from './components/SketchToolbar.jsx';
+import SketchContextMenu from './components/SketchContextMenu.jsx';
+import SketchConfirmCorner from './components/SketchConfirmCorner.jsx';
+import MenuBar from './components/MenuBar.jsx';
 import LeftColumn from './components/LeftColumn.jsx';
 import { TREE_SIZE } from './components/FeatureTree.jsx';
 import { invalidate } from '@react-three/fiber';
@@ -1059,9 +1062,9 @@ export default function App() {
       onDragOver={(e) => { e.preventDefault(); setDragActive(true); }}
       onDragLeave={() => setDragActive(false)}
       onDrop={onDrop}
-      // Standalone cam-web owns the whole viewport. (Vendored into EngineerSystem
-      // this is `100%` instead — there it sits under MainLayout's 64px header and
-      // a viewport-height app overflows by exactly that much.)
+      // 100vh, not 100% of whatever the host gives it. Standalone cam-web owns
+      // the viewport; inside EngineerSystem it sits under MainLayout's 64px
+      // header instead, where it takes 100% of the space that layout leaves it.
       style={{ height: '100vh' }}
     >
       <Layout style={{ height: '100vh' }}>
@@ -1069,24 +1072,32 @@ export default function App() {
             application separates its chrome from its workspace — without the
             rule the bar and the sidebar below it are one undifferentiated gray. */}
         <Header style={{
-          display: 'flex', alignItems: 'center', gap: 12,
-          background: CAD.headerBg, borderBottom: `1px solid ${CAD.border}`,
+          display: 'flex', flexDirection: 'column', height: 'auto', gap: 0,
+          padding: '2px 16px 0', background: CAD.headerBg, borderBottom: `1px solid ${CAD.border}`,
         }}>
-          <ThunderboltOutlined style={{ color: token.colorPrimary, fontSize: 22 }} />
-          <Title level={4} style={{ color: CAD.text, margin: 0 }}>
-            Engineer CAD/CAM
-          </Title>
-          <Segmented
-            value={page}
-            onChange={setPage}
-            options={PAGES}
-            disabled={status === 'parsing'}
+          <MenuBar
+            onExportGcode={onExportGcode}
+            libraryOpen={libraryOpen}
+            onToggleLibrary={() => setLibraryOpen((v) => !v)}
+            onOpenSetup={() => setSettingsOpen(true)}
           />
-          {fileName && <Tag color="blue">{fileName}</Tag>}
-          <Text style={{ color: CAD.muted, marginLeft: 'auto' }}>
-            Rapid <span style={{ color: CAD.rapid }}>-----</span>   Feed {' '}
-            <span style={{ color: CAD.feed }}>-----</span>
-          </Text>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 12, padding: '4px 0 8px' }}>
+            <ThunderboltOutlined style={{ color: token.colorPrimary, fontSize: 22 }} />
+            <Title level={4} style={{ color: CAD.text, margin: 0 }}>
+              Engineer CAD/CAM
+            </Title>
+            <Segmented
+              value={page}
+              onChange={setPage}
+              options={PAGES}
+              disabled={status === 'parsing'}
+            />
+            {fileName && <Tag color="blue">{fileName}</Tag>}
+            <Text style={{ color: CAD.muted, marginLeft: 'auto' }}>
+              Rapid <span style={{ color: CAD.rapid }}>-----</span>   Feed {' '}
+              <span style={{ color: CAD.feed }}>-----</span>
+            </Text>
+          </div>
         </Header>
         <Layout>
           {/* The left column is the **feature tree**, the way a CAD lays a part
@@ -1732,6 +1743,8 @@ export default function App() {
             {/* Sketcher controls float over the viewport — only on the Sketch page,
                 so the design workspace is separate from Milling / Turning. */}
             {sketching && <SketchToolbar />}
+            {sketching && <SketchContextMenu />}
+            {sketching && <SketchConfirmCorner />}
 
             {dragActive && (
               <div style={{

@@ -227,6 +227,10 @@ export const COMMANDS = [
     hint: 'Draw the collet above the cutter — hide it to see the cut it covers',
   },
   {
+    id: 'showTool', group: 'view', label: 'Show tool',
+    hint: 'Draw the lathe holder and insert — hide it to see the cut it covers',
+  },
+  {
     id: 'showToolpath', group: 'view', label: 'Show toolpath',
     hint: 'Draw the programmed moves — hide them to see the cut surface alone',
   },

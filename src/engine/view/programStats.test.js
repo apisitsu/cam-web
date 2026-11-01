@@ -17,21 +17,21 @@ const STATS = {
 };
 
 describe('formatDuration', () => {
-  it('posts m:ss the way a control does', () => {
-    expect(formatDuration(64)).toBe('1:04');
-    expect(formatDuration(3)).toBe('0:03');
+  it('posts a plain whole-second count', () => {
+    expect(formatDuration(64)).toBe('64s');
+    expect(formatDuration(3)).toBe('3s');
   });
 
-  it('grows an hours field only when there are hours', () => {
-    expect(formatDuration(3723)).toBe('1:02:03');
-    expect(formatDuration(599)).toBe('9:59');
+  it('rounds to the nearest second', () => {
+    expect(formatDuration(3723)).toBe('3723s');
+    expect(formatDuration(599.6)).toBe('600s');
   });
 
   it('refuses to render nonsense as a time', () => {
-    // A program that failed to parse has no times; '0:00' is honest, 'NaN:aN' is not.
+    // A program that failed to parse has no times; '0s' is honest, 'NaNs' is not.
     for (const v of [0, -1, NaN, Infinity, undefined, null]) {
       // eslint-disable-next-line jest/valid-expect
-      expect(formatDuration(v), String(v)).toBe('0:00');
+      expect(formatDuration(v), String(v)).toBe('0s');
     }
   });
 });
@@ -51,7 +51,7 @@ describe('programStatRows', () => {
 
   it('formats each one the way it is read', () => {
     const by = Object.fromEntries(programStatRows(STATS).map((r) => [r.key, r]));
-    expect(by.cycleTime.value).toBe('1:04');
+    expect(by.cycleTime.value).toBe('64s');
     expect(by.feedLength.value).toBe('12,345.7');   // one decimal, thousands grouped
     expect(by.rapidLength.value).toBe('1,234.6');
     expect(by.blocks.value).toBe('355');            // a count has no decimals
@@ -81,11 +81,11 @@ describe('programStatRows', () => {
 
 describe('timingBreakdown', () => {
   it('says where the cycle time went', () => {
-    expect(timingBreakdown(STATS)).toBe('feed 0:50 · rapid 0:14');
+    expect(timingBreakdown(STATS)).toBe('feed 50s · rapid 14s');
   });
 
   it('names dwell only when the program dwells', () => {
-    expect(timingBreakdown({ ...STATS, dwellTime: 5 })).toBe('feed 0:50 · rapid 0:14 · dwell 0:05');
+    expect(timingBreakdown({ ...STATS, dwellTime: 5 })).toBe('feed 50s · rapid 14s · dwell 5s');
     expect(timingBreakdown(STATS)).not.toContain('dwell');
   });
 

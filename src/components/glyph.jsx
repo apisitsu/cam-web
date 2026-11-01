@@ -140,6 +140,14 @@ export const ArborIcon = glyph(
   </>,
 );
 
+/** A lathe holder with its insert — the whole turning tool, shown or hidden as one piece. */
+export const LatheToolIcon = glyph(
+  <>
+    <path d="M3 13h9v6H3z" />
+    <path d="M12 16l6-6 3 3-6 6z" />
+  </>,
+);
+
 /**
  * The programmed path — a run of moves with a rapid dashing back over it. The
  * two colours the viewport draws it in cannot be used here (a glyph is one

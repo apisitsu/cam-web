@@ -19,8 +19,15 @@
 
 /** Every collapsible block in the sidebar, top to bottom. */
 export const SECTIONS = [
-  'files',     // Parse / Open file / Sample
-  'project',   // Save & open project, save G-code, the drag-and-drop hint
+  // 'files' was here — Open file / Sample, alongside Save/Export. Both moved
+  // into the File menu (`MenuBar.jsx`), which sits in the header and doesn't
+  // collapse with the rest of this drawer, so there's no longer a drawer
+  // section for them to gate. Parse stayed on the viewport rail throughout.
+  //
+  // 'project' was here too — Save & open project, save G-code, the
+  // drag-and-drop hint, the library list. It now lives in its own Drawer
+  // (opened from File ▸ Library…, independent of the Setup drawer this file
+  // gates), always on screen while open rather than collapsing with Setup.
   'cam',       // the CAM-from-a-model panel
   'program',   // the program listing — the live one
   'errors',    // parse failure

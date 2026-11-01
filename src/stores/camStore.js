@@ -61,6 +61,24 @@ export const useCamStore = create((set, get) => ({
   page: 'sketch',      // mill | turn | sketch — start on the Sketch design page
   diameterMode: true,  // turn only: the X word is a diameter
   rapidRate: 5000,     // mm/min — times G0 moves for the cycle-time estimate
+  // Seconds billed for every distinct tool change the cycle-time estimate
+  // counts (see `interpret`'s own comment on why this is 0, not a guessed
+  // average, until the operator states it). Unlike `rapidRate` it has no
+  // machine-picked default — a chip-to-chip time is not a published spec
+  // the way a rapid traverse is, so `applyMachine` never touches it.
+  toolChangeSeconds: 0,
+  // Seconds billed for every A/B word that actually indexes the rotary axis
+  // to a new angle — same reasoning and default as `toolChangeSeconds`
+  // (see `interpret`'s own comment): an index's own time is mostly
+  // acceleration/settle/clamp, not a published spec, and no machine picks
+  // it either.
+  rotaryIndexSeconds: 0,
+  // Lathes only: the selected machine's own spindle ceiling (`applyMachine`),
+  // honoured by a G96 program that never states its own G50 clamp — see
+  // `machineOpts()` and the interpreter's `currentRpm()`. undefined on a
+  // mill, or before any machine has been picked, which means "no ceiling
+  // beyond whatever the program itself clamps to".
+  machineMaxTurnRpm: undefined,
   // Which frame the 4th axis is drawn in — see `engine/view/rotaryFrame.js`.
   // 'part' keeps the workpiece still and tilts the tool onto each face;
   // 'machine' leaves the program's coordinates alone, so the tool stays upright
@@ -161,6 +179,11 @@ export const useCamStore = create((set, get) => ({
   // Deliberately not a saved setting (see projectFile's SETTING_KEYS): it is how
   // you are looking at the job right now, not part of the job.
   showArbor: true,
+  // The whole lathe tool marker — holder and insert together, since turning
+  // has nothing inside the marker to drop piecemeal the way `showArbor` does
+  // for milling. The holder sits right over the cut it is making; this is
+  // how you get it out of the way to look. Also not a saved setting.
+  showTool: true,
   // The backplot — where the tool went. Worth being able to drop for the same
   // reason as the arbor: on a dense program the lines cover the very surface
   // you are trying to judge. Also not a saved setting, for the same reason.
@@ -296,6 +319,7 @@ export const useCamStore = create((set, get) => ({
     });
   },
   toggleArbor: () => set((s) => ({ showArbor: !s.showArbor })),
+  toggleTool: () => set((s) => ({ showTool: !s.showTool })),
   toggleToolpath: () => set((s) => ({ showToolpath: !s.showToolpath })),
   setCutFollows: (v) => {
     set({ cutFollowsPlayback: v });
@@ -358,12 +382,22 @@ export const useCamStore = create((set, get) => ({
    * concept here.
    */
   machineOpts() {
-    const { mode, rapidRate, diameterMode, rotaryFrame } = get();
+    const {
+      mode, rapidRate, diameterMode, rotaryFrame, machineMaxTurnRpm,
+      toolChangeSeconds, rotaryIndexSeconds,
+    } = get();
     const ctx = getPlanContext();
     const rotaryCenter = mode === 'mill' && ctx?.mode === 'mill' ? ctx.rotaryCenter : undefined;
     return {
-      mode, rapidRate, diameterMode, rotaryFrame,
+      mode, rapidRate, diameterMode, rotaryFrame, toolChangeSeconds, rotaryIndexSeconds,
       ...(rotaryCenter ? { rotaryCenter } : {}),
+      // Not also gated on `mode === 'turn'`: `machineMaxTurnRpm` is already
+      // only ever set for a lathe (`applyMachine`), and the interpreter only
+      // ever reads it from inside turning's own G96 path (milling never sets
+      // `cssActive`) — so a stale value surviving a switch back to milling
+      // is inert there, and gating on both would just make picking a lathe
+      // on the wrong tab silently drop its own ceiling.
+      ...(machineMaxTurnRpm > 0 ? { maxTurnRpm: machineMaxTurnRpm } : {}),
     };
   },
 
@@ -384,16 +418,43 @@ export const useCamStore = create((set, get) => ({
 
   /**
    * Follow the selected machine: a 4-axis mill turns the work, so show it
-   * turning. Called by `camPlanStore.setMachine` rather than watched from here,
-   * because camStore must not import the plan store back (it already imports
-   * this one).
+   * turning, and the cycle-time estimate switches to this machine's own
+   * rapid traverse rather than the generic default — a Haas VF-2 and a
+   * bench mill are both "mm/min", but 25,400 and 3,000 are not close enough
+   * to call either one an estimate of the other. `maxTurnRpm` (lathes only)
+   * is kept too, as the ceiling `currentRpm()` honours for a G96 program
+   * that never states its own G50 — see the interpreter's own comment on
+   * why that ceiling exists at all.
+   *
+   * Called by `camPlanStore.setMachine` rather than watched from here,
+   * because camStore must not import the plan store back (it already
+   * imports this one). Folded into one `set` + one `parse` rather than
+   * calling `setRotaryFrame`/`setRapidRate` in turn, which would re-parse
+   * twice for a single machine change.
    */
   applyMachine(machine) {
-    get().setRotaryFrame(rotaryFrameFor(machine));
+    const rotaryFrame = rotaryFrameFor(machine);
+    const rapidRate = machine.rapidRate > 0 ? machine.rapidRate : get().rapidRate;
+    const machineMaxTurnRpm = machine.kind === 'turn' ? machine.maxTurnRpm : undefined;
+    const changed = rotaryFrame !== get().rotaryFrame
+      || rapidRate !== get().rapidRate
+      || machineMaxTurnRpm !== get().machineMaxTurnRpm;
+    set({ rotaryFrame, rapidRate, machineMaxTurnRpm });
+    if (changed && get().gcode) get().parse();
   },
 
   setRapidRate(rapidRate) {
     set({ rapidRate });
+    if (get().gcode) get().parse(); // cycle time depends on it
+  },
+
+  setToolChangeSeconds(toolChangeSeconds) {
+    set({ toolChangeSeconds });
+    if (get().gcode) get().parse(); // cycle time depends on it
+  },
+
+  setRotaryIndexSeconds(rotaryIndexSeconds) {
+    set({ rotaryIndexSeconds });
     if (get().gcode) get().parse(); // cycle time depends on it
   },
 
@@ -667,6 +728,7 @@ export const useCamStore = create((set, get) => ({
         // longer costs a ring per slice (turningMesh simplifies the profile), so
         // the field can afford to be much finer than the milling cell size.
         cellSize: Math.min(cellSize, 0.05), margin: stockMargin, stockOversize,
+        toolOverrides: get().toolOverrides,
       });
       setBuffers({ sim: init });
       set({

@@ -80,6 +80,21 @@ function zAtRadius(profile, level) {
 }
 
 /**
+ * Unpack G76's first-block P word into its three packed 2-digit fields:
+ * `P(m)(r)(a)` -> finishing-pass count, chamfer amount, tool included angle.
+ * Fanuc packs these as a single 4-6 digit number (`P020060` = 2 finishing
+ * passes, no chamfer, 60°) rather than separate words because the cycle
+ * predates having enough address letters free on a lathe block.
+ */
+function unpackG76P(p) {
+  const n = Math.round(Math.abs(p));
+  const angle = n % 100;
+  const chamfer = Math.floor(n / 100) % 100;
+  const finish = Math.floor(n / 10000) % 100;
+  return { finish, chamfer, angle };
+}
+
+/**
  * Rotate a machine-frame point into the part frame for a rotary index: A about
  * X, B about Y. The table carries the part; the programmed coordinates stay in
  * the stationary machine frame, so undoing the table rotation is what puts every
@@ -122,18 +137,41 @@ function toPartFrame(p, aDeg, bDeg, aCenter) {
 /**
  * @param {string} text raw G-code program
  * @param {{mode?:'mill'|'turn', rapidRate?:number, diameterMode?:boolean,
- *          rotaryFrame?:'part'|'machine', rotaryCenter?:[number,number]}} opts
+ *          rotaryFrame?:'part'|'machine', rotaryCenter?:[number,number],
+ *          maxTurnRpm?:number}} opts
  *   rapidRate — machine traverse speed in mm/min, used to time G0 moves.
  *   diameterMode — turn mode only: treat the X word as a diameter.
  *   rotaryFrame — 'part' orients each A index onto the workpiece (what you want
  *     to look at); 'machine' leaves coordinates as programmed, with the tool
  *     always along +Z (what the height-field simulator needs).
  *   rotaryCenter — Y/Z the A-axis physically passes through; see `toPartFrame`.
+ *   maxTurnRpm — turn mode only: the selected machine's own spindle ceiling,
+ *     honoured by `currentRpm()` alongside (not instead of) a G96 program's
+ *     own G50 clamp — see its comment for why a program that omits G50
+ *     needs this to avoid an unbounded RPM near the centreline.
+ *   toolChangeSeconds — real seconds billed for every distinct T word this
+ *     program selects (the first included — loading it from whatever was in
+ *     the spindle before the program started is still a real tool change).
+ *     Defaults to 0, not a guessed average: unlike `rapidRate`/`maxTurnRpm`,
+ *     this is not a published machine spec (a chip-to-chip time varies by
+ *     ATC design even within one brand's line-up), so it is left at "not
+ *     modelled" until the operator states their own shop's number, the same
+ *     way `rapidRate`'s own manual field already works when no machine is
+ *     selected.
+ *   rotaryIndexSeconds — real seconds billed every time the A or B word
+ *     moves the rotary axis to a new angle (the segments themselves carry no
+ *     time for this — see `words.A`/`words.B` below). Same reasoning and the
+ *     same default as `toolChangeSeconds`: a trunnion's own index time is
+ *     mostly acceleration, settle and (on many machines) an axis brake
+ *     clamping/unclamping, not a published feed-rate-like number, and it
+ *     varies by machine far more than it varies by how many degrees the
+ *     index itself covers — so this is a flat cost per index, not a
+ *     degrees-per-second rate that would claim more precision than is real.
  */
 export function interpret(text, opts = {}) {
   const {
     mode = 'mill', rapidRate = 5000, diameterMode = true, rotaryFrame = 'part',
-    rotaryCenter,
+    rotaryCenter, maxTurnRpm, toolChangeSeconds = 0, rotaryIndexSeconds = 0,
   } = opts;
   const turning = mode === 'turn';
   const partFrame = rotaryFrame !== 'machine';
@@ -170,6 +208,12 @@ export function interpret(text, opts = {}) {
     // G71 depth / retract, set by its first (P-less) block
     roughDepth: 0,
     roughRetract: 0.5,
+    // G74 retract-between-pecks, set by its first (Z-less) block
+    peckRetract: 0,
+    // G76 finishing-pass count / chamfer / angle (its packed P) and finishing
+    // allowance (its R), both set by its first (X/Z-less) block
+    threadFirstBlock: null,
+    threadAllowance: 0,
   };
 
   const segments = []; // each: { type, a:[x,y,z], b:[x,y,z], line, t }
@@ -184,6 +228,8 @@ export function interpret(text, opts = {}) {
   let rapidTime = 0;
   let feedTime = 0;
   let dwellTime = 0;
+  let toolChangeTime = 0;
+  let rotaryIndexTime = 0;
   const aIndices = new Set([0]); // every A angle the program machines at
   const toolCut = new Map(); // tool number -> { feeds, cutLength } actually cut
   const min = [Infinity, Infinity, Infinity];
@@ -218,14 +264,28 @@ export function interpret(text, opts = {}) {
    * As the tool approaches centre the diameter goes to zero and the ideal RPM
    * runs away, which is exactly what `G50 S…` clamps on a real control; the
    * clamp is honoured here for the same reason.
+   *
+   * `maxTurnRpm` (the selected machine's own spindle ceiling, from `opts`)
+   * is honoured too, and independently of the program's own `G50`: a program
+   * missing its G50 altogether (or one written against a different, faster
+   * machine) would otherwise let the ideal RPM run away unbounded as the
+   * diameter shrinks, which made cycle time near the centreline read as
+   * near-instant rather than merely fast. The lower of the two applies,
+   * same as a real control would never exceed its own spindle no matter
+   * what the program asks for.
    */
   const currentRpm = () => {
     if (!state.cssActive) return Math.abs(state.spindle);
     // pos[0] is already a radius in turning mode.
     const diameter = Math.abs(state.pos[0]) * 2;
-    if (diameter < 1e-6) return state.spindleClamp || Math.abs(state.spindle);
+    const ceiling = Math.min(
+      state.spindleClamp > 0 ? state.spindleClamp : Infinity,
+      maxTurnRpm > 0 ? maxTurnRpm : Infinity,
+    );
+    const clamp = isFinite(ceiling) ? ceiling : 0;
+    if (diameter < 1e-6) return clamp || Math.abs(state.spindle);
     const ideal = (1000 * Math.abs(state.cssSpeed)) / (Math.PI * diameter);
-    return state.spindleClamp > 0 ? Math.min(ideal, state.spindleClamp) : ideal;
+    return clamp > 0 ? Math.min(ideal, clamp) : ideal;
   };
 
   /** Effective cutting feed in mm/min for the current modal state. */
@@ -340,14 +400,18 @@ export function interpret(text, opts = {}) {
   }
 
   /**
-   * Walk the profile blocks between two sequence numbers and return the contour
-   * as [x(radius), z] points. Modal state is restored afterwards, so probing the
-   * profile has no side effects on the main program stream.
+   * Walk the profile blocks between two sequence numbers and return the
+   * contour as [x(radius), z, type] points — `type` ('rapid'|'feed') is the
+   * motion that reached this point, carried through so the semi-finish pass
+   * below can replay each leg the way the program actually cut it rather
+   * than assuming every leg after the first is a feed (see its own comment).
+   * Modal state is restored afterwards, so probing the profile has no side
+   * effects on the main program stream.
    */
   const collectProfile = (from, to) => {
     const pts = [];
     const snap = snapshot();
-    runBlocks(from, to + 1, (type, a, b) => { pts.push([b[0], b[2]]); });
+    runBlocks(from, to + 1, (type, a, b) => { pts.push([b[0], b[2], type]); });
     restore(snap);
     return pts;
   };
@@ -404,7 +468,7 @@ export function interpret(text, opts = {}) {
       return skip;
     }
     // Finishing allowance: leave stock on the OD and on the +Z faces.
-    const profile = raw.map(([x, z]) => [x + allowX, z + allowZ]);
+    const profile = raw.map(([x, z, type]) => [x + allowX, z + allowZ, type]);
 
     const [xs, , zs] = state.pos;
     let xMin = Infinity;
@@ -430,9 +494,20 @@ export function interpret(text, opts = {}) {
       if (lastPass) break;
     }
 
-    // Semi-finish pass along the offset contour.
+    // Semi-finish pass along the offset contour. The first point is always
+    // reached by rapid — it is wherever the profile starts, not a cut — but
+    // every point after it replays with *its own* recorded type, not a blind
+    // 'feed': a profile commonly opens with its own rapid approach (an
+    // `N100 G0 X.. ` positioning move before the first real `G1`), and that
+    // leg's Z is whatever the tool inherited from before the cycle, not a
+    // real feature of the part. Treating it as a feed cut turned that
+    // leftover Z into bogus stock — `bounds.feedMax` (and so, when no
+    // dedicated facing move lets `detectFaceZ` find the true face, the
+    // stock's own +Z edge) read as sticking out past the actual face.
     move('rapid', [profile[0][0], 0, profile[0][1]]);
-    for (let i = 1; i < profile.length; i++) move('feed', [profile[i][0], 0, profile[i][1]]);
+    for (let i = 1; i < profile.length; i++) {
+      move(profile[i][2] ?? 'feed', [profile[i][0], 0, profile[i][1]]);
+    }
     move('rapid', [xs, 0, zs]);
 
     state.pos = [xs, 0, zs];
@@ -454,6 +529,134 @@ export function interpret(text, opts = {}) {
     runBlocks(from, to + 1, sink);
     sink('rapid', state.pos, start, lineNo); // control returns to the start point
     state.pos = start;
+    return null;
+  };
+
+  /**
+   * G74 — peck drilling on a lathe's Z axis (Fanuc two-block form:
+   * `G74 R(e)` sets the retract, then `G74 Z(z) Q(q) F(f)` drills). Only this
+   * plain axial form is expanded; the combined X/P face-grooving variant
+   * (`G74 X.. Z.. P.. Q.. R.. F..`) is recognised but left unexpanded, since
+   * no program here uses it and it pecks in two axes at once.
+   *
+   * Q (peck depth) is Fanuc's least-input-increment convention: a real G74
+   * block writes it as a bare integer of microns (`Q1000` = 1 mm), never with
+   * a decimal point, so it is divided by 1000 here — unlike G71's D/U or G83's
+   * Q elsewhere in this file, which this app already reads as plain mm (see
+   * the interpreter's own test fixture, `G71 .. D2` expecting a 2 mm pass).
+   * R (the retract between pecks) is an ordinary decimal mm, same as G71's R.
+   */
+  const expandG74 = (words, lineNo, sink) => {
+    if (words.Z === undefined) {
+      if (words.R !== undefined) state.peckRetract = Math.abs(words.R * state.scale);
+      return null;
+    }
+    if (words.X !== undefined || words.P !== undefined) {
+      warnings.push(`Line ${lineNo}: G74's face-grooving form (X/P) is recognised but not expanded — only the plain Z-axis peck form is`);
+      return null;
+    }
+    const [x0, , z0] = state.pos;
+    const zEnd = axisTarget(z0, words.Z, state.scale, state.absolute);
+    const peck = words.Q !== undefined ? Math.abs(words.Q * state.scale) / 1000 : 0;
+    const retract = state.peckRetract;
+    if (!(peck > 0)) warnings.push(`Line ${lineNo}: G74 has no peck depth (Q) — drilled in one pass`);
+
+    const dir = zEnd < z0 ? -1 : 1; // drilling is almost always -Z; stay general
+    let cur = [x0, 0, z0];
+    const move = (type, next) => { sink(type, cur, next, lineNo); cur = next; };
+
+    if (peck > 0) {
+      let z = z0;
+      for (let k = 1; k <= MAX_ROUGH_PASSES && Math.abs(zEnd - z) > EPS; k++) {
+        let next = z + dir * peck;
+        if (dir < 0 ? next < zEnd : next > zEnd) next = zEnd;
+        move('feed', [x0, 0, next]);
+        z = next;
+        if (Math.abs(zEnd - z) > EPS && retract > 0) {
+          // G74 retreats by `e` from the current depth (a chip-break hop, like
+          // G73's), not all the way back to a fixed R plane like G83/G81.
+          move('rapid', [x0, 0, z - dir * retract]);
+          move('rapid', [x0, 0, z]);
+        }
+      }
+    } else {
+      move('feed', [x0, 0, zEnd]);
+    }
+    state.pos = [x0, 0, zEnd];
+    return null;
+  };
+
+  /**
+   * G76 — threading cycle (Fanuc two-block form):
+   *   `G76 P(mm)(rr)(aa) Q(dmin) R(d)` then `G76 X(x) Z(z) P(k) Q(d) F(lead)`.
+   *
+   * Steps the cut down from the starting diameter to the final X over several
+   * passes, each running the full programmed length, before `finish` extra
+   * passes at full depth (see the first block's packed P — `unpackG76P`).
+   * Pass depth follows the same sqrt(n) progression a real control uses to
+   * keep the chip cross-section roughly constant as the thread flank widens
+   * with depth: a flat per-pass depth would make the first pass deceptively
+   * light and the last dangerously heavy. The minimum-cut-depth word (first
+   * block's Q) isn't read — this simplified model doesn't need a floor on an
+   * already-shrinking increment.
+   *
+   * P (thread height) and Q (first cut depth) on the SECOND block are Fanuc
+   * microns, same convention as G74's peck — see the note there. R (finishing
+   * allowance, FIRST block) is an ordinary decimal mm, same as G71's R. F is
+   * the thread lead in mm, not a feed rate: the cutting passes always run at
+   * that lead per revolution, independent of the program's modal G94/G95.
+   */
+  const expandG76 = (words, lineNo, sink) => {
+    if (words.X === undefined && words.Z === undefined) {
+      if (words.P !== undefined) state.threadFirstBlock = unpackG76P(words.P);
+      if (words.R !== undefined) state.threadAllowance = Math.abs(words.R * state.scale);
+      return null;
+    }
+    const [xs, , zs] = state.pos;
+    const xEnd = axisTarget(xs, words.X, xScale(), state.absolute);
+    const zEnd = axisTarget(zs, words.Z, state.scale, state.absolute);
+    const height = words.P !== undefined ? Math.abs(words.P * state.scale) / 1000 : 0;
+    const firstCut = words.Q !== undefined ? Math.abs(words.Q * state.scale) / 1000 : 0;
+    if (!(height > 0) || !(firstCut > 0)) {
+      warnings.push(`Line ${lineNo}: G76 needs a thread height (P) and first cut depth (Q) on the X/Z block — cycle skipped`);
+      return null;
+    }
+    const lead = words.F !== undefined ? words.F * state.scale : state.feed;
+    const finish = state.threadFirstBlock?.finish || 1;
+    const totalDepth = Math.max(height - state.threadAllowance, 0);
+    const sign = xEnd < xs ? -1 : 1; // external thread cuts inward, internal outward
+
+    let cur = [xs, 0, zs];
+    const move = (type, next) => { sink(type, cur, next, lineNo); cur = next; };
+
+    // A thread always advances by its lead per revolution, regardless of the
+    // program's modal feed mode — force per-rev (G95) for these passes only.
+    const savedFeed = state.feed;
+    const savedMode = state.feedMode;
+    state.feed = lead;
+    state.feedMode = 95;
+
+    let depth = 0;
+    for (let n = 1; depth < totalDepth - EPS && n <= MAX_ROUGH_PASSES; n++) {
+      depth = Math.min(totalDepth, firstCut * Math.sqrt(n));
+      const xAt = xs + sign * depth; // state.pos[0] is already a radius
+      move('rapid', [xAt, 0, zs]);
+      move('feed', [xAt, 0, zEnd]);
+      move('rapid', [xs, 0, zEnd]);
+      move('rapid', [xs, 0, zs]);
+    }
+    // Finishing/spring passes: no further stock removed, but real machine
+    // time, which is why they still get emitted as moves.
+    for (let f = 0; f < finish; f++) {
+      move('rapid', [xEnd, 0, zs]);
+      move('feed', [xEnd, 0, zEnd]);
+      move('rapid', [xs, 0, zEnd]);
+      move('rapid', [xs, 0, zs]);
+    }
+
+    state.feed = savedFeed;
+    state.feedMode = savedMode;
+    state.pos = [xs, 0, zs]; // the cycle returns to its start point, like G71
     return null;
   };
 
@@ -481,6 +684,8 @@ export function interpret(text, opts = {}) {
       return expandG71(words, lineNo, sink, blockIdx);
     }
     if (code === 70) return expandG70(words, lineNo, sink, blockIdx);
+    if (code === 74) return expandG74(words, lineNo, sink);
+    if (code === 76) return expandG76(words, lineNo, sink);
     warnings.push(`Line ${lineNo}: G${code} turning cycle recognised but not expanded`);
     return null;
   };
@@ -563,20 +768,38 @@ export function interpret(text, opts = {}) {
         else state.spindle = words.S;
       }
       // The rotary axes index the part, not the tool. Degrees, never scaled.
+      // Billed as real time too (`rotaryIndexSeconds`, flat per index — see
+      // `interpret`'s own comment), same shape as the tool-change billing
+      // below: only when the resolved angle actually differs from the one
+      // already indexed to, so a block that merely restates it (or a G91
+      // move of 0) does not double-bill.
       if (words.A !== undefined) {
-        state.aAxis = state.absolute ? words.A : state.aAxis + words.A;
+        const nextA = state.absolute ? words.A : state.aAxis + words.A;
+        if (rotaryIndexSeconds > 0 && Math.abs(nextA - state.aAxis) > EPS) rotaryIndexTime += rotaryIndexSeconds;
+        state.aAxis = nextA;
       }
       // B is a rotary index on a mill / 5-axis machine; on a lathe the same
       // address is a cycle parameter (e.g. the G76 thread angle), so only a
       // milling program rotates the part with it.
       if (!turning && words.B !== undefined) {
-        state.bAxis = state.absolute ? words.B : state.bAxis + words.B;
+        const nextB = state.absolute ? words.B : state.bAxis + words.B;
+        if (rotaryIndexSeconds > 0 && Math.abs(nextB - state.bAxis) > EPS) rotaryIndexTime += rotaryIndexSeconds;
+        state.bAxis = nextB;
       }
       // A tool change (T word) selects the cutter every following move is made
       // with. The tool-change block itself carries no motion, so tagging from
       // here forward is enough. A lathe T word packs an offset (T0606); keep the
       // raw number — the comment table (milling) keys on the small tool index.
-      if (words.T !== undefined) state.tool = words.T;
+      //
+      // Billed as real time too, against `state.tool`'s *previous* value —
+      // the first T word included, since loading it from whatever sat in the
+      // spindle before the program started is still a real tool change — but
+      // only when it actually differs: `T0606` re-stating the already-active
+      // tool (an offset-only restate some posts emit) must not double-bill.
+      if (words.T !== undefined) {
+        if (toolChangeSeconds > 0 && words.T !== state.tool) toolChangeTime += toolChangeSeconds;
+        state.tool = words.T;
+      }
 
       // G4 dwell: P (or X/U) seconds. Consumes the block — no motion.
       if (dwellThisBlock) {
@@ -740,7 +963,9 @@ export function interpret(text, opts = {}) {
       rapidTime,           // seconds
       feedTime,            // seconds
       dwellTime,           // seconds
-      cycleTime: rapidTime + feedTime + dwellTime,
+      toolChangeTime,      // seconds — 0 unless `toolChangeSeconds` was given
+      rotaryIndexTime,     // seconds — 0 unless `rotaryIndexSeconds` was given
+      cycleTime: rapidTime + feedTime + dwellTime + toolChangeTime + rotaryIndexTime,
       // Distinct A-axis indices the program machines at. More than one means a
       // 4-axis job, which the Z-up height-field simulator can't carve whole.
       aIndices: [...aIndices].sort((x, y) => x - y),
@@ -828,8 +1053,12 @@ function expandDrillCycle(code, state, words, start, target, emit, lineNo, addDw
   // G82/G89 dwell at the bottom of the hole for P seconds.
   if ((code === 82 || code === 89) && words.P !== undefined) addDwell(Math.abs(words.P));
 
-  // 4. Retract. G85/G89 feed back out (boring); others rapid.
-  const retractType = code === 85 || code === 89 ? 'feed' : 'rapid';
+  // 4. Retract. G85/G89 feed back out (boring); G84 backs the tap out at the
+  // same synchronized feed it plunged at — a rigid tap never runs its axis
+  // and spindle out of sync, retract leg included, so modelling it as a
+  // rapid (as G81/G82/G83/G86 genuinely are) understated every tapped
+  // hole's real cycle time by the whole length of that leg. The others rapid.
+  const retractType = code === 85 || code === 89 || code === 84 ? 'feed' : 'rapid';
   emit(retractType, [hx, hy, zBottom], [hx, hy, retractZ], lineNo);
 
   state.pos = [hx, hy, retractZ];

@@ -186,3 +186,31 @@ describe('camStore rotary frame — the machine picks how the 4th axis is drawn'
     expect(useCamStore.getState().rotaryFrame).toBe('part');
   });
 });
+
+describe('camStore machine spec — picking a machine picks its rapid and spindle ceiling', () => {
+  beforeEach(() => {
+    useCamPlanStore.getState().clear();
+    useCamStore.setState({
+      mode: 'mill', rapidRate: 5000, machineMaxTurnRpm: undefined, gcode: '',
+    });
+  });
+
+  it('syncs the rapid rate to the selected mill — not left at the generic default', () => {
+    useCamPlanStore.getState().setMachine('haas-vf2');
+    expect(useCamStore.getState().rapidRate).toBe(25400);
+    expect(useCamStore.getState().machineOpts().rapidRate).toBe(25400);
+  });
+
+  it('follows a second machine change to its own rapid', () => {
+    useCamPlanStore.getState().setMachine('haas-vf2');
+    useCamPlanStore.getState().setMachine('generic-vmc-4axis');
+    expect(useCamStore.getState().rapidRate).toBe(15000);
+  });
+
+  it("carries a lathe's own spindle ceiling for the G96-without-G50 case, and leaves it off a mill", () => {
+    useCamPlanStore.getState().setMachine('okuma-lb3000');
+    expect(useCamStore.getState().machineOpts().maxTurnRpm).toBe(5000);
+    useCamPlanStore.getState().setMachine('haas-vf2');
+    expect(useCamStore.getState().machineOpts().maxTurnRpm).toBeUndefined();
+  });
+});

@@ -15,7 +15,8 @@ import { voxelSizeFor, thinnestCut, cellSizeFor, cutterSpan } from './method.js'
 import { createVoxelStock, carveVoxels, voxelSurfaceMesh } from './voxel.js';
 import {
   createTurningStock, carveTurning, carveTurningMove, resetTurningStock,
-  turningMesh, detectFaceZ,
+  turningMesh, detectFaceZ, turningCutModeResolver, turningCutMode,
+  turningCutRadiusResolver, turningGrooveWidthResolver,
 } from './turning.js';
 
 export { createStock, stockFromBounds, resetStock, stamp, cutSegment, simulate } from './dexel.js';
@@ -31,7 +32,8 @@ export { removalDiagnosis, cuttingBounds } from './removal.js';
 export { createVoxelStock, carveVoxels, voxelSurfaceMesh, toolAxisFor } from './voxel.js';
 export {
   createTurningStock, carveTurning, turningMesh, resetTurningStock,
-  turningNoseResolver, STANDARD_TURN_TOOLS,
+  turningNoseResolver, turningCutModeResolver, turningCutMode,
+  turningCutRadiusResolver, turningGrooveWidthResolver, STANDARD_TURN_TOOLS,
 } from './turning.js';
 
 /**
@@ -180,7 +182,7 @@ export function runVoxelSimulation(text, opts = {}) {
  */
 export function runTurningSimulation(text, opts = {}) {
   const { cellSize = 0.5, margin = 1, stockOversize = 1 } = opts;
-  const { segments, bounds } = interpret(text, { ...opts, mode: 'turn' });
+  const { segments, bounds, stats } = interpret(text, { ...opts, mode: 'turn' });
   const fit = bounds.feedMin && Number.isFinite(bounds.feedMin[0])
     ? { min: bounds.feedMin, max: bounds.feedMax }
     : bounds;
@@ -192,7 +194,13 @@ export function runTurningSimulation(text, opts = {}) {
   const rStock = opts.rStock ?? (fit.max[0] + stockOversize / 2);
   const stock = createTurningStock(fit, { cellSize, margin, rStock, faceZ, chuckClear });
   // Sharp corner: the profile follows the tool path exactly (no nose-radius comp).
-  const { removedVolume } = carveTurning(stock, segments, { noseR: 0 });
+  // modeOf reads which tool is cutting each move off the program's own
+  // comments (`T0505(DRILL ..)`, `T0707(ID BORING BAR ..)`, …) so a drill or
+  // boring pass grows the bore instead of collapsing the OD down to it.
+  const modeOf = turningCutModeResolver(stats.tools);
+  const radiusOf = turningCutRadiusResolver(stats.tools, opts.toolOverrides);
+  const grooveOf = turningGrooveWidthResolver(stats.tools, opts.toolOverrides);
+  const { removedVolume } = carveTurning(stock, segments, { noseR: 0 }, modeOf, radiusOf, grooveOf);
   const mesh = turningMesh(stock);
   return {
     positions: mesh.positions,
@@ -217,7 +225,7 @@ export function runTurningSimulation(text, opts = {}) {
  */
 export function createTurningSession(text, opts = {}) {
   const { cellSize = 0.5, margin = 1, stockOversize = 1 } = opts;
-  const { segments, bounds } = interpret(text, { ...opts, mode: 'turn' });
+  const { segments, bounds, stats } = interpret(text, { ...opts, mode: 'turn' });
   const fit = bounds.feedMin && Number.isFinite(bounds.feedMin[0])
     ? { min: bounds.feedMin, max: bounds.feedMax }
     : bounds;
@@ -226,11 +234,21 @@ export function createTurningSession(text, opts = {}) {
     rStock: opts.rStock ?? (fit.max[0] + stockOversize / 2),
   });
   const feeds = segments.filter((s) => s.type !== 'rapid'); // cutting moves, in order
+  // Same per-tool od/id lookup as `runTurningSimulation`, kept on the session
+  // so each incremental `carveTurningSessionTo` call can carve a move the
+  // same way the one-shot simulation would, not just OD.
+  const modeOf = turningCutModeResolver(stats.tools);
+  // Same fixed-bore-radius floor as `runTurningSimulation`, for a drill/reamer/
+  // tap/centre-drill fed down the centreline — see `turningCutRadiusResolver`.
+  const radiusOf = turningCutRadiusResolver(stats.tools, opts.toolOverrides);
+  // Same groove-width lookup as `runTurningSimulation`, for a parting/cut-off
+  // blade — see `turningGrooveWidthResolver`.
+  const grooveOf = turningGrooveWidthResolver(stats.tools, opts.toolOverrides);
   // `partial` and `removed` are `advanceCut`'s bookkeeping — the fraction of the
   // move in progress that has been cut, and the running total. Turning kept
   // neither while it stepped whole moves.
   return {
-    stock, feeds, cursor: 0, partial: 0, removed: 0, totalFeeds: feeds.length,
+    stock, feeds, modeOf, radiusOf, grooveOf, cursor: 0, partial: 0, removed: 0, totalFeeds: feeds.length,
   };
 }
 
@@ -255,6 +273,7 @@ export function carveTurningSessionTo(session, k) {
     // Sharp corner: the envelope follows the programmed path.
     cut: (seg, t0, t1) => carveTurningMove(
       session.stock, lerpTurn(seg.a, seg.b, t0), lerpTurn(seg.a, seg.b, t1), 0,
+      session.modeOf(seg), session.radiusOf(seg), session.grooveOf(seg),
     ),
   });
   const mesh = turningMesh(session.stock);

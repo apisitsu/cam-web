@@ -29,7 +29,7 @@ describe('sidebarSections while running', () => {
 
   it('hides every setup section — that is the point', () => {
     const s = sidebarSections({ playing: true });
-    for (const name of ['files', 'project', 'cam', 'machine', 'warnings', 'tools', 'removal']) {
+    for (const name of ['cam', 'machine', 'warnings', 'tools', 'removal']) {
       // eslint-disable-next-line jest/valid-expect
       expect(s[name], name).toBe(false);
     }

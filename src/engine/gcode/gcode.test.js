@@ -90,6 +90,24 @@ describe('interpreter — canned drilling cycle', () => {
     // Each hole contributes cutting feed from R(2) down to Z(-6) = 8mm.
     expect(near(stats.feedLength, 16)).toBe(true);
   });
+
+  it('G81/G83/G86 rapid out, but G84 backs the tap out at the plunge feed', () => {
+    // A rigid tap never runs its axis and spindle out of sync — the retract
+    // is synchronized the same as the plunge, not an instant rapid the way
+    // a real G81/G86 retract is. Modelling it as a rapid (as an earlier
+    // version of this did) understated every tapped hole's own cycle time
+    // by the whole length of that leg.
+    const tap = interpret('G21 G90 G0 Z5\nG84 X10 Y10 Z-10 R2 F200\nG80');
+    const drill = interpret('G21 G90 G0 Z5\nG81 X10 Y10 Z-10 R2 F200\nG80');
+    // Same plunge (R2 to Z-10 = 12mm). G84's retract runs all the way back
+    // to the initial Z (5, the default retract plane with no G98/G99 in the
+    // program — R2 to Z5 = 15mm) and, unlike G81's, counts as feed, so the
+    // tap cuts a longer "feed" length and takes meaningfully longer than the
+    // drill's rapid-retract cycle.
+    expect(near(tap.stats.feedLength, 27)).toBe(true);
+    expect(near(drill.stats.feedLength, 12)).toBe(true);
+    expect(tap.stats.cycleTime).toBeGreaterThan(drill.stats.cycleTime);
+  });
 });
 
 describe('interpreter — lathe cycles in milling mode', () => {
@@ -178,6 +196,118 @@ describe('interpreter — G71 roughing / G70 finishing', () => {
     const { stats } = interpret(prog, { mode: 'turn' });
     expect(stats.warnings.some((w) => w.includes('no depth of cut'))).toBe(true);
   });
+
+  it('replays a rapid leg inside the profile as a rapid in the semi-finish pass, not a feed', () => {
+    // The semi-finish pass used to force 'feed' for every leg after the
+    // profile's first point — right for a profile that is all G1 after its
+    // opening G0, wrong the moment a profile has a *second* rapid partway
+    // through (here, `G0 X36`, a legitimate repositioning jump). Forcing it
+    // to feed turned a non-cutting move into a bogus cut along the way.
+    const prog = [
+      'G21 G90 G99 S1000', 'G0 X52 Z1', 'G71 U2.0 R1.0',
+      'G71 P100 Q200 U0.5 W0.1 F0.25',
+      'N100 G0 X40', 'G1 Z0 F0.12', 'G0 X36', 'G1 Z-10',
+      'N200 G1 X52', 'G70 P100 Q200', 'G0 X60 Z20',
+    ].join('\n');
+    const { segments } = interpret(prog, { mode: 'turn' });
+    // The semi-finish pass's replay of `G0 X36`: radius 18+0.25 (U0.5 on
+    // diameter) at Z 0+0.1 (W0.1), reached from the previous point at the
+    // same Z — the one leg in the whole G71 call with neither endpoint
+    // moving in Z, other than the roughing passes' own 45° pull-offs.
+    const leg = segments.find((s) => s.line === 4 && near(s.a[0], 20.25) && near(s.b[0], 18.25));
+    expect(leg).toBeDefined();
+    expect(leg.type).toBe('rapid');
+  });
+});
+
+describe('interpreter — G74 peck drilling', () => {
+  const G74_PROG = [
+    'G21 G90 G99 S1000',
+    'G0 X0 Z2',
+    'G74 R0.5',            // retract 0.5 mm between pecks
+    'G74 Z-10 Q2000 F0.05', // peck 2 mm (2000 microns) per step
+  ].join('\n');
+
+  it('expands into feed pecks instead of warning', () => {
+    const { stats } = interpret(G74_PROG, { mode: 'turn' });
+    expect(stats.warnings).toEqual([]);
+  });
+
+  it('pecks by the programmed depth (Q in microns) and ends at the target Z', () => {
+    const { segments } = interpret(G74_PROG, { mode: 'turn' });
+    const cycle = segments.filter((s) => s.line === 4);
+    const pecks = cycle.filter((s) => s.type === 'feed');
+    // 12 mm of travel at a 2 mm peck: 6 full steps, the last landing exactly
+    // on Z-10 rather than overshooting it.
+    expect(pecks.length).toBe(6);
+    expect(pecks.every((s) => near(s.a[0], 0) && near(s.b[0], 0))).toBe(true);
+    expect(near(pecks.at(-1).b[2], -10)).toBe(true);
+    // Retract between pecks (not after the last one): 5 chip-break hops.
+    const retracts = cycle.filter((s) => s.type === 'rapid');
+    expect(retracts.length).toBe(10); // 5 hops × (up, back down)
+  });
+
+  it('retreats by R from the current depth, not back to a fixed plane', () => {
+    const { segments } = interpret(G74_PROG, { mode: 'turn' });
+    const firstHopUp = segments.filter((s) => s.line === 4 && s.type === 'rapid')[0];
+    // First peck lands at Z0 (2 - 2); the hop retreats 0.5 mm back to Z0.5.
+    expect(near(firstHopUp.b[2], 0.5)).toBe(true);
+  });
+
+  it('warns and does not expand the combined X/P face-grooving form', () => {
+    const prog = 'G21 G90\nG0 X10 Z2\nG74 R0.5\nG74 X20 Z-10 P2 Q2000 F0.05';
+    const { stats } = interpret(prog, { mode: 'turn' });
+    expect(stats.warnings.some((w) => w.includes('face-grooving'))).toBe(true);
+  });
+});
+
+describe('interpreter — G76 threading', () => {
+  // ⌀20 blank threaded down to ⌀16 over 20 mm: 2 mm of radius to remove,
+  // taken in one rough pass (Q = the full 2 mm) plus 2 finishing passes.
+  const G76_PROG = [
+    'G21 G90 G99 S1000',
+    'G0 X20 Z2',
+    'G0 Z0',
+    'G76 P020060 Q100 R0',
+    'G76 X16 Z-20 P2000 Q2000 F1.5',
+  ].join('\n');
+
+  it('expands into threading passes instead of warning', () => {
+    const { stats } = interpret(G76_PROG, { mode: 'turn' });
+    expect(stats.warnings).toEqual([]);
+  });
+
+  it('cuts the rough pass plus the finishing passes named by the packed P, all to the final X', () => {
+    const { segments } = interpret(G76_PROG, { mode: 'turn' });
+    const cuts = segments.filter((s) => s.line === 5 && s.type === 'feed');
+    // 1 rough pass (reaches the full depth in one step) + 2 finishing passes.
+    expect(cuts.length).toBe(3);
+    for (const s of cuts) {
+      expect(near(s.a[0], 8)).toBe(true); // ⌀16 -> radius 8
+      expect(near(s.b[0], 8)).toBe(true);
+      expect(near(s.b[2], -20)).toBe(true);
+    }
+  });
+
+  it('returns to the cycle start point, like G71', () => {
+    const { segments } = interpret(G76_PROG, { mode: 'turn' });
+    const last = segments.filter((s) => s.line === 5).pop();
+    expect(near(last.b[0], 10)).toBe(true); // ⌀20 -> radius 10
+    expect(near(last.b[2], 0)).toBe(true);
+  });
+
+  it('threads at the lead per revolution, regardless of the modal feed mode', () => {
+    const { segments } = interpret(G76_PROG, { mode: 'turn' });
+    const cut = segments.find((s) => s.line === 5 && s.type === 'feed');
+    expect(cut.fm).toBe(95); // forced per-rev
+    expect(near(cut.f, 1.5 * 1000)).toBe(true); // lead 1.5 mm/rev × 1000 rpm
+  });
+
+  it('warns and skips when the X/Z block has no thread height or first cut', () => {
+    const prog = 'G21 G90\nG0 X20 Z0\nG76 P020060 Q100 R0\nG76 X16 Z-20 F1.5';
+    const { stats } = interpret(prog, { mode: 'turn' });
+    expect(stats.warnings.some((w) => w.includes('thread height'))).toBe(true);
+  });
 });
 
 describe('interpreter — cycle time', () => {
@@ -201,6 +331,41 @@ describe('interpreter — cycle time', () => {
     // 100 mm at 6000 mm/min = 1 s, plus the 2.5 s dwell.
     expect(near(segments[segments.length - 1].t, 3.5)).toBe(true);
     expect(near(stats.cycleTime, 3.5)).toBe(true);
+  });
+
+  it('bills a tool change only when the T word actually differs, and not at all with no toolChangeSeconds', () => {
+    const prog = 'G21 G90\nT0101\nG0 X10\nT0202\nG0 X20\nT0202\nG0 X30\nT0303\nG0 X40';
+    const unmodelled = interpret(prog);
+    expect(unmodelled.stats.toolChangeTime).toBe(0); // default: not modelled at all
+    const { stats } = interpret(prog, { toolChangeSeconds: 5 });
+    // T0101 (from nothing), T0202, T0303 are changes; the repeated T0202 is not.
+    expect(near(stats.toolChangeTime, 15)).toBe(true);
+    expect(near(stats.cycleTime, stats.rapidTime + stats.feedTime + stats.toolChangeTime)).toBe(true);
+  });
+
+  it('bills an axis index only when the A/B word actually moves to a new angle, and not at all by default', () => {
+    const prog = 'G21 G90\nG0 A0\nG1 X10\nG0 A90\nG1 X20\nG0 A90\nG1 X30\nG0 A180\nG1 X40';
+    const unmodelled = interpret(prog);
+    expect(unmodelled.stats.rotaryIndexTime).toBe(0); // default: not modelled at all
+    const { stats } = interpret(prog, { rotaryIndexSeconds: 3 });
+    // A0 restates the aAxis default (0) — no real index, so it is not
+    // billed. A90 and A180 each move to a genuinely new angle and are; the
+    // repeated A90 right after is not. Two real indexes × 3s = 6s.
+    expect(near(stats.rotaryIndexTime, 6)).toBe(true);
+    expect(near(
+      stats.cycleTime,
+      stats.rapidTime + stats.feedTime + stats.rotaryIndexTime,
+    )).toBe(true);
+  });
+
+  it('counts a B-axis index on a mill the same way, and ignores B on a lathe', () => {
+    // B is a rotary index on a mill but a cycle parameter (e.g. G76's angle)
+    // on a lathe — only the mill reading should ever bill it.
+    const prog = 'G21 G90\nG0 B45\nG1 X10';
+    const mill = interpret(prog, { mode: 'mill', rotaryIndexSeconds: 4 });
+    expect(near(mill.stats.rotaryIndexTime, 4)).toBe(true);
+    const turn = interpret(prog, { mode: 'turn', rotaryIndexSeconds: 4 });
+    expect(turn.stats.rotaryIndexTime).toBe(0);
   });
 
   it('falls back to 100 mm/min and warns when a feed move has no F word', () => {
@@ -332,6 +497,8 @@ describe('interpreter — constant surface speed (G96 / G97 / G50)', () => {
   const turn = { mode: 'turn', diameterMode: true };
   /** Cutting minutes for one feed move at a given diameter. */
   const minutes = (src) => interpret(src, turn).stats.cycleTime / 60;
+  /** Same, with extra interpreter opts (e.g. `maxTurnRpm`) merged in. */
+  const minutes2 = (src, extra) => interpret(src, { ...turn, ...extra }).stats.cycleTime / 60;
 
   it('reads S under G96 as a surface speed, not as RPM', () => {
     // Ø30 at 200 m/min is ~2122 rpm, so 0.2 mm/rev feeds ~424 mm/min.
@@ -368,6 +535,31 @@ describe('interpreter — constant surface speed (G96 / G97 / G50)', () => {
     // G50 on a mill cancels scaling and carries no S; G96/G97 are not used.
     const { stats } = interpret('G21 G17 G94\nS2000 M03\nG00 X0 Y0\nG01 X100 F500', { mode: 'mill' });
     expect(stats.cycleTime).toBeCloseTo((100 / 500) * 60, 1);
+  });
+
+  it("honours the selected machine's own spindle ceiling when the program has no G50 of its own", () => {
+    // Same regression as the G50 test above, but for a program that simply
+    // never states one — which a real control would still never run past
+    // its own spindle regardless. Without `maxTurnRpm` the implied rpm is
+    // enormous and the time collapses toward zero.
+    const free = 'G21 G18 G99\nG96 S200 M03\nG00 X0.4 Z2.\nG01 Z-100. F0.2';
+    expect(minutes(free)).toBeLessThan(0.05);
+    const capped = minutes2(free, { maxTurnRpm: 1000 });
+    expect(capped).toBeGreaterThan(minutes(free));
+    // 1000 rpm at 0.2 mm/rev = 200 mm/min over 102 mm, same arithmetic as
+    // the program's-own-G50 case above.
+    expect(capped).toBeCloseTo(102 / 200, 1);
+  });
+
+  it('applies whichever of the program G50 and the machine ceiling is lower', () => {
+    const src = 'G21 G18 G99\nG50 S1000\nG96 S200 M03\nG00 X0.4 Z2.\nG01 Z-100. F0.2';
+    // Program clamps to 1000; a slower machine clamps harder still.
+    const slowMachine = minutes2(src, { maxTurnRpm: 400 });
+    expect(slowMachine).toBeCloseTo(102 / (400 * 0.2), 1);
+    // A faster machine than the program's own clamp changes nothing — the
+    // program's G50 is still the tighter of the two.
+    const fastMachine = minutes2(src, { maxTurnRpm: 5000 });
+    expect(fastMachine).toBeCloseTo(minutes(src), 6);
   });
 });
 
@@ -443,6 +635,23 @@ describe('parseToolTable — the tool a program says it is using', () => {
     const t = parseToolTable(posted);
     expect(t.get(1)).toMatchObject({ type: 'facemill', cutter: 'face', diameter: 50, radius: 25 });
     expect(t.get(2)).toMatchObject({ type: 'ballmill', cutter: 'ball', simType: 'ball', diameter: 6 });
+  });
+
+  it('reads a decorated header comment with no TOOL keyword', () => {
+    // A lathe program's own block headers — no `TOOL` keyword, just a
+    // T-number, a colon and a description framed by dashes. Missing this
+    // left the whole table empty, so every tool (including a drill) carved
+    // as an unclassified 'od' tool — a drill at X0 then collapsed the OD to
+    // 0 along the drilled length instead of boring a hole.
+    const lathe = [
+      '(--- T0606: FACING ---)',
+      'T0606',
+      '(--- T0202: DRILL DIA 8.5 MM ---)',
+      'T0202',
+    ].join('\n');
+    const t = parseToolTable(lathe);
+    expect(t.get(606)).toMatchObject({ desc: 'FACING' });
+    expect(t.get(202)).toMatchObject({ type: 'drill', diameter: 8.5, radius: 4.25, desc: 'DRILL DIA 8.5 MM' });
   });
 
   it('reads Ø as a diameter, the way the tool library writes it', () => {

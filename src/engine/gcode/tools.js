@@ -48,8 +48,16 @@ const TYPES = [
   [/CHAMFER|\bSPOT\b|CENTER\s*DRILL|CENTRE\s*DRILL/i, 'chamfer', 'flat'],
   [/\bREAMER\b|\bREAM\b/i, 'reamer', 'flat'],
   [/\bTAP\b|TAPPING/i, 'tap', 'flat'],
-  [/BORING|BORE\s*BAR|\bBORE\b/i, 'bore', 'flat'],
+  [/BORING|BORE\s*BAR|COUNTER\s*-?\s*BORE|\bBORE\b/i, 'bore', 'flat'],
   [/SLOT\s*MILL|SLOT\s*DRILL|\bSLOTMILL\b/i, 'slotmill', 'flat'],
+  // Lathe-only categories. Neither has a milling shape in `cam/cutters.js` —
+  // `cutterFromType` returns null for both, same as reamer/tap/bore above —
+  // this only gives a turning tool comment a real `type` instead of falling
+  // through to 'endmill, unclassified', which is what it did before G76/G74
+  // were expandable at all (see `interpreter.js`): a threading or parting
+  // tool had no cutting motion to classify a shape for in the first place.
+  [/THREAD(?:ING)?\b/i, 'thread', 'flat'],
+  [/\bPART(?:ING|OFF)?\b|\bGROOV/i, 'parting', 'flat'],
   [/\bDRILL\b/i, 'drill', 'flat'],
   [/END\s*MILL|\bENDMILL\b|FLAT\s*MILL|SQUARE\s*MILL/i, 'endmill', 'flat'],
 ];
@@ -129,8 +137,13 @@ export function parseToolTable(text) {
   // tool number is inside the comment here, which is why the rule above cannot
   // see it — its `T` is the machine's, this one is prose.
   const RE_DECL = /^\s*\(\s*TOOL\s*[:-]?\s*T0*(\d+)\s*[:-]?\s*([^)]*)\)/i;
+  // The same idea, decorated: `(--- T0202: DRILL DIA 8.5 MM ---)`. No `TOOL`
+  // keyword, just a T-number and a colon, framed by dashes a program (or an
+  // operator) uses to make the block header stand out — the dashes on either
+  // side are not part of the description.
+  const RE_DECL2 = /^\s*\([-=*#\s]*T0*(\d+)\s*:\s*([^()]*?)\s*[-=*#\s]*\)\s*$/i;
   for (const raw of lines) {
-    const m = RE.exec(raw) || RE_DECL.exec(raw);
+    const m = RE.exec(raw) || RE_DECL.exec(raw) || RE_DECL2.exec(raw);
     if (!m) continue;
     const n = Number(m[1]);
     if (table.has(n)) continue; // first definition wins

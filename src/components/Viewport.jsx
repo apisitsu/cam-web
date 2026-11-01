@@ -21,7 +21,7 @@ import { useSketchStore } from '../stores/sketchStore.js';
 import { framing, unionBounds } from '../engine/view/camera.js';
 import { endMillGeometry } from '../engine/view/millTool.js';
 import {
-  odHolderGeometry, boringBarGeometry, partingBladeGeometry,
+  odHolderGeometry, boringBarGeometry, partingBladeGeometry, drillGeometry,
 } from '../engine/view/latheTool.js';
 import { workTransform, toolTilt } from '../engine/view/rotaryFrame.js';
 import { CAD, metal } from '../theme.js';
@@ -259,27 +259,105 @@ function ODHolder({ radius = 0.8, shape }) {
  */
 function BoringBar({ radius = 0.8, shape }) {
   const g = boringBarGeometry(radius, shape ?? {});
-  const { insert } = g;
+  const { insert, connectorWedge } = g;
+  const wedgeKey = connectorWedge ? connectorWedge.points.flat().join(',') : null;
+  const wedgeGeo = useMemo(() => {
+    if (!connectorWedge) return null;
+    const sh = new THREE.Shape();
+    connectorWedge.points.forEach(([x, z], i) => (i === 0 ? sh.moveTo(x, z) : sh.lineTo(x, z)));
+    sh.closePath();
+    const geo = new THREE.ExtrudeGeometry(sh, { depth: insert.thickY, bevelEnabled: false });
+    geo.rotateX(Math.PI / 2);
+    geo.computeVertexNormals();
+    return geo;
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [wedgeKey, insert.thickY]);
+  useEffect(() => () => wedgeGeo?.dispose(), [wedgeGeo]);
   return (
     <>
-      {/* Round bar along +Z, hanging below the cutting plane — its crown clears
-          that plane by `standout` rather than touching it. */}
+      {/* Round bar along +Z, centred on the spindle axis (Y=0) — the same
+          axis the stock itself is centred on, so the bar reads as coaxial
+          with the workpiece rather than sitting below it; its crown can
+          reach above Y=0 now, which is what the insert's `depthTest: false`
+          below is for. Its face sits `barNearZ` (not `barRadius`) behind the
+          cutting plane in Z — see boringBarGeometry's header for why reusing
+          the bar's own radius as a Z offset was the bug. It clears the
+          cutting plane radially (X) by `standout` too — `-g.barRadius` alone
+          put the crown exactly tangent to X=0, the same X the insert's
+          cutting corner sits at, so the insert read as resting on the bar's
+          own surface rather than reaching past it to cut. */}
       <mesh
-        position={[-g.barRadius, g.barY, g.barRadius + g.barLength / 2]}
+        position={[-(g.barRadius + g.standout), g.barY, g.barNearZ + g.barLength / 2]}
         rotation={[Math.PI / 2, 0, 0]}
       >
         <cylinderGeometry args={[g.barRadius, g.barRadius, g.barLength, 20]} />
         <meshStandardMaterial {...metal('#a7afbd')} />
       </mesh>
-      {/* Gold insert at the tip, acute corner down toward the axis, cutting the
-          ID. Rake face on Y=0 so the cutting corner is at spindle centre. */}
+      {/* Gold insert, acute corner down toward the axis, cutting the ID.
+          x/z/rot come from boringBarGeometry, not computed here, so the
+          overlap with the bar's face — and which vertex is the tip — stays
+          whatever that (tested) module intends. `rot` is no longer a flat
+          45°: see `boringInsertMountRotation`'s own header for why a
+          3-sided insert needs a different mount angle to point the same
+          direction a 4-sided one does. Its rake face sits at Y=0, same
+          invariant as every other marker's insert (and the plane the stock
+          itself is centred on) — but the bar is centred on that same Y=0
+          now too, so its crown can reach above the insert and occlude it in
+          Top view purely by position. `depthTest: false` + a higher
+          `renderOrder` is what keeps the insert visually on top regardless. */}
       <mesh
-        position={[-insert.r * 0.4, g.insertY, insert.r * 0.6]}
-        rotation={[0, Math.PI / 4, 0]}
+        position={[insert.x, g.insertY, insert.z]}
+        rotation={[0, insert.rot, 0]}
         scale={[1, 1, insert.zScale]}
+        renderOrder={1}
       >
         <cylinderGeometry args={[insert.r, insert.r, insert.thickY, insert.sides]} />
-        <meshStandardMaterial {...metal('#e0a92a', 0.3)} />
+        <meshStandardMaterial {...metal('#e0a92a', 0.3)} depthTest={false} />
+      </mesh>
+      {/* Connector wedge — same bar material, cosmetic infill between the
+          (pinned-at-origin) tip and the bar's own face. See
+          `boringConnectorWedge`'s own header for why this exists instead of
+          moving the insert to close the gap, and why it is only drawn for
+          an untilted mount (`shape.insertTilt` unset) — `wedgeGeo` is null
+          for a tilted one, same reasoning the header gives. */}
+      {wedgeGeo && (
+        <mesh position={[0, -insert.thickY, 0]} geometry={wedgeGeo}>
+          <meshStandardMaterial {...metal('#a7afbd')} side={THREE.DoubleSide} />
+        </mesh>
+      )}
+    </>
+  );
+}
+
+/**
+ * A coaxial axial tool — drill, reamer, tap, centre drill: a straight round
+ * shaft on the spindle axis (X = 0, not offset sideways the way a boring
+ * bar's shank is) ending in a pointed tip. No `standout` gap, on either
+ * piece: that trick is for a *flat* face sitting coplanar with another flat
+ * face, and neither a point tip nor a curved shaft can coplanar-fight
+ * anything. Dropping only the shaft (an earlier version of this) left the
+ * cone flush at the join instead, which read as a blunt, rounded cap, not a
+ * subtle depth-fight — the two pieces have to share the same Y treatment or
+ * the seam between them shows. Marker only — the sim still carves via
+ * `turningCutMode`, independent of which marker is on screen.
+ */
+function DrillTool({ radius = 0.8, shape }) {
+  const g = drillGeometry(radius, shape ?? {});
+  return (
+    <>
+      {/* Pointed tip: a cone, apex at the cutting corner (world origin). */}
+      <mesh position={[0, 0, g.tipHeight / 2]} rotation={[Math.PI / 2, 0, 0]}>
+        <cylinderGeometry args={[g.shaftRadius, 0, g.tipHeight, 24]} />
+        <meshStandardMaterial {...metal('#a7afbd')} />
+      </mesh>
+      {/* Straight shaft behind the tip, running on to the turret/tailstock,
+          perfectly coaxial with the tip — no Y offset between the two. */}
+      <mesh
+        position={[0, 0, g.tipHeight + g.shaftLength / 2]}
+        rotation={[Math.PI / 2, 0, 0]}
+      >
+        <cylinderGeometry args={[g.shaftRadius, g.shaftRadius, g.shaftLength, 24]} />
+        <meshStandardMaterial {...metal('#a7afbd')} />
       </mesh>
     </>
   );
@@ -295,15 +373,24 @@ function PartingBlade({ radius = 0.8, shape }) {
     <>
       {/* Thin blade rising from the tip, hanging below the cutting plane and set
           back from it by `standout` in both directions — so neither its top face
-          nor its leading face shares a plane with the cutting tip's. */}
-      <mesh position={[g.height / 2 + g.standout, g.bladeY, 0]}>
+          nor its leading face shares a plane with the cutting tip's.
+          Edge-referenced in Z, not centred: the programmed Z is the edge
+          against the material being kept (see `carveTurningMove`'s matching
+          comment), so the blade reaches back to −width instead of straddling
+          the tool position — otherwise the marker drew the kerf centred on
+          the cut while the sim carved it flush, and the two disagreed on
+          where the groove's far wall actually was. */}
+      <mesh position={[g.height / 2 + g.standout, g.bladeY, -g.width / 2]}>
         <boxGeometry args={[g.height, g.depth, g.width]} />
         <meshStandardMaterial {...metal('#a7afbd')} />
       </mesh>
-      {/* Cutting tip — a small block proud of the blade on every side, its top
-          edge on Y=0 so the cut is at spindle centre. */}
-      <mesh position={[g.tipHeight / 2, g.tipY, 0]}>
-        <boxGeometry args={[g.tipHeight, g.depth * 1.02, g.width * 1.15]} />
+      {/* Cutting tip — proud of the blade in depth, its top edge on Y=0 so the
+          cut is at spindle centre. Not proud in width: `g.width` is now the
+          real, measured kerf (`turningGrooveWidthResolver` carves exactly
+          this wide), and the old 15% here drew the one visible cutting edge
+          wider than the groove it is shown making. */}
+      <mesh position={[g.tipHeight / 2, g.tipY, -g.width / 2]}>
+        <boxGeometry args={[g.tipHeight, g.depth * 1.02, g.width]} />
         <meshStandardMaterial {...metal('#e0a92a', 0.3)} />
       </mesh>
     </>
@@ -315,6 +402,7 @@ function LatheTool({ radius = 0.8, shape }) {
   const kind = shape?.kind ?? 'od';
   if (kind === 'boring') return <BoringBar radius={radius} shape={shape} />;
   if (kind === 'parting') return <PartingBlade radius={radius} shape={shape} />;
+  if (kind === 'drill') return <DrillTool radius={radius} shape={shape} />;
   return <ODHolder radius={radius} shape={shape} />;
 }
 
@@ -373,16 +461,27 @@ function Chuck({ zEnd, od }) {
  */
 function Tool({
   pos, rotary, radius, type, cutter, angle, thickness, shank, length, insert, mode,
-  showArbor = true,
+  showArbor = true, showTool = true,
   rotaryFrame = 'part',
 }) {
   if (!pos) return null;
+  // Scoped to turning on purpose: milling has no equivalent control (see
+  // `offerToolToggle`), so this must never also hide the mill cutter.
+  if (mode === 'turn' && !showTool) return null;
   const tilt = toolTilt(rotaryFrame, rotary);
+  // The OD/boring/parting markers are decoratively scaled off `radius` (a
+  // small nose-radius-like number blown up into a holder-sized shape by
+  // `toolScale()`), which is why they are capped at 1.6 — the cap bounds a
+  // proportional drawing, not a real dimension. A drill is different: its
+  // radius *is* the hole it cuts (`turningCutRadiusResolver` carves the same
+  // number), so clamping it here would draw a bit visibly narrower than the
+  // bore around it. Only the drill family skips the cap.
+  const latheRadius = insert?.kind === 'drill' ? radius : Math.min(radius, 1.6);
   return (
     <group position={pos} rotation={[0, tilt.b, 0]}>
       <group rotation={[tilt.a, 0, 0]}>
         {mode === 'turn'
-          ? <LatheTool radius={Math.min(radius, 1.6)} shape={insert} />
+          ? <group name="lathe-tool"><LatheTool radius={latheRadius} shape={insert} /></group>
           : (
             <EndMill
               radius={radius}
@@ -472,7 +571,7 @@ export function SceneContents({
   bounds, turnChuck, showStock, toolPos, toolRotary, toolRadius, toolType,
   toolCutter, toolAngle, toolThickness, toolShank, toolLength, turnInsert, bufVer, drawVer, partVer,
   showPart = true,
-  mode = 'mill', sketching = false, showArbor = true, showToolpath = true,
+  mode = 'mill', sketching = false, showArbor = true, showTool = true, showToolpath = true,
   rotaryFrame = 'part', rotaryCenter, simFrameA = 0, stockSolid = null,
 }) {
   // **If the scene re-rendered, the scene needs painting.**
@@ -558,6 +657,7 @@ export function SceneContents({
             insert={turnInsert}
             mode={mode}
             showArbor={showArbor}
+            showTool={showTool}
             rotaryFrame={rotaryFrame}
           />
         </>
@@ -571,7 +671,7 @@ export default function Viewport({
   toolCutter, toolAngle, toolThickness, toolShank, toolLength, turnInsert, bufVer, playhead, partVer,
   showPart = true,
   mode = 'mill', sketching = false, view = 'iso', viewNonce = 0, showArbor = true,
-  showToolpath = true,
+  showTool = true, showToolpath = true,
   rotaryFrame = 'part', rotaryCenter, simFrameA = 0, stockSolid = null,
 }) {
   const controlsRef = useRef();
@@ -610,7 +710,7 @@ export default function Viewport({
   // `rotaryFrame`/`simFrameA` belong here for the same reason `showArbor` does:
   // the canvas is frameloop="demand", so flipping the frame would not appear on
   // screen until some other input happened to change.
-  }, [drawVer, showStock, toolPos, toolRotary, toolRadius, toolType, toolLength, turnInsert, mode, partVer, showPart, showArbor, showToolpath, rotaryFrame, simFrameA, stockSolid, toolCutter, toolAngle, toolThickness, toolShank]);
+  }, [drawVer, showStock, toolPos, toolRotary, toolRadius, toolType, toolLength, turnInsert, mode, partVer, showPart, showArbor, showTool, showToolpath, rotaryFrame, simFrameA, stockSolid, toolCutter, toolAngle, toolThickness, toolShank]);
 
   // The gradient goes on the canvas ELEMENT, not on a three.js scene background:
   // CSS paints it for free behind the renderer's transparent clear colour, where
@@ -646,6 +746,7 @@ export default function Viewport({
         mode={mode}
         sketching={sketching}
         showArbor={showArbor}
+        showTool={showTool}
         showToolpath={showToolpath}
         rotaryFrame={rotaryFrame}
         rotaryCenter={rotaryCenter}

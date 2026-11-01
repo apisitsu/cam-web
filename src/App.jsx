@@ -8,20 +8,20 @@
 import { useEffect, useMemo, useState, useCallback, useRef } from 'react';
 import {
   Layout, Button, Statistic, Alert, Space, Typography, theme,
-  InputNumber, Segmented, Switch, Divider, Slider, Upload, Tag, Tooltip, Drawer,
+  InputNumber, Segmented, Switch, Divider, Slider, Tag, Tooltip, Drawer, Select,
   App as AntdApp,
 } from 'antd';
 import {
-  ThunderboltOutlined, BulbOutlined,
-  PlayCircleFilled, PauseCircleFilled, UploadOutlined, StepBackwardOutlined,
+  ThunderboltOutlined,
+  PlayCircleFilled, PauseCircleFilled, StepBackwardOutlined,
   StepForwardOutlined, FastBackwardOutlined, RollbackOutlined,
-  ExpandOutlined, DownloadOutlined,
-  PlusOutlined, ColumnWidthOutlined, DatabaseOutlined, SettingOutlined,
+  ExpandOutlined,
+  PlusOutlined, ColumnWidthOutlined, SettingOutlined,
 } from '@ant-design/icons';
 import CommandButton from './components/CommandButton.jsx';
 import {
-  PartIcon, StockIcon, StockCutIcon, VoxelIcon, TurningIcon, ArborIcon, RotateWorkIcon, ToolpathIcon,
-  CUTTER_ICONS,
+  PartIcon, StockIcon, StockCutIcon, VoxelIcon, TurningIcon, ArborIcon, LatheToolIcon, RotateWorkIcon,
+  ToolpathIcon, CUTTER_ICONS,
 } from './components/glyph.jsx';
 import {
   CUTTERS, cutterById, cutterWarning, defaultThickness, defaultShank,
@@ -44,17 +44,17 @@ import { sidebarSections } from './engine/view/sidebar.js';
 import { formatDuration, programStatRows, timingBreakdown } from './engine/view/programStats';
 import { autoSimKey, shouldAutoSimulate } from './engine/view/autoSim.js';
 import { offerArborToggle, parkedTip } from './engine/view/millTool.js';
+import { offerToolToggle } from './engine/view/latheTool.js';
 import { sweptFitBox } from './engine/view/rotaryFrame.js';
 import { sketchBounds } from './engine/sketch/edit.js';
 import {
   lineAt, timeAt, rotaryAt, toolAt, segmentAtTime, toolPointAt, blockTargetAt,
   runningAt,
 } from './engine/gcode/path.js';
-import { STANDARD_TURN_TOOLS } from './engine/sim/turning.js';
+import { STANDARD_TURN_TOOLS, effectiveTurnTool } from './engine/sim/turning.js';
 import {
   billetBox, billetWarnings, billetExtents, previewSolid, suggestBillet,
 } from './engine/sim/billet.js';
-import { SAMPLE_GCODE, SAMPLE_TURNING } from './SAMPLE_GCODE.js';
 import Viewport from './components/Viewport.jsx';
 import PositionReadout from './components/PositionReadout.jsx';
 import SketchToolbar from './components/SketchToolbar.jsx';
@@ -201,6 +201,13 @@ function TurnToolGlyph({ tool }) {
     </span>
   );
 }
+
+/**
+ * Standard boring-bar shank diameters (mm) — the sizes a boring bar actually
+ * ships in, not an arbitrary continuous range. Drives both the bar diameter
+ * picker below and `boringBarGeometry`'s `barDiameter` shape field.
+ */
+const BORING_BAR_DIAMETERS = [6, 8, 10, 12, 16, 20, 25, 32];
 
 /**
  * Icon picker for a tool's turning insert/holder — a row of glyph buttons (one per
@@ -505,6 +512,8 @@ export default function App() {
   const page      = useCamStore((s) => s.page);
   const diameterMode = useCamStore((s) => s.diameterMode);
   const rapidRate = useCamStore((s) => s.rapidRate);
+  const toolChangeSeconds = useCamStore((s) => s.toolChangeSeconds);
+  const rotaryIndexSeconds = useCamStore((s) => s.rotaryIndexSeconds);
   const view      = useCamStore((s) => s.view);
   const viewNonce = useCamStore((s) => s.viewNonce);
   const toolRadius = useCamStore((s) => s.toolRadius);
@@ -530,6 +539,7 @@ export default function App() {
   const stockEnabled = useCamStore((s) => s.stockEnabled);
   const showStock = useCamStore((s) => s.showStock);
   const showArbor = useCamStore((s) => s.showArbor);
+  const showTool = useCamStore((s) => s.showTool);
   const showToolpath = useCamStore((s) => s.showToolpath);
   const cutFollowsPlayback = useCamStore((s) => s.cutFollowsPlayback);
   const autoSimEnabled = useCamStore((s) => s.autoSimEnabled);
@@ -563,11 +573,14 @@ export default function App() {
   const setBillet = useCamStore((s) => s.setBillet);
   const toggleStockEnabled = useCamStore((s) => s.toggleStockEnabled);
   const toggleArbor = useCamStore((s) => s.toggleArbor);
+  const toggleTool = useCamStore((s) => s.toggleTool);
   const toggleToolpath = useCamStore((s) => s.toggleToolpath);
   const setCutFollows = useCamStore((s) => s.setCutFollows);
   const setPage     = useCamStore((s) => s.setPage);
   const setViewPreset = useCamStore((s) => s.setViewPreset);
   const setRapidRate = useCamStore((s) => s.setRapidRate);
+  const setToolChangeSeconds = useCamStore((s) => s.setToolChangeSeconds);
+  const setRotaryIndexSeconds = useCamStore((s) => s.setRotaryIndexSeconds);
   const setDiameterMode = useCamStore((s) => s.setDiameterMode);
   const setRotaryFrame = useCamStore((s) => s.setRotaryFrame);
   // Through the feature tree, so a dropped file becomes the base of a history
@@ -617,6 +630,7 @@ export default function App() {
   // decision lives in engine/view/sidebar.js so it is tested, not buried in JSX.
   const show = sidebarSections({ playing });
   const arborToggle = offerArborToggle({ mode, sketching });
+  const toolToggle = offerToolToggle({ mode, sketching });
 
   // Open on a blank page — no sample program is loaded. The user brings their
   // own via drag-and-drop, Open file, or the (optional) Load sample button.
@@ -928,18 +942,32 @@ export default function App() {
   const markerShank = marker.shank;
   // Gauge length (tip to collet) drives how far the milling marker sticks out.
   const markerLength = marker.length;
-  // The turning toolholder for the marker — chosen per-tool in the Tool table.
+  // The turning toolholder for the marker — the operator's own pick for this
+  // tool number, else what the program's own comment implies (T0909(INTERNAL
+  // THREAD BAR) picks the threading bar on its own), else the global default.
   // MVJNR's insert nose angle is adjustable; MVVNN's is fixed.
-  const baseTurnTool = STANDARD_TURN_TOOLS.find((t) => t.id === (currentOverride.insert ?? turnTool))
-    ?? STANDARD_TURN_TOOLS[0];
+  const baseTurnTool = effectiveTurnTool({
+    detected: currentTool, overrideId: currentOverride.insert, fallbackId: turnTool,
+  });
   // Memoised for the same reason as `rotaryIndices`: a fresh object each render
   // makes every memo listing it re-run every render.
   const turnInsert = useMemo(() => (turning
     ? {
       ...baseTurnTool,
       angle: baseTurnTool.adjustable ? (currentOverride.insertAngle ?? baseTurnTool.angle) : baseTurnTool.angle,
+      // Only `partingBladeGeometry` reads this (`shape.grooveW`); harmless on
+      // every other holder shape, which never looks at it.
+      grooveW: currentOverride.grooveW,
+      // Only `boringBarGeometry` reads this (`shape.barDiameter`) — the bar's
+      // own shank size, picked from `BORING_BAR_DIAMETERS`, not the bore it
+      // cuts (the program's own X states that; see `FIXED_RADIUS_TYPES`'s
+      // comment on why boring is deliberately excluded there).
+      barDiameter: currentOverride.barDiameter,
     }
-    : null), [turning, baseTurnTool, currentOverride.insertAngle]);
+    : null), [
+    turning, baseTurnTool, currentOverride.insertAngle, currentOverride.grooveW,
+    currentOverride.barDiameter,
+  ]);
   // Feed and spindle speed at the playhead, and what the tool in the spindle
   // is, for the position page's footer. The tool description is the one the
   // marker draws and the carvers cut with (`effectiveTool` above), not the
@@ -1062,9 +1090,9 @@ export default function App() {
       onDragOver={(e) => { e.preventDefault(); setDragActive(true); }}
       onDragLeave={() => setDragActive(false)}
       onDrop={onDrop}
-      // 100vh, not 100% of whatever the host gives it. Standalone cam-web owns
-      // the viewport; inside EngineerSystem it sits under MainLayout's 64px
-      // header instead, where it takes 100% of the space that layout leaves it.
+      // Standalone cam-web owns the whole viewport. (Vendored into EngineerSystem
+      // this is `100%` instead — there it sits under MainLayout's 64px header and
+      // a viewport-height app overflows by exactly that much.)
       style={{ height: '100vh' }}
     >
       <Layout style={{ height: '100vh' }}>
@@ -1078,8 +1106,13 @@ export default function App() {
           <MenuBar
             onExportGcode={onExportGcode}
             libraryOpen={libraryOpen}
-            onToggleLibrary={() => setLibraryOpen((v) => !v)}
-            onOpenSetup={() => setSettingsOpen(true)}
+            // Setup and Library are two separate drawers on the same edge —
+            // letting both be open at once is how two antd Drawers on one
+            // placement end up fighting over the same portal slot. One closes
+            // the other, the way `data-open-setup` below already did before
+            // Library had a drawer of its own to collide with.
+            onToggleLibrary={() => { setSettingsOpen(false); setLibraryOpen((v) => !v); }}
+            onOpenSetup={() => { setLibraryOpen(false); setSettingsOpen(true); }}
           />
           <div style={{ display: 'flex', alignItems: 'center', gap: 12, padding: '4px 0 8px' }}>
             <ThunderboltOutlined style={{ color: token.colorPrimary, fontSize: 22 }} />
@@ -1135,95 +1168,41 @@ export default function App() {
           </Sider>
 
           <Drawer
-            title="Setup"
+            // Setup and Library are two different jobs — machine/tooling/stock
+            // vs. document management — so the title says plainly which one is
+            // open, and they share this one Drawer rather than sitting side by
+            // side as two. Separate Drawers were tried first and looked broken:
+            // switching from one to the other via a toolbar button went blank,
+            // because antd's default mask sits at z-index 1000 over the whole
+            // page — including the very button that was supposed to open the
+            // next one, which a click could never actually reach. `mask={false}`
+            // is the fix, not a stacking order between two Drawers (there's
+            // only one now) — the panel itself never needed the dimmed
+            // backdrop a modal does; it's a persistent side panel, not a dialog.
+            title={libraryOpen ? 'Library' : 'Setup'}
             placement="left"
             width={470}
-            open={settingsOpen}
-            onClose={() => setSettingsOpen(false)}
+            open={settingsOpen || libraryOpen}
+            onClose={() => { setSettingsOpen(false); setLibraryOpen(false); }}
             destroyOnHidden={false}
+            mask={false}
             styles={{ body: { background: CAD.panelBg, padding: 16 } }}
           >
-            <Space direction="vertical" size="middle" style={{ width: '100%' }}>
-              {/* One rail, two groups, the way a CAD command bar is built:
-                  what brings a program IN (parse, open, sample), a separator,
-                  then what keeps one or hands it on (the library, export).
-                  Icon-only, like every other rail in the app — the names and
-                  the descriptions come from the command catalogue and appear on
-                  hover. See `engine/view/commands.js`.
-
-                  These were two stacked `Space`s, and five glyphs across a
-                  430 px sidebar had no reason to be on two lines: the wrap was
-                  buying nothing and the second row read as a second, unrelated
-                  toolbar. Grouped by a rule instead, which says the same thing
-                  in one line.
-
-                  Saving to a **file** — the project as .camweb.json, and opening
-                  one back — is deliberately not here: the library keeps the same
-                  thing under a name, with no dialog and no folder to find again,
-                  and two ways to do one job on one rail is two ways to be unsure
-                  which one you used. A file still opens by dropping it on the
-                  window. */}
-              {(show.files || show.project) && (
-              <Space wrap size={6} align="center">
-                {/* **Parse is on the viewport rail**, beside Simulate. It is pressed
-                    after every edit to the program, and pressing it from in here meant
-                    opening the drawer over the backplot it redraws. What stays is the
-                    two ways of *getting* a program — neither of which is a mid-session
-                    action. */}
-                {show.files && (
-                <Upload
-                  accept=".nc,.gcode,.gc,.tap,.cnc,.ngc,.txt,.mpf"
-                  showUploadList={false}
-                  beforeUpload={(file) => { loadFile(file); return false; }}
-                >
-                  <CommandButton id="openProgram" icon={<UploadOutlined />} />
-                </Upload>
-                )}
-                {show.files && (
-                <CommandButton
-                  id="sample"
-                  icon={<BulbOutlined />}
-                  onClick={() => parse(turning ? SAMPLE_TURNING : SAMPLE_GCODE)}
-                />
-                )}
-                {show.files && show.project && (
-                  <div style={{ width: 1, height: 22, background: CAD.border, margin: '0 2px' }} />
-                )}
-                {show.project && (
-                <CommandButton
-                  id="openLibrary"
-                  icon={<DatabaseOutlined />}
-                  type={libraryOpen ? 'primary' : 'default'}
-                  ghost={libraryOpen}
-                  onClick={() => setLibraryOpen((v) => !v)}
-                />
-                )}
-                {show.project && (
-                <CommandButton
-                  id="exportGcode"
-                  icon={<DownloadOutlined />}
-                  disabled={!gcode}
-                  onClick={onExportGcode}
-                />
-                )}
+            {libraryOpen ? (
+              // The library works *in* this drawer rather than in a popover:
+              // saving, looking through what is there, opening one and
+              // deleting two is a session, and a layer that shuts when you
+              // click near its edge is the wrong container for one.
+              <Space direction="vertical" size="middle" style={{ width: '100%' }}>
+                <LibraryPanel inline open={libraryOpen} onDone={setSaveMsg} />
+                <Text style={{ color: CAD.dim, fontSize: 12 }}>
+                  …or drag &amp; drop a .nc / .gcode / .tap program, a .camweb.json project,
+                  or an .stl / .obj / .ply to machine
+                </Text>
+                {saveMsg && <Alert type="success" showIcon message={saveMsg} />}
               </Space>
-              )}
-
-              {show.project && <>
-              {/* The library works *in* the sidebar rather than in a popover:
-                  saving, looking through what is there, opening one and deleting
-                  two is a session, and a layer that shuts when you click near
-                  its edge is the wrong container for one. */}
-              <LibraryPanel inline open={libraryOpen} onDone={setSaveMsg} />
-
-              <Text style={{ color: CAD.dim, fontSize: 12 }}>
-                …or drag &amp; drop a .nc / .gcode / .tap program, a .camweb.json project,
-                or an .stl / .obj / .ply to machine
-              </Text>
-
-              {saveMsg && <Alert type="success" showIcon message={saveMsg} />}
-              </>}
-
+            ) : (
+            <Space direction="vertical" size="middle" style={{ width: '100%' }}>
               {/* CAM from a model. Sits above the program panel because it is
                   what *produces* a program — the G-code below is its output. */}
               {show.cam && <CamPanel />}
@@ -1258,6 +1237,40 @@ export default function App() {
                     mm/min
                   </span>
                 </Space.Compact>
+                <Tooltip title="Seconds billed for every tool change — 0 means not counted. Not a published spec like Rapid; set it from your own machine's chip-to-chip time.">
+                  <span style={{ color: CAD.label }}>Tool change</span>
+                </Tooltip>
+                <Space.Compact>
+                  <InputNumber controls={false}
+                    min={0}
+                    step={1}
+                    value={toolChangeSeconds}
+                    onChange={(v) => setToolChangeSeconds(v || 0)}
+                    style={{ width: 72 }}
+                  />
+                  <span className="ant-input-group-addon" style={addonStyle('right')}>
+                    s
+                  </span>
+                </Space.Compact>
+                {!turning && (
+                  <>
+                    <Tooltip title="Seconds billed every time an A/B word indexes the 4th/5th axis to a new angle — 0 means not counted. Mostly acceleration/settle/clamp time, which varies by machine far more than it varies by angle, so this is a flat cost per index, not a rate.">
+                      <span style={{ color: CAD.label }}>Axis index</span>
+                    </Tooltip>
+                    <Space.Compact>
+                      <InputNumber controls={false}
+                        min={0}
+                        step={1}
+                        value={rotaryIndexSeconds}
+                        onChange={(v) => setRotaryIndexSeconds(v || 0)}
+                        style={{ width: 72 }}
+                      />
+                      <span className="ant-input-group-addon" style={addonStyle('right')}>
+                        s
+                      </span>
+                    </Space.Compact>
+                  </>
+                )}
                 {turning && (
                   <Tooltip title="Lathe convention: the X word is a diameter, not a radius">
                     <Space>
@@ -1339,13 +1352,31 @@ export default function App() {
                           </b>
                           <span style={{ minWidth: 58, color: CAD.muted }}>{t.type}</span>
                           {turning ? (() => {
-                            const holderId = ov.insert ?? turnTool;
-                            const holder = STANDARD_TURN_TOOLS.find((x) => x.id === holderId);
+                            const holder = effectiveTurnTool({
+                              detected: t, overrideId: ov.insert, fallbackId: turnTool,
+                            });
+                            const holderId = holder.id;
                             return (
                               <>
                                 <TurnInsertPicker
                                   value={holderId}
                                   onChange={(id) => setToolOverride(t.n, { insert: id })}
+                                />
+                                {/* Size the marker — and, for a drill/reamer/tap/centre
+                                    drill, the real bore this move cuts: those run down
+                                    the centreline at X~0, so the program's own path
+                                    carries no diameter at all; this is the only number
+                                    that can state one (`turningCutRadiusResolver`). */}
+                                <span style={{ color: CAD.label }}>⌀</span>
+                                <InputNumber controls={false}
+                                  size="small"
+                                  aria-label={`T${t.n} diameter`}
+                                  min={0.1}
+                                  step={0.5}
+                                  value={effDia}
+                                  placeholder="dia"
+                                  onChange={(v) => setToolOverride(t.n, { diameter: v ?? undefined })}
+                                  style={{ width: 68 }}
                                 />
                                 {holder?.adjustable && (
                                   <>
@@ -1360,6 +1391,37 @@ export default function App() {
                                       style={{ width: 62 }}
                                     />
                                   </>
+                                )}
+                                {holder?.kind === 'boring' && (
+                                  <Tooltip title="Boring bar shank diameter — standard sizes only; sets the marker's bar thickness, not the bore it cuts (that's the program's own X).">
+                                    <Space.Compact>
+                                      <span className="ant-input-group-addon" style={addonStyle('left')}>bar⌀</span>
+                                      <Select
+                                        size="small"
+                                        value={ov.barDiameter ?? BORING_BAR_DIAMETERS[0]}
+                                        onChange={(v) => setToolOverride(t.n, { barDiameter: v })}
+                                        options={BORING_BAR_DIAMETERS.map((d) => ({ value: d, label: `${d}` }))}
+                                        style={{ width: 62 }}
+                                      />
+                                    </Space.Compact>
+                                  </Tooltip>
+                                )}
+                                {holder?.kind === 'parting' && (
+                                  <Tooltip title="Groove width — the blade's kerf, both drawn and cut this wide.">
+                                    <Space.Compact>
+                                      <span className="ant-input-group-addon" style={addonStyle('left')}>w</span>
+                                      <InputNumber controls={false}
+                                        size="small"
+                                        aria-label={`T${t.n} groove width`}
+                                        min={0.5}
+                                        step={0.5}
+                                        value={ov.grooveW ?? null}
+                                        placeholder="3"
+                                        onChange={(v) => setToolOverride(t.n, { grooveW: v ?? undefined })}
+                                        style={{ width: 56 }}
+                                      />
+                                    </Space.Compact>
+                                  </Tooltip>
                                 )}
                               </>
                             );
@@ -1737,6 +1799,7 @@ export default function App() {
               )}
               </>}
             </Space>
+            )}
           </Drawer>
 
           <Content style={{ position: 'relative' }}>
@@ -1837,7 +1900,7 @@ export default function App() {
                 <Button
                   size="small"
                   icon={<SettingOutlined />}
-                  onClick={() => setSettingsOpen(true)}
+                  onClick={() => { setLibraryOpen(false); setSettingsOpen(true); }}
                   data-open-setup
                 >
                   Setup
@@ -1897,6 +1960,17 @@ export default function App() {
                   type={showArbor ? 'primary' : 'default'}
                   icon={<ArborIcon />}
                   onClick={toggleArbor}
+                />
+              )}
+              {/* Turning's equivalent of the arbor toggle — the lathe marker has no
+                  collet to drop separately, so this hides the whole holder+insert
+                  instead, which is what sits over the cut an operator wants to see. */}
+              {toolToggle && (
+                <CommandButton
+                  id="showTool" size="small"
+                  type={showTool ? 'primary' : 'default'}
+                  icon={<LatheToolIcon />}
+                  onClick={toggleTool}
                 />
               )}
               {/* The backplot covers the surface it describes on a dense
@@ -2029,6 +2103,7 @@ export default function App() {
               mode={sketching ? 'mill' : mode}
               sketching={sketching}
               showArbor={showArbor}
+              showTool={showTool}
               showToolpath={showToolpath}
               rotaryFrame={rotaryFrame}
               rotaryCenter={rotaryCenter}

@@ -28,7 +28,7 @@ export const PROJECT_VERSION = 4;
 
 /** camStore settings worth carrying (everything else is derived). */
 const SETTING_KEYS = [
-  'mode', 'rapidRate', 'diameterMode',
+  'mode', 'rapidRate', 'toolChangeSeconds', 'rotaryIndexSeconds', 'diameterMode',
   'toolRadius', 'toolType', 'toolCutter', 'toolFlutes', 'toolAngle', 'toolThickness',
   'toolShank',
   'toolOverrides',

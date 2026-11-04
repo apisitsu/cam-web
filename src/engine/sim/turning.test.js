@@ -41,6 +41,19 @@ describe('effectiveTurnTool — the toolholder the marker should draw', () => {
       .toBe('threadtool');
   });
 
+  it('draws a thread whose comment says INTERNAL / ID with the threading bar', () => {
+    // T0404 (INTERNAL THREAD .375-24 UNJF-3B-LH) drew the external threading tool.
+    const d = (desc) => effectiveTurnTool({ detected: { type: 'thread', desc }, fallbackId: 'mvjnr' }).id;
+    expect(d('INTERNAL THREAD .375-24 UNJF-3B-LH')).toBe('threadbar');
+    expect(d('ID THREAD M10x1')).toBe('threadbar');
+    expect(d('EXTERNAL THREAD TOOL')).toBe('threadtool');
+    expect(d('THREAD M10')).toBe('threadtool');
+    // The operator's own pick still wins.
+    expect(effectiveTurnTool({
+      detected: { type: 'thread', desc: 'INTERNAL THREAD' }, overrideId: 'threadtool', fallbackId: 'mvjnr',
+    }).id).toBe('threadtool');
+  });
+
   it('maps the axial tool types to their own markers, not the OD default', () => {
     expect(effectiveTurnTool({ detected: { type: 'drill' }, fallbackId: 'mvjnr' }).id)
       .toBe('drillbit');
@@ -52,6 +65,24 @@ describe('effectiveTurnTool — the toolholder the marker should draw', () => {
     // with an actual chamfer mill — and on a lathe that means a centre drill.
     expect(effectiveTurnTool({ detected: { type: 'chamfer' }, fallbackId: 'mvjnr' }).id)
       .toBe('centerdrill');
+  });
+
+  it('finds an operator-defined holder alongside the built-in catalogue', () => {
+    const custom = [{ id: 'custom-1', label: 'My 107.5°', kind: 'od', lead: 107.5, sides: 4, angle: 55, flip: true }];
+    const t = effectiveTurnTool({ overrideId: 'custom-1', fallbackId: 'mvjnr', custom });
+    expect(t.id).toBe('custom-1');
+    expect(t.lead).toBe(107.5);
+  });
+
+  it('a custom id still wins as the global default (fallbackId), not just an override', () => {
+    const custom = [{ id: 'custom-1', label: 'My holder', kind: 'od', lead: 90, sides: 4, angle: 80, flip: true }];
+    const t = effectiveTurnTool({ fallbackId: 'custom-1', custom });
+    expect(t.id).toBe('custom-1');
+  });
+
+  it('a dangling custom id (deleted) falls back to the first catalogue entry, same as any unknown id', () => {
+    const t = effectiveTurnTool({ overrideId: 'custom-deleted', fallbackId: 'mvjnr', custom: [] });
+    expect(t.id).toBe(STANDARD_TURN_TOOLS[0].id);
   });
 
   it('falls back to the catalogue\'s first entry if the resolved id is unknown', () => {

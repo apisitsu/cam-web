@@ -23,6 +23,7 @@ import { ThunderboltOutlined } from '@ant-design/icons';
 import { useCamStore } from '../stores/camStore.js';
 import { useSketchStore } from '../stores/sketchStore.js';
 import { useFeatureStore } from '../stores/featureStore.js';
+import { useStdStore } from '../stores/stdStore.js';
 import { SAMPLE_GCODE, SAMPLE_TURNING } from '../SAMPLE_GCODE.js';
 import { CAD } from '../theme.js';
 
@@ -56,6 +57,11 @@ export default function MenuBar({
 
   const treeOpen = useFeatureStore((s) => s.treeOpen);
   const setTreeOpen = useFeatureStore((s) => s.setTreeOpen);
+
+  const canRestore = useStdStore((s) => !!s.undo);
+  const checkStd = useStdStore((s) => s.check);
+  const restoreStd = useStdStore((s) => s.restore);
+  const openStdEditor = useStdStore((s) => s.openEditor);
 
   const fileInput = useRef(null);
 
@@ -102,6 +108,15 @@ export default function MenuBar({
       ],
     },
     {
+      key: 'tools',
+      label: 'Tools',
+      children: [
+        { key: 'std', label: 'Standard cutting speeds…', disabled: !gcode },
+        { key: 'std-restore', label: 'Restore program', disabled: !canRestore },
+        { key: 'std-edit', label: 'Edit standard…' },
+      ],
+    },
+    {
       key: 'help',
       label: 'Help',
       children: [
@@ -120,6 +135,9 @@ export default function MenuBar({
     if (key === 'delete') { deleteSelected(); return; }
     if (key === 'fit') { setViewPreset(view); return; }
     if (key.startsWith('view:')) { setViewPreset(key.slice(5)); return; }
+    if (key === 'std') { checkStd({ manual: true }); return; }
+    if (key === 'std-restore') { restoreStd(); return; }
+    if (key === 'std-edit') { openStdEditor(); return; }
     if (key === 'setup') { onOpenSetup(); return; }
     if (key === 'tree') { setTreeOpen(!treeOpen); return; }
     if (key === 'about') {

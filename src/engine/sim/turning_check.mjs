@@ -11,19 +11,19 @@ import {
 
 const bounds = { min: [0, 0, -50], max: [12, 0, 0] };
 
-test('standard tool list defines OD, boring and parting holders', () => {
+test('standard tool list defines OD, boring, drill and parting holders', () => {
   assert.ok(STANDARD_TURN_TOOLS.length >= 2);
   for (const t of STANDARD_TURN_TOOLS) {
     assert.ok(typeof t.id === 'string' && t.label);
     assert.ok(t.lead > 0, `${t.id} needs a lead angle`);
     assert.ok(t.angle > 0 && t.sides >= 3, `${t.id} needs an insert shape`);
-    assert.ok(['od', 'boring', 'parting'].includes(t.kind), `${t.id} needs a kind`);
+    assert.ok(['od', 'boring', 'drill', 'parting'].includes(t.kind), `${t.id} needs a kind`);
   }
   // Some holders have an adjustable insert angle (MVJNR, boring), some are fixed.
   assert.ok(STANDARD_TURN_TOOLS.some((t) => t.adjustable));
   assert.ok(STANDARD_TURN_TOOLS.some((t) => !t.adjustable));
-  // The three kinds are all represented.
-  for (const k of ['od', 'boring', 'parting']) {
+  // All four kinds are represented.
+  for (const k of ['od', 'boring', 'drill', 'parting']) {
     assert.ok(STANDARD_TURN_TOOLS.some((t) => t.kind === k), `missing kind ${k}`);
   }
 });

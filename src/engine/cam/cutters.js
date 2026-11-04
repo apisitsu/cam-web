@@ -118,7 +118,7 @@ export const CUTTERS = [
   },
   {
     id: 'drill',
-    label: 'Twist drill',
+    label: 'Drill',
     // A drill was the one common tool with no shape here, so it carved as a
     // flat-bottomed disc: a blind hole came out with a square floor, which is
     // the one thing every machinist knows a drill does not leave. The point

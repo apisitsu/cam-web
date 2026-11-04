@@ -531,9 +531,9 @@ function AxisLabels({ len = 22 }) {
   });
   return (
     <group>
-      <Html position={[len, 0, 0]} center><div style={style(CAD.rapid)}>X</div></Html>
-      <Html position={[0, len, 0]} center><div style={style(CAD.feed)}>Y</div></Html>
-      <Html position={[0, 0, len]} center><div style={style(CAD.accent)}>Z</div></Html>
+      <Html position={[len, 0, 0]} center zIndexRange={[2, 0]}><div style={style(CAD.rapid)}>X</div></Html>
+      <Html position={[0, len, 0]} center zIndexRange={[2, 0]}><div style={style(CAD.feed)}>Y</div></Html>
+      <Html position={[0, 0, len]} center zIndexRange={[2, 0]}><div style={style(CAD.accent)}>Z</div></Html>
     </group>
   );
 }

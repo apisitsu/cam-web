@@ -244,6 +244,20 @@ describe('droTool — what is in the spindle', () => {
     expect(droTool({ number: 7 })).toEqual({ number: 'T7', name: null });
     expect(droTool()).toEqual({ number: 'T—', name: null });
   });
+
+  it("the operator's own name wins outright, over a holder, a cutter and a comment alike", () => {
+    const holder = { id: 'mvjnr', label: 'MVJNR · 93° OD (insert adj.)' };
+    expect(droTool({ number: 101, holder, name: 'My rough tool' }).name).toBe('My rough tool');
+    expect(droTool({ number: 3, cutter: 'endmill', radius: 3.5, name: 'Finish mill' }).name)
+      .toBe('Finish mill');
+  });
+
+  it('an empty or blank override name falls through to the usual resolution', () => {
+    expect(droTool({ number: 3, cutter: 'endmill', radius: 3.5, name: '  ' }).name)
+      .toBe('Endmill Ø7');
+    expect(droTool({ number: 3, cutter: 'endmill', radius: 3.5, name: null }).name)
+      .toBe('Endmill Ø7');
+  });
 });
 
 describe('droFeed — the rate, always in mm/min', () => {

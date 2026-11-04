@@ -1011,8 +1011,16 @@ describe('choosing the cutting tool', () => {
  * row, and `cam/effectiveTool.js` decides which source wins.
  */
 describe('the cutter type of a tool the program named', () => {
+  // The picker, diameter, angle, thickness and shank fields moved off the
+  // compact row into the per-tool Edit dialog (`ToolEditDialog`) — see
+  // "the Tool table row is a glance, the dialog is where it's edited" below.
+  // Every test that reads or clicks one of them opens that dialog first.
   const rowBtn = (n, id) => q(`button[data-cutter="${id}"][data-cutter-scope="T${n}"]`);
   const pressed = (b) => b.classList.contains('ant-btn-primary');
+
+  async function openToolEdit(n) {
+    await act(async () => { q(`button[aria-label="Edit T${n}"]`).click(); });
+  }
 
   /** Load a program whose comments describe its tools, parked at the end. */
   async function loadProgramWithTools(src) {
@@ -1026,7 +1034,7 @@ describe('the cutter type of a tool the program named', () => {
 
   afterEach(() => {
     clearBuffers();
-    useCamStore.setState({ toolOverrides: {} });
+    useCamStore.setState({ toolOverrides: {}, toolEditDialog: null });
   });
 
   it('draws the tool the program described, not the fallback', async () => {
@@ -1035,16 +1043,18 @@ describe('the cutter type of a tool the program named', () => {
     expect(marker()).toMatchObject({ cutter: 'face', radius: 25 });
   });
 
-  it('shows that type as the pressed glyph on the row', async () => {
+  it('shows that type as the pressed glyph in the edit dialog', async () => {
     await mount();
     await loadProgramWithTools(FACE);
+    await openToolEdit(1);
     expect(pressed(rowBtn(1, 'face'))).toBe(true);
     expect(pressed(rowBtn(1, 'endmill'))).toBe(false);
   });
 
-  it('re-types a tool from the row, and the marker follows', async () => {
+  it('re-types a tool from the dialog, and the marker follows', async () => {
     await mount();
     await loadProgramWithTools(FACE);
+    await openToolEdit(1);
     await act(async () => { rowBtn(1, 'ball').click(); });
     expect(useCamStore.getState().toolOverrides[1]).toMatchObject({
       cutter: 'ball',
@@ -1056,6 +1066,7 @@ describe('the cutter type of a tool the program named', () => {
   it('asks for the included angle only once a chamfer mill is picked', async () => {
     await mount();
     await loadProgramWithTools(FACE);
+    await openToolEdit(1);
     await act(async () => { rowBtn(1, 'chamfer').click(); });
     expect(useCamStore.getState().toolOverrides[1].angle).toBe(90);
     expect(marker().type).toBe('cone');
@@ -1064,8 +1075,10 @@ describe('the cutter type of a tool the program named', () => {
   it('reverts to the detected type when the row is reset', async () => {
     await mount();
     await loadProgramWithTools(FACE);
+    await openToolEdit(1);
     await act(async () => { rowBtn(1, 'slot').click(); });
     expect(marker().cutter).toBe('slot');
+    // The reset button stays on the compact row itself, not in the dialog.
     await act(async () => { cmd('resetTool').click(); });
     expect(marker().cutter).toBe('face');
   });
@@ -1076,6 +1089,7 @@ describe('the cutter type of a tool the program named', () => {
     const field = () => q('input[aria-label="T1 cutter thickness"]');
     await mount();
     await loadProgramWithTools(FACE);
+    await openToolEdit(1);
     expect(field()).toBeNull();                       // a face mill is not asked
     await act(async () => { rowBtn(1, 'slot').click(); });
     expect(field()).not.toBeNull();
@@ -1091,6 +1105,7 @@ describe('the cutter type of a tool the program named', () => {
     const field = () => q('input[aria-label="T1 shank diameter"]');
     await mount();
     await loadProgramWithTools(FACE);
+    await openToolEdit(1);
     expect(field()).toBeNull();                       // a face mill is not asked
     await act(async () => { rowBtn(1, 'slot').click(); });
     expect(field()).not.toBeNull();
@@ -1107,6 +1122,7 @@ describe('the cutter type of a tool the program named', () => {
     await mount();
     await loadProgramWithTools('T2(DRILL 9)\nM6\nG0 X0 Y0 Z5\nG1 Z-2 F200\nG1 X60 F400');
     expect(marker()).toMatchObject({ cutter: 'drill', type: 'cone', radius: 4.5 });
+    await openToolEdit(2);
     expect(pressed(rowBtn(2, 'drill'))).toBe(true);
     expect(pressed(rowBtn(2, 'endmill'))).toBe(false);
   });
@@ -1115,6 +1131,73 @@ describe('the cutter type of a tool the program named', () => {
     await mount();
     await loadProgramWithTools('T4(TAP D8)\nM6\nG0 X0 Y0 Z5\nG1 Z-2 F200\nG1 X60 F400');
     expect(marker()).toMatchObject({ cutter: '', type: 'flat', radius: 4 });
+  });
+});
+
+/**
+ * The Tool table row itself: a glance (T number, editable name, a one-line
+ * spec, cut length, reset) — everything that USED to live there now lives
+ * behind the Edit button, in `ToolEditDialog`.
+ */
+describe("the Tool table row is a glance, the dialog is where it's edited", () => {
+  async function loadProgramWithTools(src) {
+    const { segments, bounds, stats } = interpret(src, { mode: 'mill' });
+    const path = buildPath(segments);
+    setBuffers({ path, bounds, stats });
+    await setStore({ gcode: src, bufVer: 1, playing: false, playhead: path.count });
+  }
+
+  const FACE = 'T1(FACEMILL D50 - FACE)\nM6\nG0 X0 Y0 Z5\nG1 Z-2 F200\nG1 X60 F400';
+
+  afterEach(() => {
+    clearBuffers();
+    useCamStore.setState({ toolOverrides: {}, toolEditDialog: null });
+  });
+
+  it('offers no cutter picker, diameter or Edit dialog on the row itself', async () => {
+    await mount();
+    await loadProgramWithTools(FACE);
+    expect(q('button[data-cutter="face"][data-cutter-scope="T1"]')).toBeNull();
+    expect(q('input[aria-label="T1 diameter"]')).toBeNull();
+    expect(q('.ant-modal-content')).toBeNull();
+  });
+
+  it('names the tool with its own override — blank, not the detected type, until one is set', async () => {
+    await mount();
+    await loadProgramWithTools(FACE);
+    const name = () => q('input[aria-label="T1 name"]');
+    expect(name().value).toBe('');
+    // Not `facemill` as a ghost value — that would read as an already-chosen
+    // name this row never had. The detected type is still on the row's own
+    // tooltip and in the Edit dialog's title.
+    expect(name().placeholder).toBe('Name');
+    await act(async () => { useCamStore.getState().setToolOverride(1, { label: 'Roughing face mill' }); });
+    expect(name().value).toBe('Roughing face mill');
+  });
+
+  it('opens the one shared editor for the row that was clicked', async () => {
+    await mount();
+    await loadProgramWithTools('T1(FACEMILL D50)\nT2(DRILL 9)\nM6\nG0 X0 Y0 Z5\nG1 Z-2 F200\nG1 X60 F400');
+    await act(async () => { q('button[aria-label="Edit T1"]').click(); });
+    expect(q('.ant-modal-title').textContent).toContain('T1');
+    await act(async () => { q('button[aria-label="Edit T2"]').click(); });
+    expect(q('.ant-modal-title').textContent).toContain('T2');
+    // Still exactly one dialog mounted — opening a different row's editor
+    // replaced it rather than stacking a second one.
+    expect(document.querySelectorAll('.ant-modal-content').length).toBe(1);
+  });
+
+  it('closes from Done, leaving the override it made in place', async () => {
+    await mount();
+    await loadProgramWithTools(FACE);
+    await act(async () => { q('button[aria-label="Edit T1"]').click(); });
+    await act(async () => { q('button[data-cutter="ball"][data-cutter-scope="T1"]').click(); });
+    await act(async () => {
+      [...document.querySelectorAll('.ant-modal-footer button')]
+        .find((b) => b.textContent.trim() === 'Done').click();
+    });
+    expect(q('.ant-modal-content')).toBeNull();
+    expect(useCamStore.getState().toolOverrides[1].cutter).toBe('ball');
   });
 });
 
@@ -1134,22 +1217,28 @@ describe('the diameter of a turning tool', () => {
     });
   }
 
+  async function openToolEdit(n) {
+    await act(async () => { q(`button[aria-label="Edit T${n}"]`).click(); });
+  }
+
   const DRILL = 'T0202(DRILL DIA 8.5 MM)\nG97 S600 M3\nG0 X0 Z2\nG1 Z-20 F0.1\nG0 Z2\nM30';
 
   afterEach(() => {
     clearBuffers();
-    useCamStore.setState({ toolOverrides: {} });
+    useCamStore.setState({ toolOverrides: {}, toolEditDialog: null });
   });
 
   it('shows the diameter the program\'s own comment named', async () => {
     await mount();
     await loadTurnProgramWithTools(DRILL);
+    await openToolEdit(202);
     expect(q('input[aria-label="T202 diameter"]').value).toBe('8.5');
   });
 
   it('resizes the marker when the operator overrides it', async () => {
     await mount();
     await loadTurnProgramWithTools(DRILL);
+    await openToolEdit(202);
     await act(async () => { useCamStore.getState().setToolOverride(202, { diameter: 12 }); });
     expect(marker().radius).toBeCloseTo(6, 6);
     expect(q('input[aria-label="T202 diameter"]').value).toBe('12.0');
@@ -1158,6 +1247,7 @@ describe('the diameter of a turning tool', () => {
   it('states a diameter for a tool whose comment gave none at all', async () => {
     await mount();
     await loadTurnProgramWithTools('T0303(UNDERCUT)\nG97 S600 M3\nG0 X10 Z2\nG1 Z-5 F0.1\nM30');
+    await openToolEdit(303);
     expect(q('input[aria-label="T303 diameter"]').value).toBe('');
     await act(async () => { useCamStore.getState().setToolOverride(303, { diameter: 4 }); });
     expect(marker().radius).toBeCloseTo(2, 6);
@@ -1166,8 +1256,10 @@ describe('the diameter of a turning tool', () => {
   it('offers a groove-width field only for a parting tool, not an OD or drill one', async () => {
     await mount();
     await loadTurnProgramWithTools(DRILL);
+    await openToolEdit(202);
     expect(q('input[aria-label="T202 groove width"]')).toBeNull();
     await loadTurnProgramWithTools('T0505(PARTING OFF)\nG97 S600 M3\nG0 X22 Z-10\nG1 X0 F0.06\nM30');
+    await openToolEdit(505);
     expect(q('input[aria-label="T505 groove width"]')).not.toBeNull();
   });
 });

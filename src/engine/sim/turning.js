@@ -91,7 +91,7 @@ export const STANDARD_TURN_TOOLS = [
   // entries' angles, all kept under 90° for exactly that reason), so the
   // real angles are used directly.
   { id: 'centerdrill', label: 'Centre / spot drill', kind: 'drill', lead: 93, sides: 4, angle: 120, adjustable: false },
-  { id: 'drillbit', label: 'Twist drill', kind: 'drill', lead: 93, sides: 4, angle: 118, adjustable: false },
+  { id: 'drillbit', label: 'Drill', kind: 'drill', lead: 93, sides: 4, angle: 118, adjustable: false },
   { id: 'reamerbit', label: 'Reamer', kind: 'drill', lead: 93, sides: 4, angle: 45, adjustable: false },
   { id: 'tapbit', label: 'Tap', kind: 'drill', lead: 93, sides: 4, angle: 60, adjustable: false },
   // A thin parting/grooving blade; `grooveW` is the cut width in mm.
@@ -102,9 +102,8 @@ export const STANDARD_TURN_TOOLS = [
  * Auto-detected `gcode/tools.js` type -> the one holder it unambiguously
  * implies. 'od' is deliberately absent: an OD turning tool needs no special
  * case to land on the global default, because that default already IS an OD
- * holder. 'thread' always resolves to the external tool — nothing in a
- * comment says ID vs OD threading on its own, so an internal threading bar
- * still needs the operator's own pick, same as it always did. 'chamfer' is
+ * holder. 'thread' resolves to the external tool unless the comment itself says
+ * INTERNAL / ID, which `effectiveTurnTool` turns into the threading bar. 'chamfer' is
  * here, not missing: `gcode/tools.js` gives a centre/spot drill that same
  * type (it shares one mill-oriented category with an actual chamfer mill),
  * and on a lathe a "chamfer" comment is a centre drill far more often than
@@ -129,13 +128,25 @@ const TYPE_TO_INSERT = {
  * picker that does nothing — `gcode/tools.js` already named the shape; only
  * the marker wasn't listening.
  *
- * @param {{detected?:object|null, overrideId?:string|null, fallbackId?:string}} args
+ * @param {{detected?:object|null, overrideId?:string|null, fallbackId?:string, custom?:object[]}} args
  *   `detected` is a row of `stats.tools`; `overrideId` is
- *   `toolOverrides[n]?.insert`; `fallbackId` is the global `turnTool` pick.
+ *   `toolOverrides[n]?.insert`; `fallbackId` is the global `turnTool` pick;
+ *   `custom` is `camStore.customTurnTools` — operator-defined holders, same
+ *   shape as a `STANDARD_TURN_TOOLS` entry, searched alongside it so a picked
+ *   or detected id can resolve to either. A dangling id (its custom tool was
+ *   since deleted) falls through to the same `STANDARD_TURN_TOOLS[0]` default
+ *   as any other unknown id — nothing has to scrub `turnTool`/`toolOverrides`
+ *   when a custom tool is removed.
  */
-export function effectiveTurnTool({ detected, overrideId, fallbackId }) {
-  const id = overrideId ?? TYPE_TO_INSERT[detected?.type] ?? fallbackId;
-  return STANDARD_TURN_TOOLS.find((t) => t.id === id) ?? STANDARD_TURN_TOOLS[0];
+export function effectiveTurnTool({
+  detected, overrideId, fallbackId, custom = [],
+}) {
+  // A thread comment that says INTERNAL / ID is a boring-bar thread, the same words
+  // `turningCutMode` reads; with neither it stays external (the common case).
+  const internalThread = detected?.type === 'thread' && /INTERNAL|\bID\b/i.test(detected?.desc ?? '');
+  const id = overrideId ?? (internalThread ? 'threadbar' : TYPE_TO_INSERT[detected?.type]) ?? fallbackId;
+  const all = custom.length ? [...STANDARD_TURN_TOOLS, ...custom] : STANDARD_TURN_TOOLS;
+  return all.find((t) => t.id === id) ?? STANDARD_TURN_TOOLS[0];
 }
 
 /**

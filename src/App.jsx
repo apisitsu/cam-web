@@ -8,15 +8,15 @@
 import { useEffect, useMemo, useState, useCallback, useRef } from 'react';
 import {
   Layout, Button, Statistic, Alert, Space, Typography, theme,
-  InputNumber, Segmented, Switch, Divider, Slider, Tag, Tooltip, Drawer, Select,
-  App as AntdApp,
+  InputNumber, Input, Segmented, Switch, Divider, Slider, Tag, Tooltip, Drawer, Select,
+  Popconfirm, Modal, App as AntdApp,
 } from 'antd';
 import {
   ThunderboltOutlined,
   PlayCircleFilled, PauseCircleFilled, StepBackwardOutlined,
   StepForwardOutlined, FastBackwardOutlined, RollbackOutlined,
   ExpandOutlined,
-  PlusOutlined, ColumnWidthOutlined, SettingOutlined,
+  PlusOutlined, ColumnWidthOutlined, SettingOutlined, EditOutlined,
 } from '@ant-design/icons';
 import CommandButton from './components/CommandButton.jsx';
 import {
@@ -42,6 +42,7 @@ import { simMethodFor } from './engine/sim/method.js';
 import { SPEEDS, perTick } from './engine/view/playback.js';
 import { sidebarSections } from './engine/view/sidebar.js';
 import { formatDuration, programStatRows, timingBreakdown } from './engine/view/programStats';
+import { toolSpecSummary } from './engine/view/toolRow.js';
 import { autoSimKey, shouldAutoSimulate } from './engine/view/autoSim.js';
 import { offerArborToggle, parkedTip } from './engine/view/millTool.js';
 import { offerToolToggle } from './engine/view/latheTool.js';
@@ -61,6 +62,10 @@ import SketchToolbar from './components/SketchToolbar.jsx';
 import SketchContextMenu from './components/SketchContextMenu.jsx';
 import SketchConfirmCorner from './components/SketchConfirmCorner.jsx';
 import MenuBar from './components/MenuBar.jsx';
+import StdVcDialog from './components/StdVcDialog.jsx';
+import CustomTurnToolDialog from './components/CustomTurnToolDialog.jsx';
+import { TurnToolGlyph } from './components/turnToolGlyph.jsx';
+import StdEditorDialog from './components/StdEditorDialog.jsx';
 import LeftColumn from './components/LeftColumn.jsx';
 import { TREE_SIZE } from './components/FeatureTree.jsx';
 import { invalidate } from '@react-three/fiber';
@@ -131,77 +136,6 @@ const VIEWS = [
   { value: 'right', ...viewGlyph('Right', <CubeGlyph face="right" />) },
 ];
 
-// Metallic palette for the realistic tool glyphs (fixed colours, like the real
-// tool — the active state is shown by the button's highlighted background).
-// Deliberately NOT theme tokens: these are steel and carbide, and the picture is
-// only readable if it stays the colour of the thing. They are a shade deeper
-// than a photograph would be because they are now drawn on a light button, where
-// true bright steel would disappear into it.
-const TG = {
-  steel: '#b3bdcb', steelEdge: '#5d6a7c', steelHi: '#e7ecf3',
-  gold: '#f0bc2c', goldEdge: '#8a5f0d', goldHi: '#fae09a',
-  screw: '#5c4610',
-};
-
-/**
- * A little picture of the actual turning tool for the icon picker (modelled on the
- * catalogue photos in image_tool/): a steel shank holding a **gold rhombic insert**
- * with a round clamp screw. The insert's nose angle is the real ISO shape
- * (V 35° narrow → C 80° → S 90° square), and the holder's hand (`flip`) mirrors it,
- * so MVJNR/MVVNN/DCLNR/SCLCR read as distinct real tools. Boring bars reach in along
- * the bore; the parting tool is a thin blade.
- */
-function TurnToolGlyph({ tool }) {
-  // A gold ISO insert (rhombus of the given nose angle) with edge + clamp screw.
-  const Insert = ({ ox, oy, p = 5.5, angle = tool.angle }) => {
-    const q = p * Math.tan((angle * Math.PI) / 180 / 2);
-    const d = `M${ox} ${oy - p} L${ox + q} ${oy} L${ox} ${oy + p} L${ox - q} ${oy} Z`;
-    return (
-      <>
-        <path d={d} fill={TG.gold} stroke={TG.goldEdge} strokeWidth="0.8" strokeLinejoin="round" />
-        <path d={`M${ox} ${oy - p * 0.6} L${ox + q * 0.55} ${oy}`} stroke={TG.goldHi} strokeWidth="0.7" fill="none" opacity="0.8" />
-        <circle cx={ox} cy={oy} r="1.7" fill={TG.screw} />
-        <circle cx={ox - 0.4} cy={oy - 0.4} r="0.7" fill={TG.goldHi} />
-      </>
-    );
-  };
-  let body;
-  if (tool.kind === 'parting') {
-    body = (
-      <>
-        <rect x="13.6" y="10" width="4.8" height="17" rx="1.2" fill={TG.steel} stroke={TG.steelEdge} strokeWidth="0.7" />
-        <rect x="14.4" y="10.6" width="1" height="15" fill={TG.steelHi} opacity="0.7" />
-        <rect x="12.8" y="5" width="6.4" height="6" rx="1.2" fill={TG.gold} stroke={TG.goldEdge} strokeWidth="0.8" />
-        <circle cx="16" cy="8" r="1.5" fill={TG.screw} />
-      </>
-    );
-  } else if (tool.kind === 'boring') {
-    body = (
-      <>
-        <rect x="3" y="14.5" width="21" height="6.4" rx="3.2" fill={TG.steel} stroke={TG.steelEdge} strokeWidth="0.7" />
-        <rect x="4" y="15.4" width="17" height="1.1" rx="0.5" fill={TG.steelHi} opacity="0.7" />
-        <Insert ox={22} oy={11} p={4.6} />
-      </>
-    );
-  } else {
-    // OD holder: steel shank bar to the lower corner, gold insert at the tip. Drawn
-    // right-handed; mirror for the other hand so the two 35° tools differ.
-    body = (
-      <g transform={tool.flip ? undefined : 'translate(32,0) scale(-1,1)'}>
-        <path d="M12.5 12 L28 27.5" stroke={TG.steelEdge} strokeWidth="8.4" strokeLinecap="round" />
-        <path d="M12.5 12 L28 27.5" stroke={TG.steel} strokeWidth="7" strokeLinecap="round" />
-        <path d="M14 12.5 L26.5 25" stroke={TG.steelHi} strokeWidth="1.4" strokeLinecap="round" opacity="0.55" />
-        <Insert ox={12} oy={11} p={5.6} />
-      </g>
-    );
-  }
-  return (
-    <span role="img" className="anticon" style={{ display: 'inline-flex' }}>
-      <svg viewBox="0 0 32 32" width="1.7em" height="1.7em" style={{ display: 'block' }}>{body}</svg>
-    </span>
-  );
-}
-
 /**
  * Standard boring-bar shank diameters (mm) — the sizes a boring bar actually
  * ships in, not an arbitrary continuous range. Drives both the bar diameter
@@ -213,8 +147,19 @@ const BORING_BAR_DIAMETERS = [6, 8, 10, 12, 16, 20, 25, 32];
  * Icon picker for a tool's turning insert/holder — a row of glyph buttons (one per
  * catalogue holder), replacing the old dropdown. The selected holder is
  * highlighted; the full catalogue name is on each button's tooltip.
+ *
+ * `custom` (camStore's `customTurnTools`) is drawn after the catalogue, each
+ * one dashed-bordered to read as operator-defined rather than a shop standard.
+ * Its glyph is the same `TurnToolGlyph`, driven by the same shape fields, so a
+ * custom holder looks exactly as consistent as a built-in one — there is no
+ * second drawing code path to keep in step. Double-click edits; the small ×
+ * deletes, behind a confirm since it is not reversible from the UI. The "+"
+ * only appears when `onAdd` is given, so a read-only render of this list (were
+ * one ever needed) can simply omit it.
  */
-function TurnInsertPicker({ value, onChange }) {
+function TurnInsertPicker({
+  value, onChange, custom = [], onAdd, onEdit, onRemove,
+}) {
   return (
     <div style={{ display: 'flex', gap: 2, flexWrap: 'wrap' }}>
       {STANDARD_TURN_TOOLS.map((x) => (
@@ -228,6 +173,57 @@ function TurnInsertPicker({ value, onChange }) {
           />
         </Tooltip>
       ))}
+      {custom.map((x) => (
+        <div key={x.id} style={{ position: 'relative' }}>
+          <Tooltip title={`${x.label} — double-click to edit`} placement="top">
+            <Button
+              size="small"
+              type={value === x.id ? 'primary' : 'text'}
+              icon={<TurnToolGlyph tool={x} />}
+              onClick={() => onChange(x.id)}
+              onDoubleClick={() => onEdit?.(x.id)}
+              style={{
+                width: 32, height: 32, padding: 0, borderStyle: 'dashed',
+                color: value === x.id ? undefined : CAD.icon,
+              }}
+            />
+          </Tooltip>
+          {onRemove && (
+            <Popconfirm
+              title={`Delete "${x.label}"?`}
+              onConfirm={() => onRemove(x.id)}
+              okText="Delete"
+              okButtonProps={{ danger: true }}
+              cancelText="Cancel"
+              placement="top"
+            >
+              <button
+                type="button"
+                aria-label={`Delete ${x.label}`}
+                style={{
+                  position: 'absolute', top: -6, right: -6, width: 14, height: 14,
+                  lineHeight: '12px', fontSize: 9, padding: 0, borderRadius: '50%',
+                  background: CAD.surface, color: CAD.muted,
+                  border: `1px solid ${CAD.borderSoft}`, cursor: 'pointer',
+                }}
+              >
+                ✕
+              </button>
+            </Popconfirm>
+          )}
+        </div>
+      ))}
+      {onAdd && (
+        <Tooltip title="Add a custom holder" placement="top">
+          <Button
+            size="small"
+            type="dashed"
+            icon={<PlusOutlined />}
+            onClick={onAdd}
+            style={{ width: 32, height: 32, padding: 0 }}
+          />
+        </Tooltip>
+      )}
     </div>
   );
 }
@@ -279,6 +275,236 @@ function CutterPicker({ value, onChange, box = 32, scope = 'fallback' }) {
         );
       })}
     </Space>
+  );
+}
+
+/**
+ * Everything about one Tool-table row that is not the compact glance view:
+ * insert/cutter shape, diameter, angle, thickness, shank, bar diameter,
+ * groove width, gauge length — and the Name field too, so renaming and the
+ * rest of the setup are not two different places to look.
+ *
+ * One dialog shared by every row (`camStore.toolEditDialog` holds which T
+ * number, if any), the same reasoning as `CustomTurnToolDialog`: a form per
+ * row would mean sixteen mounted-but-hidden dialogs on a sixteen-tool
+ * program. `tool` is the matching `detectedTools` row; `null` while closed or
+ * for a T number no longer in the program, in which case nothing renders.
+ */
+function ToolEditDialog({
+  open, tool, override, turning, eff, effSpec, holder, customTurnTools,
+  addonStyle, edited,
+  onClose, onOverride, onCutter, onThickness, onShank, onClearOverride,
+  onAddCustom, onEditCustom, onRemoveCustom,
+}) {
+  if (!tool) return null;
+  const t = tool;
+  const ov = override || {};
+  const effDia = ov.diameter ?? t.diameter;
+  return (
+    <Modal
+      open={open}
+      title={`Edit T${t.n}${t.desc ? ` — ${t.desc}` : ''}`}
+      width={440}
+      destroyOnHidden
+      onCancel={onClose}
+      footer={(
+        <Space>
+          <Button onClick={onClearOverride} disabled={!edited}>Reset to detected</Button>
+          <Button type="primary" onClick={onClose}>Done</Button>
+        </Space>
+      )}
+    >
+      <Space direction="vertical" size={12} style={{ width: '100%' }}>
+        <div>
+          <Text style={{ color: CAD.label, display: 'block', marginBottom: 4 }}>Name</Text>
+          <Input
+            value={ov.label ?? ''}
+            placeholder={t.type}
+            aria-label={`T${t.n} name (dialog)`}
+            onChange={(e) => onOverride({ label: e.target.value || undefined })}
+            style={{ width: 260 }}
+          />
+          <Text type="secondary" style={{ fontSize: 11, display: 'block', marginTop: 2 }}>
+            Only changes the label shown in the Tool table and the position readout — the
+            simulation still reads the program's own tool comment.
+          </Text>
+        </div>
+
+        {turning ? (
+          <Space direction="vertical" size={8} style={{ width: '100%' }}>
+            <div>
+              <Text style={{ color: CAD.label, display: 'block', marginBottom: 4 }}>Holder</Text>
+              <TurnInsertPicker
+                value={holder?.id}
+                onChange={(id) => onOverride({ insert: id })}
+                custom={customTurnTools}
+                onAdd={onAddCustom}
+                onEdit={onEditCustom}
+                onRemove={onRemoveCustom}
+              />
+            </div>
+            <Space wrap size={12} align="center">
+              <span>
+                <Text style={{ color: CAD.label, marginRight: 6 }}>⌀</Text>
+                <InputNumber controls={false}
+                  size="small"
+                  aria-label={`T${t.n} diameter`}
+                  min={0.1}
+                  step={0.5}
+                  value={effDia}
+                  placeholder="dia"
+                  onChange={(v) => onOverride({ diameter: v ?? undefined })}
+                  style={{ width: 80 }}
+                />
+              </span>
+              {holder?.adjustable && (
+                <span>
+                  <Text style={{ color: CAD.label, marginRight: 6 }}>Insert°</Text>
+                  <InputNumber controls={false}
+                    size="small"
+                    min={20}
+                    max={100}
+                    step={5}
+                    value={ov.insertAngle ?? holder.angle}
+                    onChange={(v) => onOverride({ insertAngle: v ?? holder.angle })}
+                    style={{ width: 72 }}
+                  />
+                </span>
+              )}
+              {holder?.kind === 'boring' && (
+                <Tooltip title="Boring bar shank diameter — standard sizes only; sets the marker's bar thickness, not the bore it cuts (that's the program's own X).">
+                  <Space.Compact>
+                    <span className="ant-input-group-addon" style={addonStyle('left')}>bar⌀</span>
+                    <Select
+                      size="small"
+                      value={ov.barDiameter ?? BORING_BAR_DIAMETERS[0]}
+                      onChange={(v) => onOverride({ barDiameter: v })}
+                      options={BORING_BAR_DIAMETERS.map((d) => ({ value: d, label: `${d}` }))}
+                      style={{ width: 72 }}
+                    />
+                  </Space.Compact>
+                </Tooltip>
+              )}
+              {holder?.kind === 'parting' && (
+                <Tooltip title="Groove width — the blade's kerf, both drawn and cut this wide.">
+                  <Space.Compact>
+                    <span className="ant-input-group-addon" style={addonStyle('left')}>w</span>
+                    <InputNumber controls={false}
+                      size="small"
+                      aria-label={`T${t.n} groove width`}
+                      min={0.5}
+                      step={0.5}
+                      value={ov.grooveW ?? null}
+                      placeholder="3"
+                      onChange={(v) => onOverride({ grooveW: v ?? undefined })}
+                      style={{ width: 64 }}
+                    />
+                  </Space.Compact>
+                </Tooltip>
+              )}
+            </Space>
+          </Space>
+        ) : (
+          <Space direction="vertical" size={8} style={{ width: '100%' }}>
+            <div>
+              <Text style={{ color: CAD.label, display: 'block', marginBottom: 4 }}>Cutter</Text>
+              {/* The type, not just flat/ball: it is what the marker draws
+                  and what the carvers stamp. */}
+              <CutterPicker
+                box={28}
+                scope={`T${t.n}`}
+                value={eff?.cutter}
+                onChange={onCutter}
+              />
+            </div>
+            <Space wrap size={12} align="center">
+              <span>
+                <Text style={{ color: CAD.label, marginRight: 6 }}>⌀</Text>
+                <InputNumber controls={false}
+                  size="small"
+                  min={0.1}
+                  step={0.5}
+                  value={effDia}
+                  placeholder="dia"
+                  onChange={(v) => onOverride({ diameter: v ?? undefined })}
+                  style={{ width: 80 }}
+                />
+              </span>
+              {effSpec?.angleAdjustable && eff?.cutter && (
+                <Tooltip title="Included angle — the chamfer this cutter leaves. 90° gives a 45° chamfer.">
+                  <Space.Compact>
+                    <span className="ant-input-group-addon" style={addonStyle('left')}>∠</span>
+                    <InputNumber controls={false}
+                      size="small"
+                      min={15}
+                      max={175}
+                      step={5}
+                      value={eff.angle}
+                      onChange={(v) => onOverride({ angle: v || 90 })}
+                      style={{ width: 64 }}
+                    />
+                  </Space.Compact>
+                </Tooltip>
+              )}
+              {/* Thickness: the slot this tool leaves. Only the slot cutter
+                  is specified that way. */}
+              {effSpec?.thicknessAdjustable && eff?.cutter && (
+                <Tooltip title="Cutter thickness — the width of the slot this tool leaves.">
+                  <Space.Compact>
+                    <span className="ant-input-group-addon" style={addonStyle('left')}>t</span>
+                    <InputNumber controls={false}
+                      size="small"
+                      aria-label={`T${t.n} cutter thickness`}
+                      min={effSpec.thicknessRange[0]}
+                      max={effSpec.thicknessRange[1]}
+                      step={0.5}
+                      value={eff.thickness ?? null}
+                      placeholder={String(defaultThickness(eff.cutter, eff.radius * 2))}
+                      onChange={(v) => onThickness(v)}
+                      style={{ width: 72 }}
+                    />
+                  </Space.Compact>
+                </Tooltip>
+              )}
+              {/* Shank: a necked slot mill is narrower where the holder
+                  grips it than where it cuts. */}
+              {effSpec?.shankAdjustable && eff?.cutter && (
+                <Tooltip title="Shank diameter — the plain part above the flutes, which the holder grips.">
+                  <Space.Compact>
+                    <span className="ant-input-group-addon" style={addonStyle('left')}>s⌀</span>
+                    <InputNumber controls={false}
+                      size="small"
+                      aria-label={`T${t.n} shank diameter`}
+                      min={effSpec.shankRange[0]}
+                      max={effSpec.shankRange[1]}
+                      step={0.5}
+                      value={eff.shank ?? null}
+                      placeholder={String(defaultShank(eff.cutter, eff.radius * 2))}
+                      onChange={(v) => onShank(v)}
+                      style={{ width: 72 }}
+                    />
+                  </Space.Compact>
+                </Tooltip>
+              )}
+              <span>
+                <Tooltip title="Gauge length — tip to the collet face (stick-out)">
+                  <Text style={{ color: CAD.label, marginRight: 6 }}>L</Text>
+                </Tooltip>
+                <InputNumber controls={false}
+                  size="small"
+                  min={0}
+                  step={1}
+                  value={ov.length ?? t.length ?? undefined}
+                  placeholder="len"
+                  onChange={(v) => onOverride({ length: v ?? undefined })}
+                  style={{ width: 76 }}
+                />
+              </span>
+            </Space>
+          </Space>
+        )}
+      </Space>
+    </Modal>
   );
 }
 
@@ -531,6 +757,7 @@ export default function App() {
   const voxelLimited = useCamStore((s) => s.voxelLimited);
   const simMethod = useCamStore((s) => s.simMethod);
   const turnTool  = useCamStore((s) => s.turnTool);
+  const customTurnTools = useCamStore((s) => s.customTurnTools);
   const stockOversize = useCamStore((s) => s.stockOversize);
   const toolOverrides = useCamStore((s) => s.toolOverrides);
   const stockMargin = useCamStore((s) => s.stockMargin);
@@ -562,6 +789,11 @@ export default function App() {
   const setToolThickness = useCamStore((s) => s.setToolThickness);
   const setToolShank = useCamStore((s) => s.setToolShank);
   const clearToolOverride = useCamStore((s) => s.clearToolOverride);
+  const openCustomTurnToolDialog = useCamStore((s) => s.openCustomTurnToolDialog);
+  const removeCustomTurnTool = useCamStore((s) => s.removeCustomTurnTool);
+  const toolEditDialog = useCamStore((s) => s.toolEditDialog);
+  const openToolEditDialog = useCamStore((s) => s.openToolEditDialog);
+  const closeToolEditDialog = useCamStore((s) => s.closeToolEditDialog);
   const setTool     = useCamStore((s) => s.setTool);
   const setCutter   = useCamStore((s) => s.setCutter);
   const setThickness = useCamStore((s) => s.setThickness);
@@ -909,6 +1141,17 @@ export default function App() {
   );
   // Tools auto-detected from the program's comments, and the one cutting now.
   const detectedTools = stats?.tools ?? [];
+  // The global fallback picker's own spec, in `effectiveTool`'s shape — built
+  // once so the Tool table row and `ToolEditDialog` read the exact same
+  // fallback rather than two copies that could drift.
+  const toolFallback = {
+    radius: toolRadius,
+    cutter: toolCutter,
+    type: toolType,
+    angle: toolAngle,
+    thickness: toolThickness ?? undefined,
+    shank: toolShank ?? undefined,
+  };
   // `bufVer` is listed on purpose and eslint is wrong to call it unnecessary:
   // `path` comes from the module-level buffer cache and is **mutated in
   // place**, so its identity never changes and a re-parse would otherwise
@@ -948,6 +1191,7 @@ export default function App() {
   // MVJNR's insert nose angle is adjustable; MVVNN's is fixed.
   const baseTurnTool = effectiveTurnTool({
     detected: currentTool, overrideId: currentOverride.insert, fallbackId: turnTool,
+    custom: customTurnTools,
   });
   // Memoised for the same reason as `rotaryIndices`: a fresh object each render
   // makes every memo listing it re-run every render.
@@ -984,7 +1228,27 @@ export default function App() {
     radius: turning ? 0 : marker.radius ?? 0,
     desc: currentTool?.desc ?? '',
     holder: turnInsert,
-  }), [turning, marker.cutter, marker.radius, currentTool, turnInsert]);
+    // The operator's own name for this T number (Tool table), if they set
+    // one — `droTool` lets it win outright over the holder/cutter/comment
+    // chain below it.
+    name: currentOverride.label ?? null,
+  }), [turning, marker.cutter, marker.radius, currentTool, turnInsert, currentOverride.label]);
+
+  // The one Tool-table row `ToolEditDialog` is open for, if any — computed
+  // once here rather than inside the row loop, since only one row's dialog
+  // can be open at a time.
+  const editingToolNum = toolEditDialog?.n ?? null;
+  const editingTool = editingToolNum != null
+    ? detectedTools.find((t) => t.n === editingToolNum) || null
+    : null;
+  const editingOv = editingToolNum != null ? (toolOverrides[editingToolNum] || {}) : {};
+  const editingEff = editingTool
+    ? effectiveTool({ detected: editingTool, override: editingOv, fallback: toolFallback })
+    : null;
+  const editingEffSpec = editingEff ? cutterById(editingEff.cutter) : null;
+  const editingHolder = editingTool && turning ? effectiveTurnTool({
+    detected: editingTool, overrideId: editingOv.insert, fallbackId: turnTool, custom: customTurnTools,
+  }) : null;
 
   // Which tools cut at each rotary index — so the "pick which" selector can say
   // what you'll actually see carved at 0° / 90° / 270° instead of leaving you to
@@ -1103,6 +1367,36 @@ export default function App() {
           display: 'flex', flexDirection: 'column', height: 'auto', gap: 0,
           padding: '2px 16px 0', background: CAD.headerBg, borderBottom: `1px solid ${CAD.border}`,
         }}>
+          <StdVcDialog />
+          <StdEditorDialog />
+          <CustomTurnToolDialog />
+          <ToolEditDialog
+            open={!!editingTool}
+            tool={editingTool}
+            override={editingOv}
+            turning={turning}
+            eff={editingEff}
+            effSpec={editingEffSpec}
+            holder={editingHolder}
+            customTurnTools={customTurnTools}
+            addonStyle={addonStyle}
+            edited={editingToolNum != null && (
+              editingOv.diameter != null || editingOv.simType != null
+              || editingOv.cutter != null || editingOv.angle != null || editingOv.thickness != null
+              || editingOv.shank != null || editingOv.length != null || editingOv.insert != null
+              || editingOv.insertAngle != null || editingOv.barDiameter != null || editingOv.grooveW != null
+            )}
+            onClose={closeToolEditDialog}
+            onOverride={(patch) => editingToolNum != null && setToolOverride(editingToolNum, patch)}
+            onCutter={(id) => editingToolNum != null && setToolCutter(editingToolNum, id)}
+            onThickness={(v) => editingToolNum != null
+              && setToolThickness(editingToolNum, v, editingEff?.cutter)}
+            onShank={(v) => editingToolNum != null && setToolShank(editingToolNum, v, editingEff?.cutter)}
+            onClearOverride={() => editingToolNum != null && clearToolOverride(editingToolNum)}
+            onAddCustom={() => openCustomTurnToolDialog(null)}
+            onEditCustom={(id) => openCustomTurnToolDialog(id)}
+            onRemoveCustom={removeCustomTurnTool}
+          />
           <MenuBar
             onExportGcode={onExportGcode}
             libraryOpen={libraryOpen}
@@ -1308,8 +1602,8 @@ export default function App() {
                     </Text>
                   </Divider>
                   <Text style={{ color: CAD.dim, fontSize: 11 }}>
-                    Auto-detected from comments — edit any value to match the program;
-                    the simulation uses these. Re-run Simulate after editing.
+                    Auto-detected from comments. Name is yours to fix if it looks wrong — it only
+                    changes the label, not what simulates. Everything else is behind Edit.
                   </Text>
                   <div style={{ display: 'flex', flexDirection: 'column', gap: 3 }}>
                     {detectedTools.map((t) => {
@@ -1317,31 +1611,26 @@ export default function App() {
                       const active = t.n === currentToolNum;
                       const edited = ov.diameter != null || ov.simType != null
                         || ov.cutter != null || ov.angle != null || ov.thickness != null
-                        || ov.shank != null
-                        || ov.length != null || ov.insert != null || ov.insertAngle != null;
+                        || ov.shank != null || ov.length != null || ov.insert != null
+                        || ov.insertAngle != null || ov.barDiameter != null || ov.grooveW != null;
                       const effDia = ov.diameter ?? t.diameter;
                       // What this row's tool actually is, by the same rules the
-                      // marker and the carvers use — so the highlighted glyph is
-                      // the shape on screen, detected or picked.
-                      const eff = effectiveTool({
-                        detected: t,
-                        override: ov,
-                        fallback: {
-                          radius: toolRadius,
-                          cutter: toolCutter,
-                          type: toolType,
-                          angle: toolAngle,
-                          thickness: toolThickness ?? undefined,
-                          shank: toolShank ?? undefined,
-                        },
-                      });
+                      // marker and the carvers use — so the summary names the
+                      // shape on screen, detected or picked.
+                      const eff = effectiveTool({ detected: t, override: ov, fallback: toolFallback });
                       const effSpec = cutterById(eff.cutter);
+                      const holder = turning ? effectiveTurnTool({
+                        detected: t, overrideId: ov.insert, fallbackId: turnTool, custom: customTurnTools,
+                      }) : null;
+                      const summary = toolSpecSummary({
+                        turning, diameter: effDia, holderLabel: holder?.label, cutterLabel: effSpec?.label,
+                      });
                       return (
                         <div
                           key={t.n}
                           title={t.desc}
                           style={{
-                            display: 'flex', gap: 6, alignItems: 'center', flexWrap: 'wrap',
+                            display: 'flex', gap: 6, alignItems: 'center',
                             padding: '3px 6px', borderRadius: 4, fontSize: 12,
                             background: active ? CAD.selected : 'transparent',
                             border: `1px solid ${active ? token.colorPrimary : CAD.borderSoft}`,
@@ -1350,184 +1639,48 @@ export default function App() {
                           <b style={{ color: active ? token.colorPrimary : CAD.icon, minWidth: 26 }}>
                             T{t.n}
                           </b>
-                          <span style={{ minWidth: 58, color: CAD.muted }}>{t.type}</span>
-                          {turning ? (() => {
-                            const holder = effectiveTurnTool({
-                              detected: t, overrideId: ov.insert, fallbackId: turnTool,
-                            });
-                            const holderId = holder.id;
-                            return (
-                              <>
-                                <TurnInsertPicker
-                                  value={holderId}
-                                  onChange={(id) => setToolOverride(t.n, { insert: id })}
-                                />
-                                {/* Size the marker — and, for a drill/reamer/tap/centre
-                                    drill, the real bore this move cuts: those run down
-                                    the centreline at X~0, so the program's own path
-                                    carries no diameter at all; this is the only number
-                                    that can state one (`turningCutRadiusResolver`). */}
-                                <span style={{ color: CAD.label }}>⌀</span>
-                                <InputNumber controls={false}
-                                  size="small"
-                                  aria-label={`T${t.n} diameter`}
-                                  min={0.1}
-                                  step={0.5}
-                                  value={effDia}
-                                  placeholder="dia"
-                                  onChange={(v) => setToolOverride(t.n, { diameter: v ?? undefined })}
-                                  style={{ width: 68 }}
-                                />
-                                {holder?.adjustable && (
-                                  <>
-                                    <span style={{ color: CAD.label }}>insert°</span>
-                                    <InputNumber controls={false}
-                                      size="small"
-                                      min={20}
-                                      max={100}
-                                      step={5}
-                                      value={ov.insertAngle ?? holder.angle}
-                                      onChange={(v) => setToolOverride(t.n, { insertAngle: v ?? holder.angle })}
-                                      style={{ width: 62 }}
-                                    />
-                                  </>
-                                )}
-                                {holder?.kind === 'boring' && (
-                                  <Tooltip title="Boring bar shank diameter — standard sizes only; sets the marker's bar thickness, not the bore it cuts (that's the program's own X).">
-                                    <Space.Compact>
-                                      <span className="ant-input-group-addon" style={addonStyle('left')}>bar⌀</span>
-                                      <Select
-                                        size="small"
-                                        value={ov.barDiameter ?? BORING_BAR_DIAMETERS[0]}
-                                        onChange={(v) => setToolOverride(t.n, { barDiameter: v })}
-                                        options={BORING_BAR_DIAMETERS.map((d) => ({ value: d, label: `${d}` }))}
-                                        style={{ width: 62 }}
-                                      />
-                                    </Space.Compact>
-                                  </Tooltip>
-                                )}
-                                {holder?.kind === 'parting' && (
-                                  <Tooltip title="Groove width — the blade's kerf, both drawn and cut this wide.">
-                                    <Space.Compact>
-                                      <span className="ant-input-group-addon" style={addonStyle('left')}>w</span>
-                                      <InputNumber controls={false}
-                                        size="small"
-                                        aria-label={`T${t.n} groove width`}
-                                        min={0.5}
-                                        step={0.5}
-                                        value={ov.grooveW ?? null}
-                                        placeholder="3"
-                                        onChange={(v) => setToolOverride(t.n, { grooveW: v ?? undefined })}
-                                        style={{ width: 56 }}
-                                      />
-                                    </Space.Compact>
-                                  </Tooltip>
-                                )}
-                              </>
-                            );
-                          })() : (
-                            <>
-                              <span style={{ color: CAD.label }}>⌀</span>
-                              <InputNumber controls={false}
-                                size="small"
-                                min={0.1}
-                                step={0.5}
-                                value={effDia}
-                                placeholder="dia"
-                                onChange={(v) => setToolOverride(t.n, { diameter: v ?? undefined })}
-                                style={{ width: 68 }}
-                              />
-                              {/* The type, not just flat/ball: it is what the
-                                  marker draws and what the carvers stamp. */}
-                              <CutterPicker
-                                box={26}
-                                scope={`T${t.n}`}
-                                value={eff.cutter}
-                                onChange={(id) => setToolCutter(t.n, id)}
-                              />
-                              {effSpec.angleAdjustable && eff.cutter && (
-                                <Tooltip title="Included angle — the chamfer this cutter leaves. 90° gives a 45° chamfer.">
-                                  <Space.Compact>
-                                    <span className="ant-input-group-addon" style={addonStyle('left')}>∠</span>
-                                    <InputNumber controls={false}
-                                      size="small"
-                                      min={15}
-                                      max={175}
-                                      step={5}
-                                      value={eff.angle}
-                                      onChange={(v) => setToolOverride(t.n, { angle: v || 90 })}
-                                      style={{ width: 56 }}
-                                    />
-                                  </Space.Compact>
-                                </Tooltip>
-                              )}
-                              {/* Thickness: the slot this tool leaves. Only the
-                                  slot cutter is specified that way. */}
-                              {effSpec.thicknessAdjustable && eff.cutter && (
-                                <Tooltip title="Cutter thickness — the width of the slot this tool leaves.">
-                                  <Space.Compact>
-                                    <span className="ant-input-group-addon" style={addonStyle('left')}>t</span>
-                                    <InputNumber controls={false}
-                                      size="small"
-                                      aria-label={`T${t.n} cutter thickness`}
-                                      min={effSpec.thicknessRange[0]}
-                                      max={effSpec.thicknessRange[1]}
-                                      step={0.5}
-                                      value={eff.thickness ?? null}
-                                      placeholder={String(defaultThickness(eff.cutter, eff.radius * 2))}
-                                      onChange={(v) => setToolThickness(t.n, v, eff.cutter)}
-                                      style={{ width: 62 }}
-                                    />
-                                  </Space.Compact>
-                                </Tooltip>
-                              )}
-                              {/* Shank: a necked slot mill is narrower where
-                                  the holder grips it than where it cuts. */}
-                              {effSpec.shankAdjustable && eff.cutter && (
-                                <Tooltip title="Shank diameter — the plain part above the flutes, which the holder grips.">
-                                  <Space.Compact>
-                                    <span className="ant-input-group-addon" style={addonStyle('left')}>s⌀</span>
-                                    <InputNumber controls={false}
-                                      size="small"
-                                      aria-label={`T${t.n} shank diameter`}
-                                      min={effSpec.shankRange[0]}
-                                      max={effSpec.shankRange[1]}
-                                      step={0.5}
-                                      value={eff.shank ?? null}
-                                      placeholder={String(defaultShank(eff.cutter, eff.radius * 2))}
-                                      onChange={(v) => setToolShank(t.n, v, eff.cutter)}
-                                      style={{ width: 62 }}
-                                    />
-                                  </Space.Compact>
-                                </Tooltip>
-                              )}
-                              <Tooltip title="Gauge length — tip to the collet face (stick-out)">
-                                <span style={{ color: CAD.label }}>L</span>
-                              </Tooltip>
-                              <InputNumber controls={false}
-                                size="small"
-                                min={0}
-                                step={1}
-                                value={ov.length ?? t.length ?? undefined}
-                                placeholder="len"
-                                onChange={(v) => setToolOverride(t.n, { length: v ?? undefined })}
-                                style={{ width: 66 }}
-                              />
-                            </>
-                          )}
-                          <span style={{ marginLeft: 'auto', color: CAD.dim }}>
+                          <Input
+                            size="small"
+                            value={ov.label ?? ''}
+                            // Blank, not the detected type as a ghost value — a
+                            // placeholder here read as "already named chamfer",
+                            // which this row never was; the detected type is
+                            // still in the hover tooltip and in Edit's title.
+                            placeholder="Name"
+                            aria-label={`T${t.n} name`}
+                            onChange={(e) => setToolOverride(t.n, { label: e.target.value || undefined })}
+                            style={{ width: 118 }}
+                          />
+                          <span style={{
+                            flex: 1, minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis',
+                            whiteSpace: 'nowrap', color: CAD.muted,
+                          }}
+                          >
+                            {summary}
+                          </span>
+                          <span style={{ color: CAD.dim }}>
                             {t.cutLength > 0 ? `${t.cutLength.toFixed(0)} mm` : 'unused'}
                           </span>
                           {edited && (
-                            <CommandButton
-                              id="resetTool"
-                              size="small"
-                              type="text"
-                              icon={<RollbackOutlined />}
-                              onClick={() => clearToolOverride(t.n)}
-                              style={{ color: CAD.muted, padding: '0 4px' }}
-                            />
+                            <Tooltip title="Reset this tool's edited values to what was detected">
+                              <CommandButton
+                                id="resetTool"
+                                size="small"
+                                type="text"
+                                icon={<RollbackOutlined />}
+                                onClick={() => clearToolOverride(t.n)}
+                                style={{ color: CAD.muted, padding: '0 4px' }}
+                              />
+                            </Tooltip>
                           )}
+                          <Button
+                            size="small"
+                            type="text"
+                            icon={<EditOutlined />}
+                            aria-label={`Edit T${t.n}`}
+                            onClick={() => openToolEditDialog(t.n)}
+                            style={{ color: CAD.icon, padding: '0 4px' }}
+                          />
                         </div>
                       );
                     })}

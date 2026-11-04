@@ -134,6 +134,27 @@ export const useCamStore = create((set, get) => ({
   simMethod: 'height', // 'height' (dexel) | 'voxel' (undercut) | 'turning' (revolved)
   // ---- Turning ----
   turnTool: 'mvjnr',   // selected OD toolholder type (marker appearance)
+  // Operator-defined holders, same shape as a `STANDARD_TURN_TOOLS` entry
+  // (turning.js), appended to it wherever a tool id is resolved
+  // (`effectiveTurnTool`). Cosmetic only — see that function's own comment —
+  // so nothing here ever has to touch the carving engine: the sim already
+  // reads cut mode from the program's own tool comments, not from the marker
+  // catalogue. No guessed default list, same reasoning as `toolChangeSeconds`:
+  // a real shop's holder lineup isn't a spec to fabricate, it's what the
+  // operator types in.
+  customTurnTools: [],
+  // Which custom-holder dialog is open: `{ id }` to edit an existing custom
+  // tool, `{ id: null }` to create a new one, or `null` when closed. Lives in
+  // the store rather than component state because `TurnInsertPicker` is
+  // rendered once per Tool-table row and needs to open the one shared dialog
+  // without a setter prop-drilled through every row.
+  customToolDialog: null,
+  // Which Tool-table row's full editor is open: `{ n }`, or `null` when
+  // closed. The compact row only shows diameter + a one-line spec and an
+  // editable name; everything else (insert/cutter, angle, thickness, shank,
+  // barDiameter, grooveW) now lives behind this one dialog, opened per T
+  // number — same reasoning as `customToolDialog` above.
+  toolEditDialog: null,
   stockOversize: 1,    // raw bar diameter over the largest turned diameter (mm)
   // ---- Tool table (user edits, keyed by tool number) ----
   // { [n]: { diameter?, simType?, length? } } — override the auto-detected values
@@ -748,6 +769,52 @@ export const useCamStore = create((set, get) => ({
   /** Pick a standard turning tool subtype (drives the marker's appearance). */
   setTurnTool(turnTool) {
     set({ turnTool });
+  },
+
+  /**
+   * Add an operator-defined turning holder (same shape as a
+   * `STANDARD_TURN_TOOLS` entry). The id is generated here, never typed, so it
+   * can never collide with a catalogue id. Returns the new id so the caller
+   * can select it straight away.
+   */
+  addCustomTurnTool(def) {
+    const id = `custom-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 6)}`;
+    const tool = { ...def, id, custom: true };
+    set((s) => ({ customTurnTools: [...s.customTurnTools, tool] }));
+    return id;
+  },
+
+  /** Edit an operator-defined holder in place. Built-ins aren't reachable here. */
+  updateCustomTurnTool(id, patch) {
+    set((s) => ({
+      customTurnTools: s.customTurnTools.map((t) => (t.id === id ? { ...t, ...patch } : t)),
+    }));
+  },
+
+  /**
+   * Drop an operator-defined holder. Any `turnTool` pick or per-tool `insert`
+   * override still pointing at it does not need cleaning up: `effectiveTurnTool`
+   * already falls back to the global default for an id it cannot find, the
+   * same as it does for any other stale or mistyped id.
+   */
+  removeCustomTurnTool(id) {
+    set((s) => ({ customTurnTools: s.customTurnTools.filter((t) => t.id !== id) }));
+  },
+
+  /** Open the custom-holder dialog — `id` to edit, omitted/null to create one. */
+  openCustomTurnToolDialog(id = null) {
+    set({ customToolDialog: { id } });
+  },
+  closeCustomTurnToolDialog() {
+    set({ customToolDialog: null });
+  },
+
+  /** Open the full editor for one Tool-table row, by its T number. */
+  openToolEditDialog(n) {
+    set({ toolEditDialog: { n } });
+  },
+  closeToolEditDialog() {
+    set({ toolEditDialog: null });
   },
 
   /**

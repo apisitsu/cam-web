@@ -28,6 +28,20 @@ describe('project file — build and parse round trip', () => {
     expect(back.settings.playhead).toBeUndefined();
   });
 
+  it('round-trips operator-defined turning holders', () => {
+    const withCustom = {
+      ...sample,
+      settings: {
+        ...sample.settings,
+        customTurnTools: [{
+          id: 'custom-1', custom: true, label: 'My 107.5°', kind: 'od', lead: 107.5, sides: 4, angle: 55, flip: true,
+        }],
+      },
+    };
+    const back = parseProject(serializeProject(buildProject(withCustom)));
+    expect(back.settings.customTurnTools).toEqual(withCustom.settings.customTurnTools);
+  });
+
   it('stamps the kind and version, and a savedAt timestamp', () => {
     const doc = buildProject(sample);
     expect(doc.kind).toBe(PROJECT_KIND);

@@ -36,7 +36,7 @@ const SETTING_KEYS = [
   // `stockSize` is the billet the operator stated (X/Y/Z, top on Z0); the
   // T/B/M trio it replaced stays on the list so an older project still loads.
   'stockSize', 'stockOrigin', 'stockTop', 'stockBase', 'stockMargin', 'stockOversize',
-  'turnTool', 'aIndex',
+  'turnTool', 'customTurnTools', 'aIndex',
 ];
 
 /**

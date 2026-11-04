@@ -176,16 +176,24 @@ const NAME_MAX = 24;
  * program's own comment, which is at least what the programmer wrote, and
  * failing that to nothing — a made-up tool name would be worse than none.
  *
+ * `name` is the operator's own override (the Tool table's Name field) and, when
+ * set, wins outright — it is the one case where the operator's own word beats
+ * the auto-detected one. It changes nothing else: cut mode, cutter shape and
+ * everything the simulator reads still come from `cutter`/`holder`/the program's
+ * own comment, same as before this existed. See `toolOverrides[n].label`.
+ *
  * @param {{number?:number, cutter?:string|null, radius?:number,
- *   desc?:string, holder?:{label?:string}|null}} args
+ *   desc?:string, holder?:{label?:string}|null, name?:string|null}} args
  *   `holder` is the lathe toolholder (`sim/turning.js`), which is what a turned
  *   tool is: an insert in a holder, with no diameter to post.
  * @returns {{number:string, name:string|null}}
  */
 export function droTool({
-  number = 0, cutter = null, radius = 0, desc = '', holder = null,
+  number = 0, cutter = null, radius = 0, desc = '', holder = null, name = null,
 } = {}) {
   const label = number > 0 ? `T${number}` : 'T—';
+  const own = String(name || '').trim();
+  if (own) return { number: label, name: own.slice(0, NAME_MAX) };
   // A holder's catalogue label is `MVJNR · 93° OD (insert adj.)` — the part
   // before the dot is the designation, and the rest is picker prose.
   if (holder?.label) return { number: label, name: holder.label.split('·')[0].trim() };

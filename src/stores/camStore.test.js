@@ -214,3 +214,84 @@ describe('camStore machine spec — picking a machine picks its rapid and spindl
     expect(useCamStore.getState().machineOpts().maxTurnRpm).toBeUndefined();
   });
 });
+
+describe('camStore custom turning holders — operator-defined, not a guessed catalogue', () => {
+  beforeEach(() => {
+    useCamStore.setState({ customTurnTools: [], customToolDialog: null, turnTool: 'mvjnr' });
+  });
+
+  it('starts with no custom holders and the dialog closed', () => {
+    expect(useCamStore.getState().customTurnTools).toEqual([]);
+    expect(useCamStore.getState().customToolDialog).toBeNull();
+  });
+
+  it('adds a holder with a generated id, distinct from any catalogue id', () => {
+    const id = useCamStore.getState().addCustomTurnTool({
+      label: 'My 107.5°', kind: 'od', lead: 107.5, sides: 4, angle: 55, flip: true,
+    });
+    const tools = useCamStore.getState().customTurnTools;
+    expect(tools).toHaveLength(1);
+    expect(tools[0].id).toBe(id);
+    expect(tools[0].custom).toBe(true);
+    expect(tools[0].label).toBe('My 107.5°');
+  });
+
+  it('two holders added in a row get different ids', () => {
+    const a = useCamStore.getState().addCustomTurnTool({ label: 'A', kind: 'od', lead: 90, sides: 4, angle: 35 });
+    const b = useCamStore.getState().addCustomTurnTool({ label: 'B', kind: 'od', lead: 90, sides: 4, angle: 35 });
+    expect(a).not.toBe(b);
+    expect(useCamStore.getState().customTurnTools).toHaveLength(2);
+  });
+
+  it('edits a custom holder in place, leaving its id and other fields alone', () => {
+    const id = useCamStore.getState().addCustomTurnTool({
+      label: 'Mine', kind: 'od', lead: 90, sides: 4, angle: 35,
+    });
+    useCamStore.getState().updateCustomTurnTool(id, { angle: 55 });
+    const tool = useCamStore.getState().customTurnTools.find((t) => t.id === id);
+    expect(tool.angle).toBe(55);
+    expect(tool.lead).toBe(90);
+    expect(tool.label).toBe('Mine');
+  });
+
+  it('removes a custom holder without touching the others', () => {
+    const a = useCamStore.getState().addCustomTurnTool({ label: 'A', kind: 'od', lead: 90, sides: 4, angle: 35 });
+    const b = useCamStore.getState().addCustomTurnTool({ label: 'B', kind: 'od', lead: 90, sides: 4, angle: 35 });
+    useCamStore.getState().removeCustomTurnTool(a);
+    const tools = useCamStore.getState().customTurnTools;
+    expect(tools).toHaveLength(1);
+    expect(tools[0].id).toBe(b);
+  });
+
+  it('opens the dialog for editing an existing holder, or for a fresh add', () => {
+    useCamStore.getState().openCustomTurnToolDialog('custom-1');
+    expect(useCamStore.getState().customToolDialog).toEqual({ id: 'custom-1' });
+    useCamStore.getState().openCustomTurnToolDialog();
+    expect(useCamStore.getState().customToolDialog).toEqual({ id: null });
+    useCamStore.getState().closeCustomTurnToolDialog();
+    expect(useCamStore.getState().customToolDialog).toBeNull();
+  });
+});
+
+describe('camStore tool-edit dialog — one shared editor per Tool-table row', () => {
+  beforeEach(() => {
+    useCamStore.setState({ toolEditDialog: null });
+  });
+
+  it('starts closed', () => {
+    expect(useCamStore.getState().toolEditDialog).toBeNull();
+  });
+
+  it('opens for a given T number, and closes', () => {
+    useCamStore.getState().openToolEditDialog(3);
+    expect(useCamStore.getState().toolEditDialog).toEqual({ n: 3 });
+    useCamStore.getState().closeToolEditDialog();
+    expect(useCamStore.getState().toolEditDialog).toBeNull();
+  });
+
+  it('opening a different row replaces, rather than stacks, the open editor', () => {
+    useCamStore.getState().openToolEditDialog(3);
+    useCamStore.getState().openToolEditDialog(5);
+    expect(useCamStore.getState().toolEditDialog).toEqual({ n: 5 });
+  });
+});

@@ -11,7 +11,8 @@ import { useFeatureStore } from '../stores/featureStore.js';
 import { serialize as serializeSketch } from '../engine/sketch/model.js';
 import { sketchToDxf, sketchHasGeometry } from '../engine/sketch/dxf.js';
 import {
-  buildProject, serializeProject, parseProject, projectFileName, programFileName,
+  buildProject, serializeProject, parseProject, projectFileName, programFileName, namedProjectFile,
+  isProjectText,
 } from '../engine/projectFile.js';
 import { clearDraft } from './autosave.js';
 
@@ -44,24 +45,57 @@ export function downloadTextFile(suggestedName, text, type = 'text/plain') {
  * and falls back to a download for everything else. Returns the name written, or
  * null if the user cancelled.
  */
-export async function saveTextFile(suggestedName, text, { description = 'File', accept } = {}) {
-  if (typeof window !== 'undefined' && window.showSaveFilePicker) {
-    try {
-      const handle = await window.showSaveFilePicker({
-        suggestedName,
-        types: accept ? [{ description, accept }] : undefined,
-      });
-      const writable = await handle.createWritable();
-      await writable.write(text);
-      await writable.close();
-      return handle.name || suggestedName;
-    } catch (err) {
-      // The picker throws AbortError when the user closes it — not a failure.
-      if (err && err.name === 'AbortError') return null;
-      throw err;
-    }
+export async function saveTextFile(suggestedName, text, options = {}) {
+  if (canPickSaveLocation()) {
+    const saved = await pickAndWrite(suggestedName, text, options);
+    return saved ? saved.name : null;
   }
   return downloadTextFile(suggestedName, text, 'application/octet-stream');
+}
+
+/**
+ * Whether this page can show a real Save dialog. It cannot over plain HTTP on the
+ * LAN, which is how the shop reaches it, so there Save As has to ask for the name
+ * itself and the file lands in Downloads.
+ */
+export function canPickSaveLocation() {
+  return typeof window !== 'undefined' && Boolean(window.showSaveFilePicker);
+}
+
+async function writeToHandle(handle, text) {
+  const writable = await handle.createWritable();
+  await writable.write(text);
+  await writable.close();
+}
+
+/** Ask where to save, then write there. Null if the dialog was closed. */
+async function pickAndWrite(suggestedName, text, { description = 'File', accept } = {}) {
+  try {
+    const handle = await window.showSaveFilePicker({
+      suggestedName,
+      types: accept ? [{ description, accept }] : undefined,
+    });
+    await writeToHandle(handle, text);
+    return { name: handle.name || suggestedName, handle };
+  } catch (err) {
+    // The picker throws AbortError when the user closes it — not a failure.
+    if (err && err.name === 'AbortError') return null;
+    throw err;
+  }
+}
+
+/**
+ * The file this project was last opened from or saved to: `{ name, handle }`, or
+ * null for work never filed. `handle` exists only after a real Save dialog, and is
+ * what lets Save write back over the file without asking again.
+ */
+let projectFile = null;
+
+const PROJECT_FILE_TYPE = { description: 'cam-web project', accept: { 'application/json': ['.json'] } };
+
+/** The name Save and Save As start from. */
+export function currentProjectFileName() {
+  return projectFile?.name ?? projectFileName(useCamStore.getState().fileName);
 }
 
 /** Everything the app currently holds, as a project document. */
@@ -89,18 +123,46 @@ export function currentProject() {
   });
 }
 
-/** Save the whole project (program + setup + sketch). Returns the file name. */
+/**
+ * Save over the file this project came from, without asking, where the browser
+ * allows that. Otherwise it asks once, or over plain HTTP downloads under the same
+ * name, where the browser decides what to do about one already in Downloads.
+ *
+ * Returns the file name, or null if the dialog was closed.
+ */
 export async function saveProject() {
-  const cam = useCamStore.getState();
-  const name = await saveTextFile(
-    projectFileName(cam.fileName),
-    serializeProject(currentProject()),
-    { description: 'cam-web project', accept: { 'application/json': ['.json'] } },
-  );
-  // Filed to disk → the auto-save draft is now redundant. `null` means the
-  // user cancelled the picker, so leave it.
-  if (name) clearDraft();
-  return name;
+  const name = currentProjectFileName();
+  if (projectFile?.handle) {
+    try {
+      await writeToHandle(projectFile.handle, serializeProject(currentProject()));
+      // Filed to disk → the auto-save draft is now redundant.
+      clearDraft();
+      return name;
+    } catch (err) {
+      // The permission was refused or the file has gone: ask where it goes instead.
+      if (err?.name !== 'NotAllowedError' && err?.name !== 'NotFoundError') throw err;
+    }
+  }
+  return saveProjectAs(name);
+}
+
+/**
+ * Save to a new file, and make that the file Save writes to from now on.
+ *
+ * @param {string} [name] the name to start from; over plain HTTP, the name to use
+ * @returns {Promise<string|null>} the file name, or null if the dialog was closed
+ */
+export async function saveProjectAs(name = currentProjectFileName()) {
+  const text = serializeProject(currentProject());
+  const target = namedProjectFile(name);
+  const saved = canPickSaveLocation()
+    ? await pickAndWrite(target, text, PROJECT_FILE_TYPE)
+    : { name: downloadTextFile(target, text, 'application/octet-stream'), handle: null };
+  // `null` means the user cancelled the picker, so leave the draft and the file alone.
+  if (!saved) return null;
+  projectFile = saved;
+  clearDraft();
+  return saved.name;
 }
 
 /**
@@ -154,6 +216,7 @@ export async function exportSketchDxf() {
  */
 export async function newProject() {
   clearDraft(); // starting over — nothing to recover
+  projectFile = null;
   useCamPlanStore.getState().clear();
   useFeatureStore.getState().clear();
 
@@ -183,6 +246,8 @@ export async function newProject() {
  * record written by an older build is validated the same way a file is.
  */
 export async function applyProject(doc) {
+  // Whatever comes in now, it is not the file the last project was saved to.
+  projectFile = null;
   const project = doc && typeof doc.settings === 'object' && !doc.kind
     ? doc                                       // already parsed
     : parseProject(typeof doc === 'string' ? doc : JSON.stringify(doc));
@@ -221,5 +286,26 @@ export async function applyProject(doc) {
  * isn't one of ours (see `parseProject`).
  */
 export async function openProjectFile(file) {
-  return applyProject(parseProject(await file.text()));
+  const project = await applyProject(parseProject(await file.text()));
+  // A browser hands an opened file over without a handle to write back through,
+  // so Save knows its name but still has to ask where it goes.
+  projectFile = { name: file.name, handle: null };
+  return project;
+}
+
+/**
+ * Open a file taken for a program, unless it turns out to be a project.
+ *
+ * Without this a project reaching the program door is read as G-code, line by line,
+ * and fails on its own first brace with the whole JSON document in the error.
+ *
+ * @returns {Promise<boolean>} whether it was a project
+ */
+export async function openProgramFile(file) {
+  if (isProjectText(await file.text())) {
+    await openProjectFile(file);
+    return true;
+  }
+  await useCamStore.getState().loadFile(file);
+  return false;
 }

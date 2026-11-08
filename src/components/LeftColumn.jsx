@@ -4,8 +4,8 @@
  * Two things belong on screen while you work, and they are not the same thing:
  * the **model's structure** (the feature tree) while you are building it, and
  * the **program listing** while it runs, scrolling to the executing line. They
- * are tabs of one column rather than two panels, because a viewport is small and
- * you are never reading both at once.
+ * are two panes of one column rather than two panels, because a viewport is small
+ * and you are never reading both at once. `WorkspaceTabs` is what switches them.
  *
  * ## Why the program is here and not in Setup
  *
@@ -21,34 +21,33 @@
  * put on a tab by the machine, and being moved off it again by the machine is
  * how a panel loses your place.
  */
-import { useEffect, useState } from 'react';
-import { Segmented, Button, Tooltip, Alert } from 'antd';
-import { MenuOutlined } from '@ant-design/icons';
+import { useEffect } from 'react';
+import { Button, Tooltip, Alert } from 'antd';
+import { ApartmentOutlined, CodeOutlined, MenuOutlined } from '@ant-design/icons';
 import FeatureTree, { TREE_SIZE } from './FeatureTree.jsx';
 import GcodePanel from './GcodePanel.jsx';
 import { useCamStore } from '../stores/camStore.js';
 import { useFeatureStore } from '../stores/featureStore.js';
+import { useSketchStore } from '../stores/sketchStore.js';
+import { describeFeature } from '../engine/solid/featureTree.js';
 import { CAD } from '../theme.js';
 
-const TABS = [
-  { label: 'Model', value: 'model' },
-  { label: 'Program', value: 'program' },
-];
-
-export default function LeftColumn({ activeLine = 0 }) {
+export default function LeftColumn({ activeLine = 0, tab, onTab: setTab }) {
   const open = useFeatureStore((s) => s.treeOpen);
   const setOpen = useFeatureStore((s) => s.setTreeOpen);
+  const features = useFeatureStore((s) => s.features);
+  const selectedId = useFeatureStore((s) => s.selectedId);
+  const sketches = useSketchStore((s) => s.sketches);
+  const selected = features.find((f) => f.id === selectedId);
 
   const gcode = useCamStore((s) => s.gcode);
   const setGcode = useCamStore((s) => s.setGcode);
   const playing = useCamStore((s) => s.playing);
   const error = useCamStore((s) => s.error);
 
-  const [tab, setTab] = useState('model');
-
   // Playback and a parse failure both mean "the program is what matters now".
-  useEffect(() => { if (playing) setTab('program'); }, [playing]);
-  useEffect(() => { if (error) setTab('program'); }, [error]);
+  useEffect(() => { if (playing) setTab('program'); }, [playing, setTab]);
+  useEffect(() => { if (error) setTab('program'); }, [error, setTab]);
 
   if (!open) {
     return (
@@ -71,24 +70,25 @@ export default function LeftColumn({ activeLine = 0 }) {
   }
 
   return (
-    <div style={{
-      height: '100%', background: CAD.panelBg,
-      display: 'flex', flexDirection: 'column', minWidth: 0,
-    }}
+    <div
+      data-column-pane={tab}
+      style={{
+        height: '100%', background: CAD.panelBg,
+        display: 'flex', flexDirection: 'column', minWidth: 0,
+      }}
     >
       <div style={{
-        display: 'flex', alignItems: 'center', gap: 4,
-        padding: 6, borderBottom: `1px solid ${CAD.border}`,
+        display: 'flex', alignItems: 'center', gap: 6,
+        padding: '4px 6px 4px 10px', borderBottom: `1px solid ${CAD.border}`,
       }}
       >
-        <Segmented
-          size="small"
-          value={tab}
-          onChange={setTab}
-          options={TABS}
-          style={{ flex: 1 }}
-          data-column-tabs
-        />
+        {/* Says which pane this is; the tabs under the viewport are what switch it. */}
+        {tab === 'model'
+          ? <ApartmentOutlined style={{ color: CAD.icon }} />
+          : <CodeOutlined style={{ color: CAD.icon }} />}
+        <span style={{ flex: 1, color: CAD.text, fontSize: 12, fontWeight: 600 }}>
+          {tab === 'model' ? 'Model' : 'Program'}
+        </span>
         <Tooltip title="Collapse">
           <Button
             size="small"
@@ -101,7 +101,30 @@ export default function LeftColumn({ activeLine = 0 }) {
       </div>
 
       {tab === 'model' ? (
-        <FeatureTree embedded />
+        <>
+          <div style={{ flex: 1, minHeight: 0, display: 'flex', flexDirection: 'column' }}>
+            <FeatureTree embedded />
+          </div>
+          {/* What the selected feature is, in words, under the list it was picked from. */}
+          {selected && (
+            <div
+              data-column-note
+              style={{
+                flex: '0 0 auto',
+                padding: '8px 10px',
+                fontSize: 11,
+                lineHeight: 1.4,
+                color: CAD.label,
+                background: CAD.headerBg,
+                borderTop: `1px solid ${CAD.border}`,
+              }}
+            >
+              <b style={{ fontWeight: 600 }}>{selected.name}</b>
+              {' '}
+              {describeFeature(selected, sketches.find((s) => s.id === selected.sketchId)?.name)}
+            </div>
+          )}
+        </>
       ) : (
         // `hidden`, not `auto`: the listing owns the scrolling now — it draws
         // only the rows on screen, so it has to be the element whose height is

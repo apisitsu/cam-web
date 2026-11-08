@@ -166,7 +166,7 @@ test('parseToolTable reads type, diameter and length from comments', () => {
   assert.equal(t.get(1).diameter, 32);
   assert.equal(t.get(2).type, 'drill');
   assert.equal(t.get(2).diameter, 9);          // bare number, no D word
-  assert.equal(t.get(2).cutter, null);         // none of the milling shapes is a drill
+  assert.equal(t.get(2).cutter, 'drill');      // a twist drill has its own shape (118° point cone) in cam/cutters.js
   assert.equal(t.get(3).type, 'endmill');
   assert.equal(t.get(3).radius, 3.5);          // D7 -> radius 3.5
   assert.equal(t.get(3).length, 48);

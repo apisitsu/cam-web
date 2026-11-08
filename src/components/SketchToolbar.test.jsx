@@ -17,8 +17,12 @@ import {
 
 let container;
 let root;
+// Where the docked Ribbon is drawn. It is deliberately NOT inside `container`:
+// the rail's own labels ("Fillet", "Offset"…) would otherwise be in the page text,
+// and the gate tests below read that text to tell whether an *overlay* appeared.
+let slot;
 
-/** Render the toolbar against a given store state and return the page text. */
+/** Render the toolbar against a given store state and return the overlay text (the Ribbon is in `slot`). */
 async function renderWith(patch) {
   useSketchStore.setState({
     selection: [], tool: 'select', chamferKind: 'C',
@@ -29,7 +33,7 @@ async function renderWith(patch) {
   });
   // eslint-disable-next-line testing-library/no-unnecessary-act
   await act(async () => {
-    root.render(React.createElement(SketchToolbar));
+    root.render(React.createElement(SketchToolbar, { ribbonSlot: slot }));
   });
   return container.textContent;
 }
@@ -37,6 +41,8 @@ async function renderWith(patch) {
 beforeEach(() => {
   container = document.createElement('div');
   document.body.appendChild(container);
+  slot = document.createElement('div');
+  document.body.appendChild(slot);
   root = createRoot(container);
   useSketchStore.setState({ sk: createSketch() });
 });
@@ -44,19 +50,63 @@ beforeEach(() => {
 afterEach(async () => {
   await act(async () => root.unmount());
   container.remove();
+  slot.remove();
 });
 
 describe('SketchToolbar — the rail is always there', () => {
   it('renders a button for every drawing tool plus the actions', async () => {
     await renderWith({});
-    // The rail is icon-only, so it carries no text — count the buttons instead.
-    // 9 tools + construction/mirror/offset + solve/undo/redo/delete + popovers.
-    expect(container.querySelectorAll('button').length).toBeGreaterThanOrEqual(16);
+    // 11 tools + construction/mirror/offset + relations/solve/undo/redo/delete + popovers.
+    expect(slot.querySelectorAll('button').length).toBeGreaterThanOrEqual(16);
   });
 
   it('marks the active tool as selected', async () => {
     await renderWith({ tool: 'circle' });
-    expect(container.querySelector('.ant-btn-primary')).toBeTruthy();
+    expect(slot.querySelector('.ant-btn-primary')).toBeTruthy();
+  });
+});
+
+describe('SketchToolbar — docked as the Ribbon', () => {
+  it('draws the rail into the slot it is given, not over the viewport', async () => {
+    await renderWith({});
+    expect(slot.querySelector('[data-sketch-ribbon]')).toBeTruthy();
+    expect(container.querySelector('[data-sketch-ribbon]')).toBeNull();
+    // Docked, it covers no viewport, so it must not claim to be an overlay the
+    // camera fit has to avoid.
+    expect(slot.querySelector('[data-cam-overlay]')).toBeNull();
+  });
+
+  it('writes the name under every button — the point of the Ribbon', async () => {
+    await renderWith({});
+    const labels = [...slot.querySelectorAll('[data-ribbon-button]')].map((b) => b.getAttribute('data-ribbon-button'));
+    for (const name of ['Select', 'Line', 'Rectangle', 'Circle', 'Arc', 'Dimension', 'Trim',
+      'Construction', 'Mirror', 'Offset', 'Relations', 'Solve', 'Undo', 'Redo', 'Delete',
+      'Sketches', 'Build']) {
+      // eslint-disable-next-line jest/valid-expect
+      expect(labels, name).toContain(name);
+    }
+    // Saving, opening, DXF and the library all live in the File menu.
+    expect(labels).not.toContain('Library');
+    expect(labels).not.toContain('More');
+    // The visible text is the name, so the accessible name is too.
+    const line = slot.querySelector('[data-ribbon-button="Line"]');
+    expect(line.textContent).toBe('Line');
+  });
+
+  it('still floats over the viewport, as an overlay, when there is no slot to dock in', async () => {
+    useSketchStore.setState({ sk: createSketch(), tool: 'select', selection: [] });
+    // eslint-disable-next-line testing-library/no-unnecessary-act
+    await act(async () => { root.render(React.createElement(SketchToolbar)); });
+    expect(container.querySelector('[data-cam-overlay="top"]')).toBeTruthy();
+    expect(container.querySelector('[data-sketch-ribbon]')).toBeNull();
+  });
+
+  it('keeps a button working through the portal', async () => {
+    await renderWith({ tool: 'select' });
+    await act(async () => {
+      slot.querySelector('[data-ribbon-button="Circle"]').dispatchEvent(new MouseEvent('click', { bubbles: true }));
+    });
+    expect(useSketchStore.getState().tool).toBe('circle');
   });
 });
 
@@ -189,39 +239,37 @@ describe('SketchToolbar — inline inputs appear only when armed', () => {
   });
 });
 
+// The status tags are the tail of the rail, so they are in the Ribbon's slot, not
+// in the overlay text `renderWith` returns. (The labels in the slot contain no
+// "!", "?", "✓" or digits, so these cannot be satisfied by a label by accident.)
 describe('SketchToolbar — status readout', () => {
   it('shows the free degrees of freedom while under-defined', async () => {
     const sk = createSketch();
-    // eslint-disable-next-line testing-library/render-result-naming-convention
-    const text = await renderWith({ sk, dofState: { state: 'under', free: 4 } });
-    expect(text).toContain('4');
+    await renderWith({ sk, dofState: { state: 'under', free: 4 } });
+    expect(slot.textContent).toContain('4');
   });
 
   it('shows a tick once the sketch is fully defined', async () => {
     const sk = createSketch();
-    // eslint-disable-next-line testing-library/render-result-naming-convention
-    const text = await renderWith({ sk, dofState: { state: 'full', free: 0 } });
-    expect(text).toContain('✓');
+    await renderWith({ sk, dofState: { state: 'full', free: 0 } });
+    expect(slot.textContent).toContain('✓');
   });
 
   it('flags a failed solve', async () => {
     const sk = createSketch();
-    // eslint-disable-next-line testing-library/render-result-naming-convention
-    const text = await renderWith({ sk, solveResult: { success: false, status: 2 } });
-    expect(text).toContain('!');
+    await renderWith({ sk, solveResult: { success: false, status: 2 } });
+    expect(slot.textContent).toContain('!');
   });
 
   it('flags an error (the message itself lives in the tooltip)', async () => {
     const sk = createSketch();
-    // eslint-disable-next-line testing-library/render-result-naming-convention
-    const text = await renderWith({ sk, error: 'R5 is too large to fit that corner' });
-    expect(text).toContain('?');
+    await renderWith({ sk, error: 'R5 is too large to fit that corner' });
+    expect(slot.textContent).toContain('?');
   });
 
   it('shows no status flags when everything is clean', async () => {
-    // eslint-disable-next-line testing-library/render-result-naming-convention
-    const text = await renderWith({ sk: createSketch() });
-    expect(text).not.toContain('!');
-    expect(text).not.toContain('?');
+    await renderWith({ sk: createSketch() });
+    expect(slot.textContent).not.toContain('!');
+    expect(slot.textContent).not.toContain('?');
   });
 });

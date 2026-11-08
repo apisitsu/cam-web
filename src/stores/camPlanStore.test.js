@@ -1,7 +1,9 @@
 import { describe, it, expect, beforeEach } from 'vitest';
 import { useCamPlanStore, getMesh } from './camPlanStore.js';
 import { useCamStore } from './camStore.js';
-import { turnedShaft, box, groovedShaft } from '../engine/mesh/fixtures.js';
+import { turnedShaft, box, groovedShaft, tube } from '../engine/mesh/fixtures.js';
+import { translate } from '../engine/mesh/datum.js';
+import { circleAtPick } from '../engine/mesh/circlePick.js';
 import { machineById, DEFAULT_MILL_ID } from '../engine/cam/machines.js';
 
 /** Wrap a triangle soup as a binary STL File-alike the store can read. */
@@ -588,7 +590,9 @@ describe('camPlanStore — the datum: where X0/Y0/Z0 physically is', () => {
   });
 });
 
-describe('camPlanStore — reversing which end reads as high X', () => {
+describe('camPlanStore — flipping an axis', () => {
+  const NONE = [false, false, false];
+
   beforeEach(() => {
     store().clear();
     useCamPlanStore.setState({ machineId: DEFAULT_MILL_ID, forceMode: 'auto', material: 'aluminium' });
@@ -596,30 +600,34 @@ describe('camPlanStore — reversing which end reads as high X', () => {
 
   it('is off by default, so an untouched part behaves exactly as before', async () => {
     await store().loadStl(stlFile(box(60, 40, 15)));
-    expect(store().datum.reverseX).toBe(false);
+    expect(store().datum.flip).toEqual(NONE);
     const plan = await store().makePlan();
-    expect(plan.orientation.reverseX).toBeUndefined();
+    expect(plan.orientation.flip).toBeUndefined();
   });
 
-  it('toggles on, turning the part 180° about Z — a rotation, not a mirror', async () => {
+  it.each([
+    [0, [true, true, false]],
+    [1, [false, true, true]],
+    [2, [true, false, true]],
+  ])('axis %i toggles on as a 180° turn, reversing two axes', async (axis, expected) => {
     await store().loadStl(stlFile(box(60, 40, 15)));
-    store().toggleReverseX();
-    expect(store().datum.reverseX).toBe(true);
+    store().toggleFlip(axis);
+    expect(store().datum.flip).toEqual(expected);
     const plan = await store().makePlan();
-    expect(plan.orientation.reverseX).toBe(true);
+    expect(plan.orientation.flip).toEqual(expected);
   });
 
   it('toggles back off', async () => {
     await store().loadStl(stlFile(box(60, 40, 15)));
-    store().toggleReverseX();
-    store().toggleReverseX();
-    expect(store().datum.reverseX).toBe(false);
+    store().toggleFlip(0);
+    store().toggleFlip(0);
+    expect(store().datum.flip).toEqual(NONE);
   });
 
   it('composes correctly with an already-picked origin point', async () => {
     await store().loadStl(stlFile(box(60, 40, 15)));
     store().pickAxisOrigin(2, [0, 0, 7.5]);
-    store().toggleReverseX();
+    store().toggleFlip(0);
     const plan = await store().makePlan();
     // The pick already put the top face at Z0 — flipping X/Y about Z leaves
     // Z (and therefore this) untouched.
@@ -627,11 +635,310 @@ describe('camPlanStore — reversing which end reads as high X', () => {
     expect(plan.part.bottom).toBeCloseTo(-15, 3);
   });
 
+  it('flipping Z keeps the picked plane on Z0 and puts the part above it', async () => {
+    await store().loadStl(stlFile(box(60, 40, 15)));
+    store().pickAxisOrigin(2, [0, 0, 7.5]);
+    store().toggleFlip(2);
+    const plan = await store().makePlan();
+    expect(plan.part.bottom).toBeCloseTo(0, 3);
+    expect(plan.part.top).toBeCloseTo(15, 3);
+  });
+
+  it('a later pick lands where it was clicked on a flipped part', async () => {
+    await store().loadStl(stlFile(box(60, 40, 15)));
+    store().toggleFlip(1);
+    store().pickAxisOrigin(2, [0, 0, 7.5]);
+    const plan = await store().makePlan();
+    expect(plan.part.top).toBeCloseTo(0, 3);
+    expect(plan.part.bottom).toBeCloseTo(-15, 3);
+  });
+
+  it('clearing the datum drops the flip too', async () => {
+    await store().loadStl(stlFile(box(60, 40, 15)));
+    store().toggleFlip(2);
+    store().clearDatum();
+    expect(store().datum.flip).toEqual(NONE);
+  });
+
   it('is dropped when a new part is imported', async () => {
     await store().loadStl(stlFile(box(60, 40, 15)));
-    store().toggleReverseX();
+    store().toggleFlip(0);
     await store().loadStl(stlFile(box(60, 40, 15), 'second.stl'));
-    expect(store().datum.reverseX).toBe(false);
+    expect(store().datum.flip).toEqual(NONE);
+  });
+});
+
+describe('camPlanStore — picking a flat face turns it square to the axis', () => {
+  beforeEach(() => {
+    store().clear();
+    useCamPlanStore.setState({ machineId: DEFAULT_MILL_ID, forceMode: 'mill', material: 'aluminium' });
+  });
+
+  // A part laid along X, like a bushing: its end faces are on +X and -X.
+  const longPart = async () => {
+    await store().loadStl(stlFile(box(120, 30, 20)));
+    await store().makePlan();
+  };
+
+  it('stands the part up on the end face picked for Z0', async () => {
+    await longPart();
+    const plan0 = store().plan;
+    expect(plan0.part.top - plan0.part.bottom).toBeCloseTo(20, 3);
+    store().pickAxisOrigin(2, [60, 0, 0], [1, 0, 0]);
+    const plan = await store().makePlan();
+    expect(plan.part.top).toBeCloseTo(0, 3);
+    expect(plan.part.bottom).toBeCloseTo(-120, 3);
+    expect(store().datum.axesSet).toEqual([false, false, true]);
+  });
+
+  it('can still be flipped afterwards, with that face staying on Z0', async () => {
+    await longPart();
+    store().pickAxisOrigin(2, [60, 0, 0], [1, 0, 0]);
+    store().toggleFlip(2);
+    const plan = await store().makePlan();
+    expect(plan.part.bottom).toBeCloseTo(0, 3);
+    expect(plan.part.top).toBeCloseTo(120, 3);
+  });
+
+  it('squaring a second face to another axis leaves the part standing', async () => {
+    await longPart();
+    store().pickAxisOrigin(2, [60, 0, 0], [1, 0, 0]);
+    // Standing up, the raw +Y side still faces +Y; bring it round to +X.
+    store().pickAxisOrigin(0, [0, 15, -60], [0, 1, 0]);
+    const plan = await store().makePlan();
+    expect(plan.part.top).toBeCloseTo(0, 3);
+    expect(plan.part.bottom).toBeCloseTo(-120, 3);
+    expect(store().datum.axesSet).toEqual([true, false, true]);
+  });
+
+  it('only sets the origin on a face already square to that axis', async () => {
+    await longPart();
+    const before = store().meshVer;
+    store().pickAxisOrigin(2, [0, 0, 10], [0, 0, 1]);
+    expect(store().datum.axes).toBeNull();
+    const plan = await store().makePlan();
+    expect(plan.part.top).toBeCloseTo(0, 3);
+    expect(store().meshVer).toBeGreaterThan(before);
+  });
+
+  it('only sets the origin on a curved surface', async () => {
+    await longPart();
+    store().pickAxisOrigin(2, [0, 10, 5], [0, 0.7071, 0.7071]);
+    expect(store().datum.axes).toBeNull();
+    const plan = await store().makePlan();
+    expect(plan.part.top).toBeCloseTo(5, 3);
+  });
+
+  it('is undone by clearing the origin', async () => {
+    await longPart();
+    store().pickAxisOrigin(2, [60, 0, 0], [1, 0, 0]);
+    store().clearDatum();
+    const plan = await store().makePlan();
+    expect(plan.part.top - plan.part.bottom).toBeCloseTo(20, 3);
+  });
+
+  it('leaves a part with an A0 face set as it is', async () => {
+    await longPart();
+    store().pickRotaryZero([0, 0, 1]);
+    store().pickAxisOrigin(2, [60, 0, 0], [1, 0, 0]);
+    expect(store().datum.axes).toBeNull();
+  });
+
+  it('does not turn a lathe job', async () => {
+    await store().loadStl(stlFile(box(120, 30, 20)));
+    useCamPlanStore.setState({ forceMode: 'turn' });
+    store().prepare();
+    store().pickAxisOrigin(2, [60, 0, 0], [1, 0, 0]);
+    expect(store().datum.axes).toBeNull();
+  });
+});
+
+describe('camPlanStore — turning the part 90°', () => {
+  beforeEach(() => {
+    store().clear();
+    useCamPlanStore.setState({ machineId: DEFAULT_MILL_ID, forceMode: 'mill', material: 'aluminium' });
+  });
+
+  it('keeps X0/Y0 on the bore while the part turns about Z', async () => {
+    await store().loadStl(stlFile(translate(tube(20, 10, 30), [-5, -7, 0])));
+    await store().makePlan();
+    store().pickCircleCenter([15, 7, 15], [-1, 0, 0]);
+    store().turnPart(2);
+    // The bore is on the Z axis through the origin, whichever way the part faces.
+    const c = circleAtPick(getMesh().welded, [10, 0, 15], [-1, 0, 0]);
+    expect(c.center[0]).toBeCloseTo(0, 2);
+    expect(c.center[1]).toBeCloseTo(0, 2);
+    expect(store().datum.axesSet).toEqual([true, true, false]);
+  });
+
+  it('swaps the other two extents and rebuilds the plan', async () => {
+    await store().loadStl(stlFile(box(120, 30, 20)));
+    await store().makePlan();
+    store().turnPart(1);
+    const plan = await store().makePlan();
+    expect(plan.part.top - plan.part.bottom).toBeCloseTo(120, 3);
+  });
+
+  it('is undone by clearing the origin', async () => {
+    await store().loadStl(stlFile(box(120, 30, 20)));
+    await store().makePlan();
+    store().turnPart(1);
+    store().clearDatum();
+    const plan = await store().makePlan();
+    expect(plan.part.top - plan.part.bottom).toBeCloseTo(20, 3);
+  });
+
+  it('leaves a part with an A0 face set as it is', async () => {
+    await store().loadStl(stlFile(box(120, 30, 20)));
+    await store().makePlan();
+    store().pickRotaryZero([0, 0, 1]);
+    expect(store().turnPart(2)).toBeNull();
+    expect(store().datum.axes).toBeNull();
+  });
+
+  it('does nothing on a lathe job', async () => {
+    await store().loadStl(stlFile(box(120, 30, 20)));
+    useCamPlanStore.setState({ forceMode: 'turn' });
+    store().prepare();
+    expect(store().turnPart(2)).toBeNull();
+  });
+});
+
+describe('camPlanStore — origin at the centre of a circle', () => {
+  beforeEach(() => {
+    store().clear();
+    useCamPlanStore.setState({ machineId: DEFAULT_MILL_ID, forceMode: 'mill', material: 'aluminium' });
+  });
+
+  // Bore and boss on the Z axis through (5, 7), from z = 0 to z = 30.
+  const offCentreTube = async () => {
+    await store().loadStl(stlFile(translate(tube(20, 10, 30), [-5, -7, 0])));
+    await store().makePlan();
+  };
+
+  it('puts X0 and Y0 on the centre and leaves Z alone', async () => {
+    await offCentreTube();
+    store().startPickCircle();
+    store().pickCircleCenter([15, 7, 15], [-1, 0, 0]);
+    const shown = store().displayedDatumPoint();
+    expect(shown[0]).toBeCloseTo(5, 2);
+    expect(shown[1]).toBeCloseTo(7, 2);
+    expect(shown[2]).toBeCloseTo(0, 3);
+    expect(store().datum.axesSet).toEqual([true, true, false]);
+    expect(store().datumPickMode).toBeNull();
+  });
+
+  it('lands on the same centre when picked again from the shifted part', async () => {
+    await offCentreTube();
+    store().pickCircleCenter([15, 7, 15], [-1, 0, 0]);
+    store().pickCircleCenter([10, 0, 15], [-1, 0, 0]);
+    const shown = store().displayedDatumPoint();
+    expect(shown[0]).toBeCloseTo(5, 2);
+    expect(shown[1]).toBeCloseTo(7, 2);
+  });
+
+  it('keeps a Z already set', async () => {
+    await offCentreTube();
+    store().pickAxisOrigin(2, [15, 7, 30], [0, 0, 1]);
+    store().pickCircleCenter([15, 7, -15], [-1, 0, 0]);
+    expect(store().displayedDatumPoint()[2]).toBeCloseTo(30, 2);
+    expect(store().datum.axesSet).toEqual([true, true, true]);
+  });
+
+  it('takes the circle on show, whatever surface the click landed on', async () => {
+    await offCentreTube();
+    store().startPickCircle();
+    useCamPlanStore.setState({
+      datumHover: { id: 'c', circle: { axis: 2, center: [5, 7, 15], radius: 10 } },
+    });
+    store().pickCircleCenter();
+    const shown = store().displayedDatumPoint();
+    expect(shown[0]).toBeCloseTo(5, 3);
+    expect(shown[1]).toBeCloseTo(7, 3);
+    expect(store().datumPickMode).toBeNull();
+    expect(store().datumHover).toBeNull();
+  });
+
+  it('stays armed and says so when there is no circle', async () => {
+    await store().loadStl(stlFile(box(60, 40, 15)));
+    await store().makePlan();
+    store().startPickCircle();
+    expect(store().pickCircleCenter([0, 0, 7.5], [0, 0, 1])).toBeNull();
+    expect(store().datumPickMode).toBe('circle');
+    expect(store().datumPickHint).toMatch(/No circle/);
+    expect(store().datum.point).toBeNull();
+  });
+});
+
+describe('camPlanStore — offset from the picked plane', () => {
+  beforeEach(() => {
+    store().clear();
+    useCamPlanStore.setState({ machineId: DEFAULT_MILL_ID, forceMode: 'auto', material: 'aluminium' });
+  });
+
+  const pickedTop = async () => {
+    await store().loadStl(stlFile(box(60, 40, 15)));
+    store().pickAxisOrigin(2, [0, 0, 7.5]);
+  };
+
+  it('puts Z0 that far above the picked top face, so the face reads minus the distance', async () => {
+    await pickedTop();
+    store().setAxisOffset(2, 0.5);
+    const plan = await store().makePlan();
+    expect(plan.part.top).toBeCloseTo(-0.5, 3);
+    expect(store().displayedDatumOffset()[2]).toBeCloseTo(0.5);
+    expect(store().displayedDatumPoint()[2]).toBeCloseTo(8, 3);
+  });
+
+  it('does not stack when the distance is edited', async () => {
+    await pickedTop();
+    store().setAxisOffset(2, 0.5);
+    store().setAxisOffset(2, 2);
+    const plan = await store().makePlan();
+    expect(plan.part.top).toBeCloseTo(-2, 3);
+  });
+
+  it('carries over to a new pick, whichever was done first', async () => {
+    await store().loadStl(stlFile(box(60, 40, 15)));
+    store().setAxisOffset(2, 0.5);
+    store().pickAxisOrigin(2, [0, 0, 7]);
+    const plan = await store().makePlan();
+    // The click is measured on the part as drawn, 0.5 shifted: the true top is
+    // at 7 there, and Z0 goes 0.5 above that.
+    expect(plan.part.top).toBeCloseTo(-0.5, 3);
+  });
+
+  it('locks the axis, and leaves the others free', async () => {
+    await store().loadStl(stlFile(box(60, 40, 15)));
+    store().setAxisOffset(0, 1);
+    expect(store().datum.axesSet).toEqual([true, false, false]);
+  });
+
+  it('is replaced by a typed absolute value', async () => {
+    await pickedTop();
+    store().setAxisOffset(2, 0.5);
+    store().setAxisOrigin(2, 4);
+    expect(store().displayedDatumOffset()[2]).toBeCloseTo(0);
+    expect(store().displayedDatumPoint()[2]).toBeCloseTo(4, 3);
+  });
+
+  it('is released with the axis', async () => {
+    await pickedTop();
+    store().setAxisOffset(2, 0.5);
+    store().clearAxisOrigin(2);
+    expect(store().datum.point).toBeNull();
+    expect(store().displayedDatumOffset()[2]).toBeCloseTo(0);
+  });
+
+  it('stays on the same physical spot when the part is flipped', async () => {
+    await pickedTop();
+    store().setAxisOffset(2, 0.5);
+    store().toggleFlip(2);
+    const plan = await store().makePlan();
+    // Z0 is still 0.5 clear of that face; the part now lies above it, on +Z.
+    expect(plan.part.bottom).toBeCloseTo(0.5, 3);
+    expect(plan.part.top).toBeCloseTo(15.5, 3);
+    expect(store().displayedDatumOffset()[2]).toBeCloseTo(-0.5);
   });
 });
 

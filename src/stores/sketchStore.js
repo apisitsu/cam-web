@@ -117,6 +117,9 @@ function firstSketch(doc) {
 
 const INITIAL_DOC = newSketch();
 
+/** The name Sketch on Face gives a sketch: where it is. */
+const faceSketchName = (plane) => `Face ${planeLabel(plane)}`;
+
 export const useSketchStore = create((set, get) => ({
   // A sketch is a document plus the plane it is drawn on. `sk` is the *active*
   // document and is the **same object** as `sketches[active].doc`, not a copy —
@@ -148,6 +151,7 @@ export const useSketchStore = create((set, get) => ({
   contextMenu: null, // { x, y } screen position of an open right-click menu, or null
   dimensionPending: null, // { kind, refs, label, current } set on a dimension-mode empty-click → shows the inline value input
   offsetPending: false, // true while the Offset rail button is waiting for its distance
+  facePick: false, // true while Sketch on Face waits for a face of the part to be clicked
   linearPatternPending: false, // true while the Linear Pattern rail button is waiting for count/spacing
   circularPatternPending: false, // true while the Circular Pattern rail button is waiting for count/angle
   clipboard: null, // snapshotEntities() capture from the last Copy — lives on the store (not per sketch), so Paste works after switching sketches
@@ -265,7 +269,13 @@ export const useSketchStore = create((set, get) => ({
   /** Move a sketch onto a different plane. The geometry keeps its 2D coordinates. */
   setSketchPlane(id, plane) {
     const parsed = parsePlane(plane);
-    set({ sketches: get().sketches.map((s) => (s.id === id ? { ...s, plane: parsed } : s)) });
+    // A sketch still under the name Sketch on Face gave it says where it is, so it
+    // follows the plane ("Face Top (XY) +20" moved 10 up reads +30). One the
+    // operator renamed keeps the name they gave it.
+    const follow = (s) => (s.name === faceSketchName(s.plane) ? faceSketchName(parsed) : s.name);
+    set({
+      sketches: get().sketches.map((s) => (s.id === id ? { ...s, name: follow(s), plane: parsed } : s)),
+    });
     get()._bump();
     return parsed;
   },
@@ -280,9 +290,17 @@ export const useSketchStore = create((set, get) => ({
    * click on the part sets; nothing new has to be picked. `onto` re-planes the
    * *current* sketch instead of starting a new one, for a sketch drawn before
    * the operator realised which face it belonged on.
+   *
+   * `face` overrides the picked face. **The feature tree passes it in the raw
+   * frame** (`featureStore.sketchOnFace`): a sketch lives where the solids are
+   * built — the frame the Sketch page draws the part in — and a face picked on a
+   * machining page is in
+   * the *displayed* frame, laid down and re-laid every time the part's shape
+   * changes. A plane taken from the displayed face was right only while the two
+   * frames happened to agree.
    */
-  sketchOnFace({ onto = null } = {}) {
-    const face = useCamPlanStore.getState().selectedFeature;
+  sketchOnFace({ onto = null, face: given = null } = {}) {
+    const face = given || useCamPlanStore.getState().selectedFeature;
     if (!face?.normal || !face?.centroid) {
       set({ error: 'Pick a face on the part first — click it in the viewport.' });
       return null;
@@ -293,7 +311,7 @@ export const useSketchStore = create((set, get) => ({
       set({ error: null });
       return onto;
     }
-    const id = get().addSketch({ name: `Face ${planeLabel(plane)}`, plane });
+    const id = get().addSketch({ name: faceSketchName(plane), plane });
     set({ error: null });
     return id;
   },
@@ -362,7 +380,17 @@ export const useSketchStore = create((set, get) => ({
 
   setTool(tool) {
     set({
-      tool, pending: null, pending2: null, cursor: null, snap: null, axisSnap: null, lineAngle: null, hoverId: null, error: null, dimensionPending: null, editingConstraint: null, offsetPending: false, linearPatternPending: false, circularPatternPending: false, boxSelect: null, _boxStart: null, selectedDims: [], contextMenu: null,
+      tool, pending: null, pending2: null, cursor: null, snap: null, axisSnap: null, lineAngle: null, hoverId: null, error: null, dimensionPending: null, editingConstraint: null, offsetPending: false, linearPatternPending: false, circularPatternPending: false, facePick: false, boxSelect: null, _boxStart: null, selectedDims: [], contextMenu: null,
+    });
+  },
+
+  /**
+   * Sketch on Face: the next click on the part picks the face a new sketch goes on.
+   * Drawing is paused meanwhile, so the click reaches the part and not the plane.
+   */
+  setFacePick(on) {
+    set({
+      facePick: on, pending: null, pending2: null, boxSelect: null, _boxStart: null, error: null,
     });
   },
 
@@ -1392,7 +1420,9 @@ export const useSketchStore = create((set, get) => ({
     const pt = get().sk.entities.get(d.id);
     if (pt) pt.fixed = d.wasFixed;
     set({ dragging: null, _dragTarget: null });
-    get()._bump();
+    // A press that never moved changed nothing, and must not read as an edit: it
+    // would mark the part out of date for a click.
+    if (d.moved) get()._bump();
     // Settle once the pin is released: a genuinely free point stays where it was
     // dragged, but a fully-constrained one the drag deformed snaps back to satisfy
     // its constraints — matching how SolidWorks resists dragging defined geometry.

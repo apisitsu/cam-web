@@ -8,12 +8,16 @@
  * that offers Build on a sketch that cannot build, or one that refuses a sketch
  * that can. Both read as the feature being broken.
  */
-import { describe, it, expect, beforeEach, afterEach } from 'vitest';
+import {
+  describe, it, expect, beforeEach, afterEach, vi,
+} from 'vitest';
 import React, { act } from 'react';
 import { createRoot } from 'react-dom/client';
 import BuildPanel from './BuildPanel.jsx';
 import SketchesPanel from './SketchesPanel.jsx';
 import { useSketchStore } from '../stores/sketchStore.js';
+import { useFeatureStore } from '../stores/featureStore.js';
+import { useCamPlanStore } from '../stores/camPlanStore.js';
 import { createSketch, addPoint, addLine, addCircle } from '../engine/sketch/model.js';
 
 let container;
@@ -66,6 +70,105 @@ async function open(el) {
   // Popover content is portalled to the body, not into `container`.
   return document.body.textContent;
 }
+
+describe('BuildPanel — one named feature from the Ribbon', () => {
+  const panel = (preset) => React.createElement(BuildPanel, {
+    trigger: React.createElement('button', { type: 'button' }, 'Open'),
+    preset,
+  });
+  const pressBuild = () => act(async () => {
+    document.querySelector('[data-sketch-build]').dispatchEvent(new MouseEvent('click', { bubbles: true }));
+  });
+  const realBuild = useFeatureStore.getState().buildFromSketch;
+  let build;
+
+  const withPart = (yes) => {
+    useFeatureStore.setState({ features: yes ? [{ id: 'f1', name: 'Extrude1' }] : [], buildFromSketch: build });
+    useCamPlanStore.setState({ status: yes ? 'ready' : 'idle', stlName: yes ? 'part.stl' : null });
+  };
+
+  beforeEach(() => {
+    build = vi.fn(async () => {});
+    setSketch(rectSketch());
+  });
+
+  afterEach(() => {
+    useCamPlanStore.setState({ status: 'idle', stlName: null });
+    useFeatureStore.setState({ features: [], buildFromSketch: realBuild });
+  });
+
+  it('asks only for sizes, having been told the rest by the button', async () => {
+    withPart(true);
+    const text = await open(panel({ name: 'Extruded Boss/Base', op: 'extrude', cut: false }));
+    expect(text).toContain('Extruded Boss/Base from');
+    expect(text).toContain('Depth');
+    expect(text).not.toContain('Against what the tree has built');
+  });
+
+  it('joins a boss to the part', async () => {
+    withPart(true);
+    await open(panel({ name: 'Extruded Boss/Base', op: 'extrude', cut: false }));
+    await pressBuild();
+    expect(build).toHaveBeenCalledWith(expect.objectContaining({ op: 'extrude', merge: 'add' }));
+  });
+
+  it('makes a boss the first body when the tree is empty', async () => {
+    withPart(false);
+    await open(panel({ name: 'Extruded Boss/Base', op: 'extrude', cut: false }));
+    await pressBuild();
+    expect(build).toHaveBeenCalledWith(expect.objectContaining({ merge: 'new' }));
+  });
+
+  it('cuts from the part, and says which way a cut runs', async () => {
+    withPart(true);
+    const text = await open(panel({ name: 'Extruded Cut', op: 'extrude', cut: true }));
+    expect(text).toContain('into the part');
+    await pressBuild();
+    expect(build).toHaveBeenCalledWith(expect.objectContaining({ op: 'extrude', merge: 'cut', end: 'blind' }));
+  });
+
+  it('cuts through all without asking for a depth, and turns round on Reverse', async () => {
+    withPart(true);
+    await open(panel({ name: 'Extruded Cut', op: 'extrude', cut: true }));
+    // The panel just opened; earlier tests' popovers may linger in the body.
+    const pop = () => [...document.querySelectorAll('.ant-popover')].at(-1);
+    const through = [...pop().querySelectorAll('[data-extrude-end] label')].find((l) => l.textContent === 'Through All');
+    await act(async () => { through.dispatchEvent(new MouseEvent('click', { bubbles: true })); });
+    expect(pop().textContent).not.toContain('Depth');
+    await act(async () => {
+      pop().querySelector('[data-extrude-reverse]').dispatchEvent(new MouseEvent('click', { bubbles: true }));
+    });
+    await pressBuild();
+    expect(build).toHaveBeenCalledWith(expect.objectContaining({ end: 'through', reverse: true }));
+  });
+
+  it('revolves when the button says so', async () => {
+    withPart(true);
+    const text = await open(panel({ name: 'Revolved Cut', op: 'revolve', cut: true }));
+    expect(text).toContain('Angle');
+    await pressBuild();
+    expect(build).toHaveBeenCalledWith(expect.objectContaining({ op: 'revolve', merge: 'cut' }));
+  });
+
+  it('turns about the sketch’s X axis when it has no centerline', async () => {
+    withPart(false);
+    await open(panel({ name: 'Revolved Boss/Base', op: 'revolve', cut: false }));
+    await pressBuild();
+    expect(build).toHaveBeenCalledWith(expect.objectContaining({ axis: 'x', axisLine: null }));
+  });
+
+  it('takes the centerline as the axis, as SolidWorks does, once one is drawn', async () => {
+    const sk = rectSketch();
+    const line = addLine(sk, addPoint(sk, 0, -5), addPoint(sk, 40, -5));
+    sk.entities.get(line).construction = true;
+    setSketch(sk);
+    withPart(false);
+    const text = await open(panel({ name: 'Revolved Boss/Base', op: 'revolve', cut: false }));
+    expect(text).toContain('Centerline');
+    await pressBuild();
+    expect(build).toHaveBeenCalledWith(expect.objectContaining({ op: 'revolve', axisLine: line }));
+  });
+});
 
 beforeEach(() => {
   container = document.createElement('div');

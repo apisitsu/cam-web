@@ -90,11 +90,11 @@ describe('MenuBar', () => {
     expect(input.accept).toContain('.gcode');
   });
 
-  it('File opens with Open program / Load sample / Library / Export G-code', async () => {
+  it('File opens with Open program / Library / Export G-code, and no sample', async () => {
     await render();
     await openMenu('File');
     expect(openItem('Open program')).toBeTruthy();
-    expect(openItem('Load sample')).toBeTruthy();
+    expect(openItem('Load sample')).toBeFalsy();
     expect(openItem('Library')).toBeTruthy();
     expect(openItem('Export G-code')).toBeTruthy();
   });

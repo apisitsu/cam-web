@@ -228,10 +228,61 @@ const BORING_INSERT_MOUNT_ROT = Math.PI / 2;
  * tilt on top of it (`shape.insertTilt` — see `boringBarGeometry`) and the
  * tip still has to land wherever that rotated mount actually puts it.
  */
-function boringInsertTip(r, zScale, rot = BORING_INSERT_MOUNT_ROT) {
-  const x = r * zScale * Math.sin(rot);
-  const z = r * zScale * Math.cos(rot);
-  return { x, z };
+function boringInsertTip(r, zScale, rot = BORING_INSERT_MOUNT_ROT, sides = 4, index = 0) {
+  return boringInsertVertex(0, 0, r, zScale, sides, index, rot);
+}
+
+/**
+ * Front clearance of a seated insert: the edge facing the part's face leans
+ * back this far from the face plane (Z = 0), like the end-cutting-edge angle of
+ * a real boring insert. Not zero — an edge lying exactly in Z = 0 would be
+ * coplanar with the face it is cutting and z-fight it.
+ */
+const BORING_FRONT_CLEARANCE = 3 * DEG;
+
+/** How far (mm) a `flushHead` insert's tip stands out of the bar's top. */
+const BORING_HEAD_PROTRUSION = 1.5;
+
+/**
+ * Which corner of the insert is the cutting tip, and the mount rotation that
+ * seats it so **nothing of the insert lies ahead of the tip (Z < 0) or beyond
+ * it radially (X > 0)** — the one place a boring bar really cuts.
+ *
+ * The default mount pins vertex 0 as the tip. For a `sides: 4` diamond that
+ * vertex is the *obtuse* 145° corner (the 35° corners are vertices 1 and 3),
+ * and a polygon whose tip angle is wider than 90° cannot fit behind a tip that
+ * is meant to be the extreme point in both Z and X: with the tilt dialled in by
+ * eye (−35°) one corner sat ~3 mm ahead of the tip, so at Z0 the tool read as
+ * already cutting into the part's face. So here the tip is the *sharpest*
+ * corner, and the rotation is solved (not dialled): the edge nearer the face
+ * lies at `BORING_FRONT_CLEARANCE` off the face plane, the other edge `nose`
+ * further round, so the whole convex polygon sits inside that wedge. Valid
+ * while the sharpest corner is under 90° − clearance — every real insert.
+ */
+function boringSeatMount(r, zScale, sides) {
+  const local = Array.from({ length: sides }, (_, i) => {
+    const theta = (i / sides) * 2 * Math.PI;
+    return { x: r * Math.sin(theta), z: r * Math.cos(theta) * zScale };
+  });
+  const edgeAngle = (from, to) => Math.atan2(to.z - from.z, to.x - from.x);
+  const wrap = (a) => Math.atan2(Math.sin(a), Math.cos(a));
+  const interior = (i) => {
+    const c = local[i];
+    const prev = local[(i + sides - 1) % sides];
+    const next = local[(i + 1) % sides];
+    return Math.abs(wrap(edgeAngle(c, next) - edgeAngle(c, prev)));
+  };
+  let tipIndex = 0;
+  for (let i = 1; i < sides; i += 1) {
+    if (interior(i) < interior(tipIndex) - 1e-9) tipIndex = i;
+  }
+  const c = local[tipIndex];
+  const aPrev = edgeAngle(c, local[(tipIndex + sides - 1) % sides]);
+  const aNext = edgeAngle(c, local[(tipIndex + 1) % sides]);
+  // A world edge direction is (local angle − rot); the face-side edge is the
+  // one with the larger world angle, pointing nearest −X.
+  const front = wrap(aNext - aPrev) > 0 ? aNext : aPrev;
+  return { tipIndex, rot: front - (Math.PI - BORING_FRONT_CLEARANCE) };
 }
 
 /**
@@ -240,7 +291,7 @@ function boringInsertTip(r, zScale, rot = BORING_INSERT_MOUNT_ROT) {
  * (so a tilted mount keeps every vertex consistent, not just the tip) any
  * mount rotation.
  */
-function boringInsertVertex(insertX, insertZ, r, zScale, sides, i, rot = BORING_INSERT_MOUNT_ROT) {
+export function boringInsertVertex(insertX, insertZ, r, zScale, sides, i, rot = BORING_INSERT_MOUNT_ROT) {
   const theta = (i / sides) * 2 * Math.PI;
   const lx = r * Math.sin(theta);
   const lz = r * Math.cos(theta) * zScale;
@@ -257,9 +308,18 @@ function boringInsertVertex(insertX, insertZ, r, zScale, sides, i, rot = BORING_
  * (see `boringBarGeometry`'s header for why solving the insert's own
  * position for this broke the tip-at-origin invariant instead), purely a
  * cosmetic infill the way `odHolderGeometry`'s own bevelled head is. One
- * triangle: [the tip, the near corner, and the bar's own near-top corner]
- * — the edge from the tip to the near corner is already the insert's own
- * edge, so this reads as a seamless continuation of it.
+ * triangle: [the tip, the near corner, and the bar's own near-top corner —
+ * `-standout` in X, not `-barRadius`: the bar mesh in `Viewport.jsx` is
+ * positioned at `-(barRadius + standout)`, so its own near surface (the one
+ * facing the cutting plane) sits at X = -standout, and `barRadius` deep is
+ * the middle of its solid body, not its edge. A version of this briefly
+ * used `-barRadius` instead, on the assumption that the bar's crown was the
+ * target — it looked plausible in Front/Iso, where the wedge is seen
+ * near edge-on, but a close Top view showed the wedge now overlapping the
+ * bar's own cylinder rather than meeting its face, a visible seam where the
+ * two surfaces crossed instead of touching]. The edge from the tip to the
+ * near corner is already the insert's own edge, so this reads as a
+ * seamless continuation of it.
  *
  * Only called for an **untilted** mount (see `boringBarGeometry`): at
  * `mountRot = 90°` the near corner's own local-X contribution is zero, so
@@ -287,16 +347,28 @@ export function boringBarGeometry(radius = 0.8, shape = {}) {
   const { s, thickY, standout } = toolScale(radius);
   const sides = shape.sides ?? 4;
   const angle = shape.angle ?? 35;
-  const r = s * 0.42;
   // 6 mm, unprompted, matches the Tool table's own default display
   // (`BORING_BAR_DIAMETERS[0]` in App.jsx) — an unset override must draw
   // what the picker already claims to be showing.
   const barRadius = (shape.barDiameter ?? 6) / 2;
+  // The insert is a `sides`-gon prism extruded along Y (see its `thickY`
+  // below) — read face-on from Top, which looks straight down that same
+  // axis. `s * 0.42` was tuned by eye against Front/Iso only, where the
+  // insert is seen near edge-on and reads as a modest wedge; from Top the
+  // same number reads as the insert's full, undistorted width, and at the
+  // old value that width ran well past the bar carrying it — a real boring
+  // insert projects past its bar only modestly, for bore clearance, not by
+  // half again its width. Capped at the bar's own radius for that reason.
+  const r = Math.min(s * 0.42, barRadius);
   // Same fix as odHolderGeometry's zScale: a pointed insert's half-nose
   // angle, not a hard-coded 1 for anything that isn't a 4-sided diamond.
   const zScale = Math.max(Math.tan((angle / 2) * DEG), 0.2);
-  const mountRot = BORING_INSERT_MOUNT_ROT + (shape.insertTilt ?? 0) * DEG;
-  const tip = boringInsertTip(r, zScale, mountRot);
+  // `frontSeat` solves the tip corner and rotation so the insert never lies
+  // ahead of the tip (see `boringSeatMount`); otherwise the legacy mount.
+  const seat = shape.frontSeat ? boringSeatMount(r, zScale, sides) : null;
+  const tipIndex = seat ? seat.tipIndex : 0;
+  const mountRot = seat ? seat.rot : BORING_INSERT_MOUNT_ROT + (shape.insertTilt ?? 0) * DEG;
+  const tip = boringInsertTip(r, zScale, mountRot, sides, tipIndex);
   // The bar sits on the spindle axis — Y=0, the same plane the stock itself
   // is centred on (a round bar of material is symmetric about that axis by
   // construction). A centring pass through here once moved the *insert* to
@@ -308,12 +380,13 @@ export function boringBarGeometry(radius = 0.8, shape = {}) {
   // `Viewport.jsx`) is what keeps it visible over the bar's crown in Top
   // view now that the crown can reach above Y=0, not a Y offset.
   const barY = 0;
-  const barNearZ = standout;
   const insert = {
     r,
     thickY,
     sides,
     zScale,
+    // Which vertex is the cutting tip, pinned at (0, 0) — 0 unless `frontSeat`.
+    tipIndex,
     // `Viewport.jsx` mounts the insert mesh at this rotation.
     rot: mountRot,
     // The insert's centre sits exactly far enough back to cancel its own
@@ -324,8 +397,24 @@ export function boringBarGeometry(radius = 0.8, shape = {}) {
     x: -tip.x,
     z: -tip.z,
   };
+  // `flushHead` (threading bar, trigon bar): the bar's head is carried forward
+  // to the insert's frontmost corner, so nothing of the insert hangs out past
+  // the bar's face in Z, and the tip stands `BORING_HEAD_PROTRUSION` proud of
+  // the bar's top in X — a real insert reaches out of its head to cut, but only
+  // a millimetre or two (level with the top read as not reaching at all; the
+  // legacy 0.6 mm gap read as hardly proud). Otherwise the legacy gap: face just
+  // behind the cutting plane, top `standout` below the tip.
+  const flush = Boolean(shape.flushHead) && !seat;
+  const frontZ = flush
+    ? Math.min(0, ...Array.from({ length: sides }, (_, i) => boringInsertVertex(
+      insert.x, insert.z, r, zScale, sides, i, mountRot,
+    ).z))
+    : standout;
+  const barNearZ = frontZ;
+  const barGap = flush ? BORING_HEAD_PROTRUSION : standout;
   return {
     barRadius,
+    barGap,
     barLength: s * 6,
     barY,
     // The bar's FACE (its near end, not just its crown) sits here too — a
@@ -345,7 +434,13 @@ export function boringBarGeometry(radius = 0.8, shape = {}) {
     // Only for an untilted mount: a real tilt swings the vertex this
     // triangle's far corner uses out to roughly the insert's own size,
     // reading as a slab of "extra" bar material rather than a thin sliver.
-    connectorWedge: (shape.insertTilt ?? 0) === 0
+    //
+    // A "fill every floating vertex" backing pad was tried here and reverted:
+    // it papered over the real fault (a corner ahead of the tip, see
+    // `boringSeatMount`) with solid grey that read as tool material already
+    // cut through the part's face. The fix is in where the insert sits, so a
+    // `frontSeat` insert needs no wedge at all.
+    connectorWedge: !seat && !flush && (shape.insertTilt ?? 0) === 0
       ? boringConnectorWedge(insert, standout, barNearZ)
       : null,
   };
@@ -451,3 +546,10 @@ export function markerYSpan(kind, radius, shape = {}) {
 export function offerToolToggle({ mode = 'mill', sketching = false } = {}) {
   return !sketching && mode === 'turn';
 }
+
+/**
+ * Standard boring-bar shank diameters (mm) — the sizes a boring bar actually
+ * ships in, not an arbitrary continuous range. Drives both the bar diameter
+ * picker below and `boringBarGeometry`'s `barDiameter` shape field.
+ */
+export const BORING_BAR_DIAMETERS = [6, 8, 10, 12, 16, 20, 25, 32];

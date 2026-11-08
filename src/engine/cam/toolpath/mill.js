@@ -176,6 +176,9 @@ export function contourOp(mesh, part, opts) {
   ]);
 }
 
+/** Empty probes in a row that end a hole (see `detectHoles`). */
+const MISSES = 3;
+
 /**
  * Circular holes found by sectioning just under the top face.
  *
@@ -187,56 +190,100 @@ export function contourOp(mesh, part, opts) {
  *
  * The diameter is reported as the **circumscribed** value, since STL inscribes
  * its polygon inside the true circle and so always reads small.
+ *
+ * The section is taken at a few depths just under the top, not one: where a
+ * boolean left a hole's mouth imperfect the loop at one depth can come back
+ * broken, and a hole found at any of them is the hole.
  */
 export function detectHoles(mesh, part, opts = {}) {
   const { roundness = 0.02, probeDepth = 0.5 } = opts;
-  const z = part.top - probeDepth;
-  const { loops } = sliceLoops(mesh, 2, z);
+  const height = part.top - part.bottom;
   const holes = [];
-
-  for (const l of loops) {
-    if (!l.isHole) continue;
-    const pts = l.points;
-    const n = pts.length / 2;
-    let cx = 0, cy = 0;
-    for (let i = 0; i < n; i++) { cx += pts[i * 2]; cy += pts[i * 2 + 1]; }
-    cx /= n; cy /= n;
-
-    let sum = 0, min = Infinity, max = -Infinity;
-    for (let i = 0; i < n; i++) {
-      const d = Math.hypot(pts[i * 2] - cx, pts[i * 2 + 1] - cy);
-      sum += d; min = Math.min(min, d); max = Math.max(max, d);
+  for (const entry of [probeDepth, probeDepth * 2, probeDepth * 4].filter((d) => d < height)) {
+    for (const l of sliceLoops(mesh, 2, part.top - entry).loops) {
+      if (!l.isHole) continue;
+      const [cx, cy] = areaCentroid(l.points);
+      if (holes.some((h) => Math.hypot(h.x - cx, h.y - cy) < h.diameter / 4)) continue;
+      const hole = holeFrom(mesh, part, l.points, cx, cy, entry, { roundness, probeDepth });
+      if (hole) holes.push(hole);
     }
-    const mean = sum / n;
-    if (mean <= 0 || (max - min) / mean > roundness) continue;
-
-    // Find how deep it goes by probing down until the loop disappears.
-    let depth = probeDepth;
-    const stepZ = Math.max((part.top - part.bottom) / 40, 0.2);
-    for (let probe = z; probe >= part.bottom; probe -= stepZ) {
-      const here = sliceLoops(mesh, 2, probe).loops;
-      const still = here.some((h) => h.isHole
-        && Math.abs(centroidDist(h.points, cx, cy)) < mean * 0.5);
-      if (!still) break;
-      depth = part.top - probe;
-    }
-
-    holes.push({
-      x: Number(cx.toFixed(4)),
-      y: Number(cy.toFixed(4)),
-      diameter: Number((max * 2).toFixed(3)), // circumscribed, not inscribed
-      depth: Number(depth.toFixed(3)),
-      throughHole: depth >= (part.top - part.bottom) - stepZ,
-    });
   }
   return holes;
 }
 
-function centroidDist(pts, cx, cy) {
+/** The hole a round loop found `entry` under the top is, or null if it is not round. */
+function holeFrom(mesh, part, pts, cx, cy, entry, { roundness, probeDepth }) {
   const n = pts.length / 2;
-  let ax = 0, ay = 0;
-  for (let i = 0; i < n; i++) { ax += pts[i * 2]; ay += pts[i * 2 + 1]; }
-  return Math.hypot(ax / n - cx, ay / n - cy);
+  const height = part.top - part.bottom;
+  let sum = 0, min = Infinity, max = -Infinity;
+  for (let i = 0; i < n; i++) {
+    const d = Math.hypot(pts[i * 2] - cx, pts[i * 2 + 1] - cy);
+    sum += d; min = Math.min(min, d); max = Math.max(max, d);
+  }
+  const mean = sum / n;
+  if (mean <= 0 || (max - min) / mean > roundness) return null;
+  const sameHole = (h) => h.isHole && centroidDist(h.points, cx, cy) < mean * 0.5;
+
+  // Find how deep it goes by probing down until the loop disappears. One level
+  // or two can come back empty where a boolean left the wall imperfect — a hole
+  // that reappears below them is the same hole, not a new one — so it is only
+  // over when it has been gone for MISSES levels running.
+  let depth = entry;
+  const stepZ = Math.max(height / 40, 0.2);
+  let missed = 0;
+  for (let probe = part.top - entry; probe >= part.bottom; probe -= stepZ) {
+    if (!sliceLoops(mesh, 2, probe).loops.some(sameHole)) {
+      missed += 1;
+      if (missed >= MISSES) break;
+      continue;
+    }
+    missed = 0;
+    depth = part.top - probe;
+  }
+  // The same hole just above the bottom face means it goes through, whatever
+  // the probes between made of a wall a boolean left uneven.
+  if (sliceLoops(mesh, 2, part.bottom + probeDepth).loops.some(sameHole)) {
+    depth = height - probeDepth;
+  }
+
+  return {
+    x: Number(cx.toFixed(4)),
+    y: Number(cy.toFixed(4)),
+    diameter: Number((max * 2).toFixed(3)), // circumscribed, not inscribed
+    depth: Number(depth.toFixed(3)),
+    throughHole: depth >= height - stepZ,
+  };
+}
+
+function centroidDist(pts, cx, cy) {
+  const [ax, ay] = areaCentroid(pts);
+  return Math.hypot(ax - cx, ay - cy);
+}
+
+/**
+ * The centre of the area a loop encloses — not the average of its corners.
+ *
+ * A loop cut from a mesh a boolean has been through has its corners bunched
+ * where the evaluator split the wall and sparse elsewhere; averaging them pulled
+ * the "centre" of a Ø6 hole far enough off to fail the roundness test, and the
+ * hole went undrilled. The area centroid depends only on the shape.
+ */
+function areaCentroid(pts) {
+  const n = pts.length / 2;
+  let a = 0, x = 0, y = 0;
+  for (let i = 0; i < n; i++) {
+    const j = (i + 1) % n;
+    const cross = pts[i * 2] * pts[j * 2 + 1] - pts[j * 2] * pts[i * 2 + 1];
+    a += cross;
+    x += (pts[i * 2] + pts[j * 2]) * cross;
+    y += (pts[i * 2 + 1] + pts[j * 2 + 1]) * cross;
+  }
+  if (Math.abs(a) < 1e-12) {
+    let sx = 0, sy = 0;
+    for (let i = 0; i < n; i++) { sx += pts[i * 2]; sy += pts[i * 2 + 1]; }
+    return [sx / n, sy / n];
+  }
+  return [x / (3 * a), y / (3 * a)];
 }
 
 /**
@@ -297,16 +344,58 @@ export function narrowestPassage(loops, opts = {}) {
       arc[i] = arc[i - 1] + Math.hypot(pts[i * 2] - pts[(i - 1) * 2], pts[i * 2 + 1] - pts[(i - 1) * 2 + 1]);
     }
     const total = arc[n - 1];
+    const tangent = tangents(pts, arc, minArc / 2);
     for (let i = 0; i < n; i++) {
       for (let j = i + 1; j < n; j++) {
         const along = Math.min(arc[j] - arc[i], total - (arc[j] - arc[i]));
         if (along < minArc) continue;
-        const d = Math.hypot(pts[j * 2] - pts[i * 2], pts[j * 2 + 1] - pts[i * 2 + 1]);
-        if (d < best) best = d;
+        const dx = pts[j * 2] - pts[i * 2];
+        const dy = pts[j * 2 + 1] - pts[i * 2 + 1];
+        const d = Math.hypot(dx, dy);
+        if (d >= best || d === 0) continue;
+        // A neck is across the gap: square to the wall at both ends. A line that
+        // runs along the wall instead is only a chord of a curve — on a hole, a
+        // chord `minArc` long, which made every hole a ~3 mm "neck".
+        if (Math.abs(dx * tangent[i * 2] + dy * tangent[i * 2 + 1]) / d > ACROSS) continue;
+        if (Math.abs(dx * tangent[j * 2] + dy * tangent[j * 2 + 1]) / d > ACROSS) continue;
+        best = d;
       }
     }
   }
   return best;
+}
+
+/** cos of the angle to the wall above which a line is along it rather than across (~78°). A round hole then reads within 2% of its diameter. */
+const ACROSS = 0.2;
+
+/**
+ * The wall's direction at each corner of a closed loop, as a unit vector, from the
+ * corners `reach` either side along it — so a corner where a boolean left many
+ * points close together still reads the wall's direction, not its noise.
+ */
+function tangents(pts, arc, reach) {
+  const n = pts.length / 2;
+  const total = arc[n - 1] + Math.hypot(pts[0] - pts[(n - 1) * 2], pts[1] - pts[(n - 1) * 2 + 1]);
+  const out = new Float64Array(n * 2);
+  const ahead = (i, sign) => {
+    let k = i;
+    for (let step = 0; step < n; step++) {
+      k = (k + sign + n) % n;
+      const gap = sign > 0 ? (arc[k] - arc[i] + total) % total : (arc[i] - arc[k] + total) % total;
+      if (gap >= reach) return k;
+    }
+    return (i + sign + n) % n;
+  };
+  for (let i = 0; i < n; i++) {
+    const a = ahead(i, -1);
+    const b = ahead(i, 1);
+    const tx = pts[b * 2] - pts[a * 2];
+    const ty = pts[b * 2 + 1] - pts[a * 2 + 1];
+    const len = Math.hypot(tx, ty) || 1;
+    out[i * 2] = tx / len;
+    out[i * 2 + 1] = ty / len;
+  }
+  return out;
 }
 
 /** Stock box around a part's bounds, with margin on the sides and top. */

@@ -85,3 +85,32 @@ export function chuckFromBounds(mode, bounds, stockOversize = 0) {
     od: Math.max(bounds.feedMax[TURN_RADIAL] + stockOversize / 2, 1),
   };
 }
+
+/** The chuck's proportions, shared by the model that draws it and the fit that frames it. */
+export const CHUCK = {
+  /** Clearance from the deepest cut to the jaws' front face. */
+  clearance: 5,
+  bodyLength: 30,
+  /** How far the jaws stick forward of the body's face. */
+  jawProtrude: 12,
+};
+
+/** The chuck body's radius, for a bar of this size. */
+export function chuckBodyRadius(od) {
+  return Math.max(od * 2.2, od + 20);
+}
+
+/**
+ * The box the whole chuck sits in, or null with no chuck.
+ *
+ * @param {{z:number, od:number}|null} chuck from `chuckFromBounds`
+ */
+export function chuckFitBounds(chuck) {
+  if (!chuck) return null;
+  const r = chuckBodyRadius(chuck.od);
+  const front = chuck.z - CHUCK.clearance;
+  return {
+    min: [-r, -r, front - CHUCK.jawProtrude - CHUCK.bodyLength],
+    max: [r, r, front],
+  };
+}

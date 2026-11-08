@@ -1,11 +1,14 @@
 import { describe, it, expect } from 'vitest';
 import {
   createFeature, parseFeatures, rebuildFeatures, needsMeshBoolean,
-  describeFeature, FEATURE_KINDS, MERGE_MODES, seedFeatureIds,
+  describeFeature, FEATURE_KINDS, MERGE_MODES, seedFeatureIds, defaultReverse,
 } from './featureTree.js';
 import { meshBoolean } from '../../lib/csg.js';
 import { createSketch, addPoint, addLine } from '../sketch/model.js';
 import { volume } from './solidAssert.js';
+
+/** A mesh boolean grows the new solid by a micron (`lib/csg.js` GROW): near, not exact. */
+const nearVolume = (v, want) => expect(Math.abs(v - want)).toBeLessThan(1);
 
 /** Add a closed rectangle to an existing sketch. */
 function addRect(sk, x0, y0, x1, y1) {
@@ -102,7 +105,7 @@ describe('rebuildFeatures — the fold', () => {
     ];
     const { soup, errors } = rebuildFeatures(tree, ctx(sketches));
     expect(errors).toEqual([]);
-    expect(volume(soup)).toBeCloseTo(40 * 40 * 10 - 10 * 10 * 10, 1);
+    nearVolume(volume(soup), 40 * 40 * 10 - 10 * 10 * 10);
   });
 
   it('replays the whole tree after a parameter changes — the point of all this', () => {
@@ -114,13 +117,11 @@ describe('rebuildFeatures — the fold', () => {
       createFeature('extrude', { sketchId: 1, depth: 10 }),
       createFeature('extrude', { sketchId: 2, depth: 30, base: -10, merge: 'cut' }),
     ];
-    expect(volume(rebuildFeatures(tree, ctx(sketches)).soup))
-      .toBeCloseTo(16000 - 1000, 1);
+    nearVolume(volume(rebuildFeatures(tree, ctx(sketches)).soup), 16000 - 1000);
 
     // Edit the plate's thickness only. Everything downstream follows.
     tree[0] = { ...tree[0], depth: 20 };
-    expect(volume(rebuildFeatures(tree, ctx(sketches)).soup))
-      .toBeCloseTo(40 * 40 * 20 - 10 * 10 * 20, 1);
+    nearVolume(volume(rebuildFeatures(tree, ctx(sketches)).soup), 40 * 40 * 20 - 10 * 10 * 20);
   });
 
   it('follows an edit to the **sketch**, not just to the parameters', () => {
@@ -179,7 +180,7 @@ describe('rebuildFeatures — the fold', () => {
     ];
     const { soup, errors } = rebuildFeatures(tree, ctx(sketches, { [base.id]: imported }));
     expect(errors).toEqual([]);
-    expect(volume(soup)).toBeCloseTo(16000 - 1000, 1);
+    nearVolume(volume(soup), 16000 - 1000);
   });
 
   it('applies the profile boolean before it builds anything', () => {
@@ -237,7 +238,7 @@ describe('rebuildFeatures — suppression and ordering', () => {
     // Cutting before there is anything to cut leaves the pocket as the base and
     // the plate then replaces it — order is not decoration.
     const cutFirst = rebuildFeatures([pocket, plate], ctx(s)).soup;
-    expect(volume(cutAfter)).toBeCloseTo(15000, 1);
+    nearVolume(volume(cutAfter), 15000);
     expect(volume(cutFirst)).toBeCloseTo(16000, 1);
   });
 });
@@ -310,7 +311,9 @@ describe('rebuildFeatures — when a feature breaks', () => {
   });
 
   it('is empty for an empty tree', () => {
-    expect(rebuildFeatures([], ctx({}))).toEqual({ soup: null, steps: [], errors: [] });
+    expect(rebuildFeatures([], ctx({}))).toEqual({
+      soup: null, steps: [], errors: [], planes: new Map(),
+    });
     expect(rebuildFeatures(null, ctx({})).soup).toBeNull();
   });
 });
@@ -350,7 +353,7 @@ describe('keepIntermediates', () => {
     expect(rebuildFeatures(tree, ctx(sketches)).steps[0].soup).toBeUndefined();
     const kept = rebuildFeatures(tree, ctx(sketches), { keepIntermediates: true });
     expect(volume(kept.steps[0].soup)).toBeCloseTo(16000, 1);
-    expect(volume(kept.steps[1].soup)).toBeCloseTo(15000, 1);
+    nearVolume(volume(kept.steps[1].soup), 15000);
   });
 });
 
@@ -377,5 +380,133 @@ describe('the tables stay coherent', () => {
       // eslint-disable-next-line jest/valid-expect
       expect(text, mode).toMatch(/—/);
     }
+  });
+});
+
+describe('revolve about a centerline', () => {
+  /** The rectangle plus a construction line from a to b, on one sketch. */
+  function withCenterline(rect, a, b) {
+    const sk = rectSketch(...rect);
+    const line = addLine(sk, addPoint(sk, ...a), addPoint(sk, ...b));
+    sk.entities.get(line).construction = true;
+    return { sk, line };
+  }
+  const boundsOfSoup = (soup) => {
+    const lo = [Infinity, Infinity, Infinity];
+    const hi = [-Infinity, -Infinity, -Infinity];
+    for (let i = 0; i < soup.positions.length; i += 3) {
+      for (let k = 0; k < 3; k++) {
+        lo[k] = Math.min(lo[k], soup.positions[i + k]);
+        hi[k] = Math.max(hi[k], soup.positions[i + k]);
+      }
+    }
+    return { lo, hi };
+  };
+
+  it('turns the profile about the line, not about the sketch’s own axis', () => {
+    // A 60 × 20 profile standing on a centerline at y = 5: a Ø40 bar about y = 5.
+    const { sk, line } = withCenterline([0, 5, 60, 25], [0, 5], [60, 5]);
+    const f = createFeature('revolve', { sketchId: 1, axisLine: line });
+    const { soup, errors } = rebuildFeatures([f], ctx({ 1: { doc: sk, plane: XY } }));
+    expect(errors).toEqual([]);
+    const { lo, hi } = boundsOfSoup(soup);
+    expect(lo[0]).toBeCloseTo(0, 6);
+    expect(hi[0]).toBeCloseTo(60, 6);
+    expect(lo[1]).toBeCloseTo(-15, 6);
+    expect(hi[1]).toBeCloseTo(25, 6);
+    expect(hi[2]).toBeCloseTo(20, 6);
+    expect(volume(soup)).toBeCloseTo(Math.PI * 20 * 20 * 60, -2);
+  });
+
+  it('turns about a vertical centerline as readily as a horizontal one', () => {
+    // Profile x 10..30 beside a centerline at x = 10, running up Y: a disc about it.
+    const { sk, line } = withCenterline([10, 0, 30, 40], [10, 0], [10, 1]);
+    const f = createFeature('revolve', { sketchId: 1, axisLine: line });
+    const { soup } = rebuildFeatures([f], ctx({ 1: { doc: sk, plane: XY } }));
+    const { lo, hi } = boundsOfSoup(soup);
+    expect(lo[0]).toBeCloseTo(-10, 6);
+    expect(hi[0]).toBeCloseTo(30, 6);
+    expect(lo[1]).toBeCloseTo(0, 6);
+    expect(hi[1]).toBeCloseTo(40, 6);
+  });
+
+  it('says so when the centerline has been deleted', () => {
+    const { sk, line } = withCenterline([0, 5, 60, 25], [0, 5], [60, 5]);
+    const f = createFeature('revolve', { sketchId: 1, axisLine: line });
+    sk.entities.delete(line);
+    const { errors } = rebuildFeatures([f], ctx({ 1: { doc: sk, plane: XY } }));
+    expect(errors[0].message).toMatch(/centerline .* gone/);
+  });
+
+  it('keeps the centerline through a project file, and names it in the tree', () => {
+    const [f] = parseFeatures([{ kind: 'revolve', id: 40, sketchId: 1, axisLine: 12 }]);
+    expect(f.axisLine).toBe(12);
+    expect(describeFeature(f)).toMatch(/about the centerline/);
+    expect(createFeature('revolve', {}).axisLine).toBeNull();
+  });
+});
+
+describe('extrude end conditions', () => {
+  const plate = (depth = 10) => createFeature('extrude', { sketchId: 1, depth });
+  const twoSketches = () => ({
+    1: { doc: rectSketch(0, 0, 40, 40), plane: XY },
+    2: { doc: rectSketch(15, 15, 25, 25), plane: { preset: 'XY', offset: 10, gap: 0 } },
+  });
+  const zRange = (soup) => {
+    let lo = Infinity;
+    let hi = -Infinity;
+    for (let i = 2; i < soup.positions.length; i += 3) {
+      lo = Math.min(lo, soup.positions[i]);
+      hi = Math.max(hi, soup.positions[i]);
+    }
+    return [lo, hi];
+  };
+
+  it('starts blind and running along the normal', () => {
+    expect(createFeature('extrude', {})).toMatchObject({ end: 'blind', reverse: false });
+    expect(createFeature('extrude', { end: 'sideways' }).end).toBe('blind');
+  });
+
+  it('reverses without a negative depth', () => {
+    const f = createFeature('extrude', { sketchId: 1, depth: 10, reverse: true });
+    expect(zRange(rebuildFeatures([f], ctx(twoSketches())).soup)).toEqual([-10, 0]);
+  });
+
+  it('splits a mid-plane extrude either side of the plane', () => {
+    const f = createFeature('extrude', { sketchId: 1, depth: 10, end: 'mid' });
+    expect(zRange(rebuildFeatures([f], ctx(twoSketches())).soup)).toEqual([-5, 5]);
+  });
+
+  it('cuts through all, and still does once the part is made thicker', () => {
+    const tree = [plate(10), createFeature('extrude', {
+      sketchId: 2, end: 'through', reverse: true, merge: 'cut',
+    })];
+    nearVolume(volume(rebuildFeatures(tree, ctx(twoSketches())).soup), 16000 - 1000);
+    // The pocket's sketch sits on the top; thicken the plate and move the sketch with it.
+    const thick = twoSketches();
+    thick[2].plane = { preset: 'XY', offset: 30, gap: 0 };
+    tree[0] = plate(30);
+    nearVolume(volume(rebuildFeatures(tree, ctx(thick)).soup), 48000 - 3000);
+  });
+
+  it('says so when Through All points away from the part, or there is no part', () => {
+    const away = [plate(10), createFeature('extrude', { sketchId: 2, end: 'through', merge: 'cut' })];
+    expect(rebuildFeatures(away, ctx(twoSketches())).errors[0].message).toMatch(/points away/);
+    const alone = [createFeature('extrude', { sketchId: 1, end: 'through' })];
+    expect(rebuildFeatures(alone, ctx(twoSketches())).errors[0].message).toMatch(/needs a part/);
+  });
+
+  it('runs a cut into the part and a boss out of it by default', () => {
+    const bounds = { min: [0, 0, 0], max: [40, 40, 10] };
+    const top = { preset: 'XY', offset: 10 };
+    expect(defaultReverse(top, bounds, true)).toBe(true);
+    expect(defaultReverse(top, bounds, false)).toBe(false);
+    // A plane through the part does not decide it.
+    expect(defaultReverse({ preset: 'XY', offset: 5 }, bounds, true)).toBe(false);
+  });
+
+  it('names the end condition in the tree', () => {
+    expect(describeFeature(createFeature('extrude', { end: 'through', reverse: true }))).toMatch(/through all, reversed/);
+    expect(describeFeature(createFeature('extrude', { end: 'mid', depth: 8 }))).toMatch(/8 mm mid plane/);
   });
 });

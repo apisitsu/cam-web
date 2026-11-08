@@ -30,6 +30,10 @@ import * as THREE from 'three';
 import {
   Evaluator, Brush, ADDITION, SUBTRACTION, INTERSECTION,
 } from 'three-bvh-csg';
+import { repairSoup, openEdgeCount } from '../engine/mesh/repair.js';
+
+/** Corner tolerances (mm) a repair is tried at, coarse to fine, until one closes the surface. */
+const REPAIR_TOLS = [1e-4, 1e-5, 1e-6];
 
 /** The operations, in the words a CAD puts on the buttons. */
 export const MESH_OPS = {
@@ -74,6 +78,35 @@ function soupOf(mesh, format) {
   return { positions, triangleCount: count / 3, format };
 }
 
+/** How far (mm) the new solid's farthest corner moves out before a boolean. */
+export const GROW = 0.001;
+
+/**
+ * The solid scaled about the middle of its box so its farthest corner moves out
+ * by `by`. Everything else moves less, in proportion — a micron at most, far under
+ * anything a machine holds, and enough to take a surface off one it lay on.
+ */
+function grown(soup, by) {
+  const p = soup.positions;
+  const lo = [Infinity, Infinity, Infinity];
+  const hi = [-Infinity, -Infinity, -Infinity];
+  for (let i = 0; i < p.length; i += 3) {
+    for (let k = 0; k < 3; k++) {
+      lo[k] = Math.min(lo[k], p[i + k]);
+      hi[k] = Math.max(hi[k], p[i + k]);
+    }
+  }
+  const c = [0, 1, 2].map((k) => (lo[k] + hi[k]) / 2);
+  const half = Math.hypot(hi[0] - lo[0], hi[1] - lo[1], hi[2] - lo[2]) / 2;
+  if (!(half > 0)) return soup;
+  const s = 1 + by / half;
+  const positions = new Float32Array(p.length);
+  for (let i = 0; i < p.length; i += 3) {
+    for (let k = 0; k < 3; k++) positions[i + k] = c[k] + (p[i + k] - c[k]) * s;
+  }
+  return { ...soup, positions };
+}
+
 /**
  * Boolean two solids.
  *
@@ -90,14 +123,36 @@ export function meshBoolean(part, tool, op, format = op) {
   if (!tool?.triangleCount) throw new Error('The new solid is empty.');
 
   const a = brushOf(part);
-  const b = brushOf(tool);
+  // Add and cut grow the new solid a hair first. A profile drawn to the edge of
+  // the part — a groove out to the bar's own radius, a cut from a sketch on the
+  // top face — gives a solid whose surface lies exactly on the part's, and the
+  // evaluator cannot tell which side of a shared surface is which: it keeps both,
+  // as slivers facing opposite ways, which draw as streaks across the part.
+  // Common keeps only the overlap, so growing its solid would grow the answer.
+  const b = brushOf(op === 'common' ? tool : grown(tool, GROW));
   const evaluator = new Evaluator();
   // Only positions are wanted back; skipping the rest keeps the result small and
   // avoids carrying attributes the CAM engine has no use for.
   evaluator.attributes = ['position', 'normal'];
   const result = evaluator.evaluate(a, b, operation);
 
-  const soup = soupOf(result, format);
+  // Closed up before anything reads it: the evaluator leaves T-junctions, which
+  // show as cracks on screen and as open edges to a slice (see `repairSoup`).
+  // Which corners count as one is a judgement: a turned groove closes best at
+  // the usual tolerance, while round the mouth of a drilled hole corners that are
+  // truly distinct sit closer than that, and merging them folds the face. So the
+  // tolerances are tried from coarse to fine, stopping at the first that closes
+  // the surface; failing that, the one leaving fewest open edges is kept. Repair
+  // moves nothing, so every candidate is the same solid.
+  const raw = soupOf(result, format);
+  let soup = null;
+  let open = Infinity;
+  for (const tol of REPAIR_TOLS) {
+    const tried = repairSoup(raw, { tol });
+    const left = openEdgeCount(tried);
+    if (left < open) { soup = tried; open = left; }
+    if (open === 0) break;
+  }
   if (!soup.triangleCount) {
     throw new Error(`Nothing is left after ${op} — the two solids do not overlap the way that needs.`);
   }

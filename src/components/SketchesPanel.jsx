@@ -16,7 +16,8 @@ import {
 import { PlusOutlined, DeleteOutlined, BorderOuterOutlined } from '@ant-design/icons';
 import { useSketchStore } from '../stores/sketchStore.js';
 import { useCamPlanStore } from '../stores/camPlanStore.js';
-import { PLANE_PRESETS, planeLabel } from '../engine/sketch/plane.js';
+import { useFeatureStore } from '../stores/featureStore.js';
+import { PLANE_PRESETS, planeLabel, withGap } from '../engine/sketch/plane.js';
 import { CAD } from '../theme.js';
 
 const { Text } = Typography;
@@ -32,13 +33,17 @@ export default function SketchesPanel({ trigger }) {
   const removeSketch = useSketchStore((s) => s.removeSketch);
   const renameSketch = useSketchStore((s) => s.renameSketch);
   const setSketchPlane = useSketchStore((s) => s.setSketchPlane);
-  const sketchOnFace = useSketchStore((s) => s.sketchOnFace);
+  // Through the feature store, not the sketcher: it links the new plane to the
+  // feature that made the face, so the sketch follows when that feature changes.
+  const sketchOnFace = useFeatureStore((s) => s.sketchOnFace);
   // The face a click on the part selected — what "sketch on this face" acts on.
   const pickedFace = useCamPlanStore((s) => (s.selectedFeature?.normal ? s.selectedFeature : null));
 
   const active = sketches.find((s) => s.id === activeId) || sketches[0];
   const preset = active?.plane?.preset || 'XY';
   const offset = Number.isFinite(active?.plane?.offset) ? active.plane.offset : 0;
+  const onFace = Number.isFinite(active?.plane?.gap);
+  const gap = onFace ? active.plane.gap : 0;
   const [renaming, setRenaming] = useState(null);
 
   const content = (
@@ -136,25 +141,43 @@ export default function SketchesPanel({ trigger }) {
 
       <Divider style={{ margin: '2px 0' }} />
       <Text style={{ color: CAD.dim, fontSize: 11 }}>Plane of “{active?.name}”</Text>
-      <Space size={4}>
-        <Select
-          size="small"
-          value={preset}
-          options={PRESET_OPTIONS}
-          onChange={(v) => setSketchPlane(activeId, { preset: v, offset })}
-          style={{ width: 132 }}
-        />
-        <Tooltip title="Offset along the plane's normal, in mm — a sketch on a face part way up the part">
+      {/* A plane made from a face is placed by its distance off that face, the
+          way SolidWorks offsets a reference plane — and it stays that far off the
+          face when an edit moves it. Moving it to a standard plane is a new sketch. */}
+      {onFace ? (
+        <Tooltip title="Distance off the face, along its normal: positive stands the plane off the part, negative sinks it in">
           <InputNumber
             size="small"
-            value={offset}
+            value={gap}
             step={1}
-            onChange={(v) => setSketchPlane(activeId, { preset, offset: Number(v) || 0 })}
-            style={{ width: 88 }}
+            onChange={(v) => setSketchPlane(activeId, withGap(active.plane, Number(v) || 0))}
+            addonBefore="Offset from face"
             addonAfter="mm"
+            style={{ width: 236 }}
+            data-sketch-face-gap
           />
         </Tooltip>
-      </Space>
+      ) : (
+        <Space size={4}>
+          <Select
+            size="small"
+            value={preset}
+            options={PRESET_OPTIONS}
+            onChange={(v) => setSketchPlane(activeId, { preset: v, offset })}
+            style={{ width: 132 }}
+          />
+          <Tooltip title="Offset along the plane's normal, in mm — a sketch on a face part way up the part">
+            <InputNumber
+              size="small"
+              value={offset}
+              step={1}
+              onChange={(v) => setSketchPlane(activeId, { preset, offset: Number(v) || 0 })}
+              style={{ width: 88 }}
+              addonAfter="mm"
+            />
+          </Tooltip>
+        </Space>
+      )}
       <Text style={{ color: CAD.dim, fontSize: 10 }}>
         Geometry keeps its 2D coordinates; only where the plane sits in space changes.
       </Text>

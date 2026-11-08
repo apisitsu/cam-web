@@ -42,7 +42,7 @@ describe('the store follows the program, not the tab', () => {
   beforeEach(() => {
     useStdStore.setState({
       materials: [], loaded: false, loading: false, error: null, open: false, detection: null,
-      selectedKey: null, proposal: null, timing: null, programMode: null, detectedMode: null, modeOverride: null, off: {}, lastSeen: null,
+      selectedKey: null, proposal: null, timing: null, programMode: null, detectedMode: null, modeOverride: null, off: {}, lastSeen: null, lastLoadSeq: null, lastFileName: null,
       undo: null, result: null, withinStandard: false,
     });
   });

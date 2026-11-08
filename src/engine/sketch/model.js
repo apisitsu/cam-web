@@ -111,6 +111,22 @@ export function addPoint(sk, x, y, fixed = false) {
   return id;
 }
 
+/**
+ * The sketch's centerlines — its construction lines — in drawing order, each as
+ * `{ id, a: [x, y], b: [x, y] }`. A revolve turns about one of these, the way
+ * SolidWorks takes a centerline as the axis. A line of no length is no axis.
+ */
+export function centerlines(sk) {
+  const out = [];
+  for (const e of sk.entities.values()) {
+    if (e.type !== 'line' || !e.construction) continue;
+    const a = sk.entities.get(e.p1);
+    const b = sk.entities.get(e.p2);
+    if (a && b && Math.hypot(b.x - a.x, b.y - a.y) > 1e-9) out.push({ id: e.id, a: [a.x, a.y], b: [b.x, b.y] });
+  }
+  return out;
+}
+
 /** Add a line between two existing point ids. Returns its id. */
 export function addLine(sk, p1, p2) {
   requireEntity(sk, p1, 'point');

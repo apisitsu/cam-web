@@ -25,9 +25,11 @@ import {
 import * as recipeOps from '../engine/cam/recipe.js';
 import { normalizeAngle } from '../engine/mesh/rotate.js';
 import {
-  pointToRawFrame, pointFromRawFrame, displayedPointToRawFrame,
-  originFromAxisPick, originFromAxisValue,
+  pointToRawFrame, pointFromRawFrame, displayedPointToRawFrame, faceToRawFrame,
+  originFromAxisPick, originFromAxisValue, originFromAxisOffset, flipOf, toggledFlip,
+  realignAxisPick, originFromCircle, quarterTurn,
 } from '../engine/mesh/datum.js';
+import { circleAtPick } from '../engine/mesh/circlePick.js';
 import { encodeFloat32, decodeFloat32 } from '../engine/projectFile.js';
 import { useCamStore } from './camStore.js';
 
@@ -45,9 +47,19 @@ export const getMesh = () => _mesh;
  * always lands where it should instead of compounding transforms.
  */
 const _raw = { soup: null, welded: null };
+/** The part as imported or built: where the solids are, and so where sketches are drawn. */
+export const getRawMesh = () => _raw;
 
 const NO_DATUM = {
-  planeNormal: null, point: null, rotaryCenter: null, rotaryZero: null, reverseX: false,
+  planeNormal: null, point: null, rotaryCenter: null, rotaryZero: null,
+  // The axis layout a pick on a flat face turned the part to (see
+  // `realignedAxes`), replacing the automatic lay-down. `null` keeps that.
+  axes: null,
+  // Which of X/Y/Z read reversed — always two or none, see `toggledFlip`.
+  flip: [false, false, false],
+  // How much of `point` is a typed distance from the picked plane rather than
+  // the plane itself, so editing it does not stack (see `originFromAxisOffset`).
+  offset: [0, 0, 0],
   // Which of X/Y/Z the operator has explicitly touched off, so the panel can
   // show each axis locked or free independently. `point` still carries the
   // values; this only records which axes are the operator's rather than the
@@ -90,7 +102,11 @@ export const useCamPlanStore = create((set, get) => ({
   // the mesh as imported (mill: laid down automatically, indexed about its
   // own frame origin; turn: as measured).
   datum: NO_DATUM,
-  datumPickMode: null, // null | 'x' | 'y' | 'z' | 'rotary' | 'zero'
+  datumPickMode: null, // null | 'x' | 'y' | 'z' | 'circle' | 'rotary' | 'zero'
+  datumPickHint: null, // why the last click on the part set nothing
+  // What a click would take right now, while a pick is armed: `{id, face}` or
+  // `{id, circle}`. Kept apart from `previewFeature`, which a selected face hides.
+  datumHover: null,
 
   // ---- The operator's editable plan ----
   // An ordered list of `{key, kind, toolId, enabled, target}`. Empty until a
@@ -278,8 +294,8 @@ export const useCamPlanStore = create((set, get) => ({
     // currently holds — otherwise picking a plane, then a point, then
     // clearing the datum would compound transforms instead of each landing
     // where it should.
-    const activeDatum = (datum.planeNormal || datum.point || datum.rotaryCenter
-      || datum.rotaryZero || datum.reverseX)
+    const activeDatum = (datum.axes || datum.planeNormal || datum.point || datum.rotaryCenter
+      || datum.rotaryZero || flipOf(datum).some(Boolean))
       ? datum : null;
     _ctx = planContext(_raw.soup, _raw.welded, {
       mode: forceMode, partOff, machineId, datum: activeDatum,
@@ -517,28 +533,97 @@ export const useCamPlanStore = create((set, get) => ({
    * down so every axis jumped at once — the behaviour operators kept triggering
    * by accident. Touch-off is per axis on a real machine, and now here too.
    */
-  startPickAxis(axis) { set({ datumPickMode: 'xyz'[axis] ?? null }); },
+  startPickAxis(axis) { set({ datumPickMode: 'xyz'[axis] ?? null, datumHover: null }); },
+
+  /**
+   * Say what the cursor is over while a pick is armed. Guarded on the id, because
+   * a pointer move fires on every pixel and most of them change nothing.
+   */
+  setDatumHover(hover) {
+    if ((hover?.id ?? null) !== (get().datumHover?.id ?? null)) set({ datumHover: hover ?? null });
+  },
+
+  /**
+   * Turn the part 90° about one axis on screen, about the origin. Milling only, and
+   * not with an A0 face set, whose angle is measured from the layout this changes.
+   */
+  turnPart(axis) {
+    const { datum } = get();
+    if (!_ctx || _ctx.mode !== 'mill' || datum.rotaryZero) return null;
+    set({ datum: { ...datum, ...quarterTurn(datum, _ctx.orientation, axis) } });
+    get().prepare();
+    if (get().recipe.length) get().rebuild();
+    return get().datum;
+  },
+
+  /** Arm the next click to put the origin on the centre of a circle instead. */
+  startPickCircle() { set({ datumPickMode: 'circle', datumPickHint: null, datumHover: null }); },
+
+  /**
+   * A click puts the origin on the centre of the circle on show, if one is. What is
+   * marked is what gets taken: re-reading the circle from the click would answer for
+   * whatever surface happens to lie under the marker, which may be a chamfer or
+   * nothing at all. With no marker, as on a touch screen, the click itself decides.
+   * A click that finds no circle stays armed and says so, rather than setting an
+   * origin nobody asked for.
+   */
+  pickCircleCenter(point, normal) {
+    if (!_ctx) return null;
+    const circle = get().datumHover?.circle
+      ?? (point && normal ? circleAtPick(_mesh.welded, point, normal) : null);
+    if (!circle) {
+      set({ datumPickHint: 'No circle found there. Click a round wall, or a flat face beside a circle.' });
+      return null;
+    }
+    const orientation = _ctx.mode === 'mill' ? _ctx.orientation : null;
+    const current = get().datum;
+    const rawPoint = originFromCircle(current.point, current.offset, orientation, circle.axis, circle.center);
+    const axesSet = current.axesSet.map((locked, i) => locked || i !== circle.axis);
+    set({
+      datum: { ...current, point: rawPoint, axesSet },
+      datumPickMode: null,
+      datumPickHint: null,
+      datumHover: null,
+    });
+    get().prepare();
+    if (get().recipe.length) get().rebuild();
+    return get().datum;
+  },
 
   /** Arm the next click to set where the physical A-axis passes through instead. */
   startPickRotaryCenter() { set({ datumPickMode: 'rotary' }); },
 
   /** Arm the next click to say "this face reads as A0" instead. */
-  startPickRotaryZero() { set({ datumPickMode: 'zero' }); },
+  startPickRotaryZero() { set({ datumPickMode: 'zero', datumHover: null }); },
 
   cancelPickDatum() { set({ datumPickMode: null }); },
 
   /**
    * A click on the part sets the origin of a single axis, leaving the other two
-   * where they are and never touching the part's orientation. `axis` is 0/1/2;
-   * `point` is the clicked location in the frame currently drawn. The per-axis
-   * arithmetic — and the conversion back to the raw import frame that survives a
-   * later re-lay-down — lives in `engine/mesh/datum.js`.
+   * where they are. `axis` is 0/1/2; `point` is the clicked location in the frame
+   * currently drawn. `normal`, the clicked face's outward normal in that frame,
+   * also turns the part when the face is flat and square to a different axis, so
+   * picking Z0 on an end face stands the part up on it (see `realignedAxes`). That
+   * is only ever asked for through an armed Pick button, and a part with an A0 face
+   * set stays as it is: its angle is measured from the layout this would change.
+   * The arithmetic — and the conversion back to the raw import frame that survives
+   * a later re-lay-down — lives in `engine/mesh/datum.js`.
    */
-  pickAxisOrigin(axis, point) {
+  pickAxisOrigin(axis, point, normal) {
     if (!_ctx) return null;
     const orientation = _ctx.mode === 'mill' ? _ctx.orientation : null;
     const current = get().datum;
-    const rawPoint = originFromAxisPick(current.point, orientation, axis, point);
+    const realigned = normal && orientation && !current.rotaryZero
+      ? realignAxisPick(current, orientation, axis, point, normal)
+      : null;
+    if (realigned) {
+      set({ datum: { ...current, ...realigned }, datumPickMode: null });
+      get().prepare();
+      if (get().recipe.length) get().rebuild();
+      return get().datum;
+    }
+    const offset = pointFromRawFrame(current.offset ?? NO_DATUM.offset, orientation)[axis];
+    const rawPoint = originFromAxisPick(current.point, orientation, axis, point, offset);
     const axesSet = [...current.axesSet];
     axesSet[axis] = true;
     set({ datum: { ...current, point: rawPoint, axesSet }, datumPickMode: null });
@@ -553,9 +638,26 @@ export const useCamPlanStore = create((set, get) => ({
     const orientation = _ctx.mode === 'mill' ? _ctx.orientation : null;
     const current = get().datum;
     const rawPoint = originFromAxisValue(current.point, orientation, axis, value ?? 0);
+    // An absolute value replaces the plane and its offset alike, or clearing the
+    // offset afterwards would move the origin away from what was just typed.
+    const offset = originFromAxisValue(current.offset, orientation, axis, 0);
     const axesSet = [...current.axesSet];
     axesSet[axis] = true;
-    set({ datum: { ...current, point: rawPoint, axesSet } });
+    set({ datum: { ...current, point: rawPoint, offset, axesSet } });
+    get().prepare();
+    if (get().recipe.length) get().rebuild();
+    return get().datum;
+  },
+
+  /** A typed distance from the picked plane for one axis, along +axis in the frame on screen. */
+  setAxisOffset(axis, value) {
+    if (!_ctx) return null;
+    const orientation = _ctx.mode === 'mill' ? _ctx.orientation : null;
+    const current = get().datum;
+    const { point, offset } = originFromAxisOffset(current.point, current.offset, orientation, axis, value ?? 0);
+    const axesSet = [...current.axesSet];
+    axesSet[axis] = true;
+    set({ datum: { ...current, point, offset, axesSet } });
     get().prepare();
     if (get().recipe.length) get().rebuild();
     return get().datum;
@@ -572,7 +674,8 @@ export const useCamPlanStore = create((set, get) => ({
     // point entirely so the mesh passes through untouched (reference equality).
     const zeroed = originFromAxisValue(current.point, orientation, axis, 0);
     const point = axesSet.some(Boolean) ? zeroed : null;
-    set({ datum: { ...current, point, axesSet } });
+    const offset = originFromAxisValue(current.offset, orientation, axis, 0);
+    set({ datum: { ...current, point, offset, axesSet } });
     get().prepare();
     if (get().recipe.length) get().rebuild();
     return get().datum;
@@ -585,12 +688,30 @@ export const useCamPlanStore = create((set, get) => ({
     if (get().recipe.length) get().rebuild();
   },
 
+  /**
+   * A picked face in the raw frame the feature tree's solids live in — see
+   * `faceToRawFrame`. Unchanged when nothing is laid down (turning, or no part).
+   */
+  faceInRawFrame(face) {
+    if (!face || !_ctx) return face;
+    const orientation = _ctx.mode === 'mill' ? _ctx.orientation : null;
+    return faceToRawFrame(face, orientation, get().datum.point);
+  },
+
   /** The current datum point in the frame on screen, or `null` if unset — what the numeric fields show. */
   displayedDatumPoint() {
     const { datum } = get();
     if (!datum.point || !_ctx) return null;
     const orientation = _ctx.mode === 'mill' ? _ctx.orientation : null;
     return pointFromRawFrame(datum.point, orientation);
+  },
+
+  /** The current per-axis offset from the picked planes, in the frame on screen. */
+  displayedDatumOffset() {
+    const { datum } = get();
+    if (!datum.offset || !_ctx) return NO_DATUM.offset;
+    const orientation = _ctx.mode === 'mill' ? _ctx.orientation : null;
+    return pointFromRawFrame(datum.offset, orientation);
   },
 
   /**
@@ -669,13 +790,14 @@ export const useCamPlanStore = create((set, get) => ({
   },
 
   /**
-   * Turn the whole part 180° about Z — swapping which end reads as high X
-   * (and, since a mirror would flip the model into scrap, which side reads
-   * as high Y along with it) — for when a program written or posted
-   * elsewhere counts X the other way along the same physical setup.
+   * Reverse one axis by turning the whole part 180° about the origin — swapping
+   * which end reads high on that axis (and, since a mirror would flip the model
+   * into scrap, on one other axis along with it) — for when a program written or
+   * posted elsewhere counts it the other way along the same physical setup.
    */
-  toggleReverseX() {
-    set({ datum: { ...get().datum, reverseX: !get().datum.reverseX } });
+  toggleFlip(axis) {
+    const current = get().datum;
+    set({ datum: { ...current, flip: toggledFlip(flipOf(current), axis) } });
     get().prepare();
     if (get().recipe.length) get().rebuild();
   },
@@ -774,7 +896,7 @@ export const useCamPlanStore = create((set, get) => ({
         diameterMode: settings.diameterMode ?? true,
         programNumber: settings.programNumber ?? 1,
         indexAngle: settings.indexAngle ?? 0,
-        datum: { ...NO_DATUM, ...(cam.datum ?? {}) },
+        datum: { ...NO_DATUM, ...(cam.datum ?? {}), flip: flipOf(cam.datum) },
         recipe: Array.isArray(cam.recipe) ? cam.recipe : [],
         selectedFeature: null,
         previewFeature: null,

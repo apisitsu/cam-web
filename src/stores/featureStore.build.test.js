@@ -4,6 +4,9 @@ import { useCamPlanStore } from './camPlanStore.js';
 import { useFeatureStore } from './featureStore.js';
 import { addPoint, addLine, addCircle } from '../engine/sketch/model.js';
 
+/** A mesh boolean grows the new solid by a micron (`lib/csg.js` GROW): near, not exact. */
+const nearVolume = (v, want) => expect(Math.abs(v - want)).toBeLessThan(1);
+
 const sketch = () => useSketchStore.getState();
 const cam = () => useCamPlanStore.getState();
 
@@ -159,7 +162,7 @@ describe('sketch → solid — combining with the part already loaded', () => {
     rect(15, 15, 25, 25);
     const analysis = await build({ op: 'extrude', depth: 30, base: -10, merge: 'cut' });
     expect(analysis).toBeTruthy();
-    expect(analysis.volume).toBeCloseTo(40 * 40 * 10 - 10 * 10 * 10, 1);
+    nearVolume(analysis.volume, 40 * 40 * 10 - 10 * 10 * 10);
     expect(analysis.warnings.join(' ')).not.toMatch(/inside-out/i);
   });
 
@@ -170,7 +173,7 @@ describe('sketch → solid — combining with the part already loaded', () => {
     rect(10, 10, 20, 20);
     const analysis = await build({ op: 'extrude', depth: 20, merge: 'add' });
     // The boss stands on the plate: 10 mm of it is already inside.
-    expect(analysis.volume).toBeCloseTo(40 * 40 * 10 + 10 * 10 * 10, 1);
+    nearVolume(analysis.volume, 40 * 40 * 10 + 10 * 10 * 10);
   });
 
   it('names the loaded part in what the result is called', async () => {

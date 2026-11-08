@@ -18,8 +18,12 @@ import { describe, it, expect, beforeEach } from 'vitest';
 import { readFileSync, existsSync } from 'node:fs';
 import ReactThreeTestRenderer from '@react-three/test-renderer';
 import { SceneContents } from './Viewport.jsx';
-import { useCamPlanStore, getMesh } from '../stores/camPlanStore.js';
+import { useCamPlanStore, getMesh, getRawMesh } from '../stores/camPlanStore.js';
 import { useCamStore } from '../stores/camStore.js';
+import { useSketchStore } from '../stores/sketchStore.js';
+import { useFeatureStore } from '../stores/featureStore.js';
+import { useMeasureStore } from '../stores/measureStore.js';
+import * as THREE from 'three';
 import { boundsOf } from '../engine/mesh/analyze.js';
 import { fitBoundsForPart } from '../engine/view/setup.js';
 import { framing } from '../engine/view/camera.js';
@@ -82,6 +86,56 @@ function partMeshes(renderer) {
   return renderer.scene.findAllByType('Mesh').filter((m) => m.instance.name === 'imported-part');
 }
 
+/** The part as the Sketch page draws it. */
+function builtPart(renderer) {
+  // eslint-disable-next-line testing-library/await-async-query
+  return renderer.scene.findAllByType('Mesh').filter((m) => m.instance.name === 'built-part');
+}
+
+/** A triangle of the raw part's top face. */
+function topTriangle() {
+  const p = getRawMesh().soup.positions;
+  let top = -Infinity;
+  for (let i = 2; i < p.length; i += 3) top = Math.max(top, p[i]);
+  for (let t = 0; t < p.length / 9; t++) {
+    if ([2, 5, 8].every((k) => Math.abs(p[t * 9 + k] - top) < 1e-6)) return { t, top };
+  }
+  return null;
+}
+
+describe('Viewport — Sketch on Face', () => {
+  beforeEach(() => {
+    store().clear();
+    useFeatureStore.getState().clear();
+    useSketchStore.getState().clear();
+    useSketchStore.setState({
+      sketches: [{ id: 1, name: 'Sketch1', plane: { preset: 'XY', offset: 0 }, doc: useSketchStore.getState().sk }],
+      activeId: 1, nextSketchId: 2, facePick: false,
+    });
+    useCamStore.setState({ view: 'iso' });
+  });
+
+  it('starts a sketch on the clicked face and looks square at it', async () => {
+    await store().loadStl(stlFile(box(20, 30, 10)));
+    useSketchStore.getState().setFacePick(true);
+    const r = await mount({ sketching: true });
+    const { t, top } = topTriangle();
+    await r.fireEvent(builtPart(r)[0], 'click', { faceIndex: t, stopPropagation: () => {} });
+
+    const s = useSketchStore.getState();
+    expect(s.sketches).toHaveLength(2);
+    expect(s.sketches.find((x) => x.id === s.activeId).plane).toMatchObject({ preset: 'XY', offset: top });
+    expect(s.facePick).toBe(false);
+    expect(useCamStore.getState().view).toEqual({ dir: [0, 0, 1], up: [0, 1, 0] });
+  });
+
+  it('takes no clicks until Sketch on Face is pressed, so drawing over the part still works', async () => {
+    await store().loadStl(stlFile(box(20, 30, 10)));
+    const r = await mount({ sketching: true });
+    expect(builtPart(r)[0].props.onClick).toBeUndefined();
+  });
+});
+
 describe('Viewport — imported part is on screen', () => {
   beforeEach(() => { store().clear(); });
 
@@ -96,11 +150,17 @@ describe('Viewport — imported part is on screen', () => {
     expect(partMeshes(r).length).toBeGreaterThan(0);
   });
 
-  it('does not draw it on the Sketch page', async () => {
-    // The sketch page is a design surface, not a machining view.
+  it('draws the part as built on the Sketch page, not the copy laid down for machining', async () => {
     await store().loadStl(stlFile(box(20, 30, 10)));
     const r = await mount({ sketching: true });
     expect(partMeshes(r)).toHaveLength(0);
+    expect(builtPart(r)).toHaveLength(1);
+  });
+
+  it('honours the Part toggle on the Sketch page', async () => {
+    await store().loadStl(stlFile(box(20, 30, 10)));
+    const r = await mount({ sketching: true, showPart: false });
+    expect(builtPart(r)).toHaveLength(0);
   });
 
   it('draws it on the Turning page too', async () => {
@@ -210,5 +270,43 @@ describe('the reported journey, end to end', () => {
     const f = framing('mill', 'iso', fitBoundsForPart('mill', analysis.bounds), { width: 1200, height: 800 });
     expect(66.55 * f.zoom).toBeGreaterThan(100);
     expect(66.55 * f.zoom).toBeLessThan(1200);
+  });
+});
+
+describe('Viewport — Measure', () => {
+  beforeEach(() => {
+    store().clear();
+    useMeasureStore.setState({ active: false, picks: [] });
+  });
+
+  /** A click on triangle `t` of the part as it is on screen. */
+  async function clickTriangle(r, t) {
+    const mesh = partMeshes(r)[0];
+    const p = getMesh().soup.positions;
+    const v = [0, 1, 2].map((k) => new THREE.Vector3(p[t * 9 + k * 3], p[t * 9 + k * 3 + 1], p[t * 9 + k * 3 + 2]));
+    const point = v[0].clone().add(v[1]).add(v[2]).divideScalar(3);
+    const normal = v[1].clone().sub(v[0]).cross(v[2].clone().sub(v[0])).normalize();
+    await r.fireEvent(mesh, 'click', {
+      faceIndex: t, point, face: { normal }, object: mesh.instance, stopPropagation: () => {},
+    });
+  }
+
+  it('takes a click on the part as a measurement while it is on, and marks it', async () => {
+    await store().loadStl(stlFile(box(20, 30, 10)));
+    useMeasureStore.setState({ active: true });
+    const r = await mount();
+    await clickTriangle(r, 0);
+    expect(useMeasureStore.getState().picks).toHaveLength(1);
+    expect(useMeasureStore.getState().picks[0].kind).toBe('face');
+    const r2 = await mount();
+    // eslint-disable-next-line testing-library/await-async-query
+    expect(r2.scene.findAll((n) => n.instance?.name === 'measure-marks')).toHaveLength(1);
+  });
+
+  it('leaves the part to its usual clicks when it is off', async () => {
+    await store().loadStl(stlFile(box(20, 30, 10)));
+    const r = await mount();
+    await clickTriangle(r, 0);
+    expect(useMeasureStore.getState().picks).toHaveLength(0);
   });
 });

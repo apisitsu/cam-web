@@ -66,12 +66,18 @@ export const STANDARD_TURN_TOOLS = [
   { id: 'threadtool', label: 'Threading tool · 60° V (external)', kind: 'od', lead: 29.5, sides: 3, angle: 60, adjustable: false, flip: false },
   // A boring bar reaching into the bore, insert cutting the ID (marker only —
   // the sim still carves an outer profile).
-  // `insertTilt` is `boringBarGeometry`'s own shape field (see its header) —
-  // dialled in by eye against the live render, not derived from anything
-  // else on this row. The insert's Z placement itself is not a shape field
-  // at all: `boringBarGeometry` always solves it so the insert sits flush
-  // against the bar's own face, for whatever `insertTilt` ends up being.
-  { id: 'boring', label: 'Boring bar · ID (insert adj.)', kind: 'boring', lead: 93, sides: 4, angle: 35, adjustable: true, insertTilt: -35 },
+  // `frontSeat` (see `boringSeatMount` in latheTool.js) makes the sharpest
+  // corner of the diamond the cutting tip and solves the mount so no part of
+  // the insert lies ahead of the tip. It replaced a hand-dialled `insertTilt:
+  // -35`, which left one corner ~3 mm ahead of the tip — at Z0 the marker read
+  // as already cutting into the part's face.
+  { id: 'boring', label: 'Boring bar · ID (insert adj.)', kind: 'boring', lead: 93, sides: 4, angle: 35, adjustable: true, frontSeat: true },
+  // A round-shank boring bar with a 60° trigon insert, screwed on flush —
+  // the common general-purpose boring style (not the tilted diamond above).
+  // No `insertTilt` (defaults to 0 in `boringBarGeometry`), which is also
+  // what keeps the cosmetic connector wedge: see that function's header for
+  // why the wedge is only drawn for an untilted mount.
+  { id: 'boringtri', label: 'Boring bar · 60° trigon (round shank)', kind: 'boring', lead: 93, sides: 3, angle: 60, adjustable: true, flushHead: true },
   // Internal threading bar — same reasoning as the external entry above, on
   // the boring-bar body instead of the OD holder.
   // `lead` is unused by `boringBarGeometry` (only `odHolderGeometry` reads
@@ -79,7 +85,7 @@ export const STANDARD_TURN_TOOLS = [
   // `turning_check.mjs` asserts every catalogue entry has one, for the same
   // "one family of markers" reason it also requires `angle`/`sides`.
   // No `insertTilt` here — only `boring`'s insert was asked to tilt.
-  { id: 'threadbar', label: 'Threading bar · 60° V (internal)', kind: 'boring', lead: 93, sides: 3, angle: 60, adjustable: false },
+  { id: 'threadbar', label: 'Threading bar · 60° V (internal)', kind: 'boring', lead: 93, sides: 3, angle: 60, adjustable: false, flushHead: true },
   // Axial tools — a centre/spot drill, twist drill, reamer or tap, held in
   // the tailstock or turret and cutting on the spindle centreline. These get
   // their own `kind: 'drill'` marker (`drillGeometry`/`DrillTool`), not the
@@ -752,6 +758,21 @@ export function turningMesh(stock, sides = 96, { creaseDeg = 25, simplifyTol = 0
   // a blind hole's bottom. A run that reaches a true end needs no floor: the
   // annular cap just added above already closes it there.
   const boreCol = CUT; // a bored/drilled surface is by definition cut, never raw
+  // One ring of bore-wall vertices at `z`. It names nothing from the run loop below, so it is
+  // declared once out here rather than rebuilt for every run (and so closes over `vcount` once).
+  const pushBoreRing = (z, r, n) => {
+    const base = vcount;
+    for (let a = 0; a < sides; a++) {
+      const th = (a / sides) * Math.PI * 2;
+      const ca = Math.cos(th);
+      const sa = Math.sin(th);
+      positions.push(r * ca, r * sa, z);
+      normals.push(n.nr * ca, n.nr * sa, n.nz);
+      colors.push(boreCol[0], boreCol[1], boreCol[2]);
+    }
+    vcount += sides;
+    return base;
+  };
   let k = 0;
   while (k < nz) {
     if (!(stock.bore[k] > 1e-6)) { k += 1; continue; }
@@ -773,20 +794,6 @@ export function turningMesh(stock, sides = 96, { creaseDeg = 25, simplifyTol = 0
       stations[0] = { z: z0 - cs / 2, r: stations[0].r };
       stations.push({ z: z0 + cs / 2, r: stock.bore[k] });
     }
-
-    const pushBoreRing = (z, r, n) => {
-      const base = vcount;
-      for (let a = 0; a < sides; a++) {
-        const th = (a / sides) * Math.PI * 2;
-        const ca = Math.cos(th);
-        const sa = Math.sin(th);
-        positions.push(r * ca, r * sa, z);
-        normals.push(n.nr * ca, n.nr * sa, n.nz);
-        colors.push(boreCol[0], boreCol[1], boreCol[2]);
-      }
-      vcount += sides;
-      return base;
-    };
 
     for (let i = 0; i < stations.length - 1; i++) {
       const a0 = stations[i];

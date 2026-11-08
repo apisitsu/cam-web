@@ -20,17 +20,22 @@
  */
 import { useState } from 'react';
 import {
-  Button, Tooltip, Space, Typography, InputNumber, Segmented, Badge, Alert, Dropdown,
+  Button, Tooltip, Space, Typography, InputNumber, Segmented, Badge, Alert, Dropdown, Select,
 } from 'antd';
 import {
   DeleteOutlined, ArrowUpOutlined, ArrowDownOutlined,
   EyeOutlined, EyeInvisibleOutlined, ReloadOutlined,
-  RightOutlined, DownOutlined, MenuOutlined,
+  RightOutlined, DownOutlined, MenuOutlined, SwapOutlined,
 } from '@ant-design/icons';
 import { useFeatureStore, TREE_W_DEFAULT } from '../stores/featureStore.js';
+import {
+  SketchIcon, FeatureIcon, LinkIcon,
+} from './TreeIcons.jsx';
 import { useSketchStore } from '../stores/sketchStore.js';
-import { describeFeature } from '../engine/solid/featureTree.js';
+import { describeFeature, END_CONDITIONS } from '../engine/solid/featureTree.js';
+import { THREADS } from '../engine/solid/hole.js';
 import { planeLabel } from '../engine/sketch/plane.js';
+import RevolveAxis, { axisValueOf, axisFromValue } from './RevolveAxis.jsx';
 import { CAD } from '../theme.js';
 
 const { Text } = Typography;
@@ -67,6 +72,12 @@ const PANEL = {
 /** The parameters of the selected feature. */
 function FeatureEditor({ feature }) {
   const update = useFeatureStore((s) => s.updateFeature);
+  // The sketch it was built from, for its centerlines. The open sketch's live
+  // document is `sk`; the others keep theirs on their entry.
+  const doc = useSketchStore((s) => (feature.sketchId === s.activeId
+    ? s.sk
+    : s.sketches.find((x) => x.id === feature.sketchId)?.doc));
+  useSketchStore((s) => s.version); // a centerline drawn or deleted shows here at once
   if (feature.kind === 'import') {
     return (
       <Text style={{ color: CAD.dim, fontSize: 10 }}>
@@ -75,35 +86,101 @@ function FeatureEditor({ feature }) {
       </Text>
     );
   }
+  if (feature.kind === 'hole') {
+    return (
+      <Space direction="vertical" size={4} style={{ width: '100%' }}>
+        <Space size={4} style={{ width: '100%' }}>
+          {feature.holeType === 'tap' ? (
+            <Select
+              size="small"
+              value={feature.thread}
+              onChange={(v) => update(feature.id, { thread: v })}
+              options={Object.keys(THREADS).map((t) => ({ value: t, label: t }))}
+              style={{ width: 90 }}
+            />
+          ) : (
+            <InputNumber
+              size="small"
+              value={feature.diameter}
+              min={0.1}
+              onChange={(v) => update(feature.id, { diameter: Number(v) || feature.diameter })}
+              addonBefore="Ø"
+              style={{ width: 100 }}
+            />
+          )}
+          {feature.end === 'blind' && (
+            <InputNumber
+              size="small"
+              value={feature.depth}
+              min={0.1}
+              onChange={(v) => update(feature.id, { depth: Number(v) || feature.depth })}
+              addonBefore="Depth"
+              style={{ width: 124 }}
+            />
+          )}
+        </Space>
+        <Segmented
+          size="small"
+          block
+          value={feature.end}
+          onChange={(v) => update(feature.id, { end: v })}
+          options={[{ value: 'blind', label: 'Blind' }, { value: 'through', label: 'Through All' }]}
+        />
+      </Space>
+    );
+  }
   return (
     <Space direction="vertical" size={4} style={{ width: '100%' }}>
       {feature.kind === 'extrude' ? (
-        <Space size={4} style={{ width: '100%' }}>
-          <InputNumber
+        <Space direction="vertical" size={4} style={{ width: '100%' }}>
+          <Segmented
             size="small"
-            value={feature.depth}
-            onChange={(v) => update(feature.id, { depth: Number(v) || 0 })}
-            addonBefore="Depth"
-            style={{ width: 124 }}
-            data-feature-depth
+            block
+            value={feature.end}
+            onChange={(v) => update(feature.id, { end: v })}
+            options={Object.entries(END_CONDITIONS).map(([value, label]) => ({ value, label }))}
           />
-          <Tooltip title="Lift the solid off its plane — a boss standing on a face, or a cut starting below one">
-            <InputNumber
-              size="small"
-              value={feature.base}
-              onChange={(v) => update(feature.id, { base: Number(v) || 0 })}
-              addonBefore="From"
-              style={{ width: 112 }}
-            />
-          </Tooltip>
+          <Space size={4} style={{ width: '100%' }}>
+            {feature.end !== 'through' && (
+              <InputNumber
+                size="small"
+                value={feature.depth}
+                onChange={(v) => update(feature.id, { depth: Number(v) || 0 })}
+                addonBefore="Depth"
+                style={{ width: 124 }}
+                data-feature-depth
+              />
+            )}
+            {feature.end === 'blind' && (
+              <Tooltip title="Lift the solid off its plane — a boss standing on a face, or a cut starting below one">
+                <InputNumber
+                  size="small"
+                  value={feature.base}
+                  onChange={(v) => update(feature.id, { base: Number(v) || 0 })}
+                  addonBefore="From"
+                  style={{ width: 112 }}
+                />
+              </Tooltip>
+            )}
+            {feature.end !== 'mid' && (
+              <Tooltip title="Run the other way along the plane's normal">
+                <Button
+                  size="small"
+                  type={feature.reverse ? 'primary' : 'default'}
+                  icon={<SwapOutlined rotate={90} />}
+                  onClick={() => update(feature.id, { reverse: !feature.reverse })}
+                  data-feature-reverse
+                />
+              </Tooltip>
+            )}
+          </Space>
         </Space>
       ) : (
         <Space size={4} style={{ width: '100%' }}>
-          <Segmented
-            size="small"
-            value={feature.axis}
-            onChange={(v) => update(feature.id, { axis: v })}
-            options={[{ label: 'X', value: 'x' }, { label: 'Y', value: 'y' }]}
+          <RevolveAxis
+            doc={doc}
+            value={axisValueOf(feature.axis, feature.axisLine)}
+            onChange={(v) => update(feature.id, axisFromValue(v))}
           />
           <InputNumber
             size="small"
@@ -203,6 +280,7 @@ export default function FeatureTree({ embedded = false }) {
         style={{
           width: '100%',
           textAlign: 'left',
+          justifyContent: 'flex-start',
           paddingLeft: indented ? 26 : 8,
           height: 24,
           color: sk.id === activeSketchId ? CAD.accent : CAD.icon,
@@ -210,7 +288,11 @@ export default function FeatureTree({ embedded = false }) {
         }}
         data-tree-sketch={sk.id}
       >
-        <span style={{ fontSize: 11 }}>✎ {sk.name}</span>
+        <span style={{ display: 'inline-flex', alignItems: 'center', gap: 5, fontSize: 11 }}>
+          <SketchIcon active={sk.id === activeSketchId} />
+          {sk.name}
+          {sk.plane?.ref && <LinkIcon />}
+        </span>
         <Text style={{ color: CAD.dim, fontSize: 10, marginLeft: 6 }}>{planeLabel(sk.plane)}</Text>
       </Button>
     </Dropdown>
@@ -308,6 +390,8 @@ export default function FeatureTree({ embedded = false }) {
                     style={{
                       flex: 1,
                       textAlign: 'left',
+                      // antd centres a button's content; a tree reads from the left.
+                      justifyContent: 'flex-start',
                       height: 24,
                       opacity: f.suppressed ? 0.45 : 1,
                       textDecoration: f.suppressed ? 'line-through' : undefined,
@@ -315,7 +399,10 @@ export default function FeatureTree({ embedded = false }) {
                     data-feature-item={f.id}
                   >
                     {failed && <Badge status="error" style={{ marginRight: 4 }} />}
-                    <span style={{ fontSize: 11 }}>{f.name}</span>
+                    <span style={{ display: 'inline-flex', alignItems: 'center', gap: 5, fontSize: 11 }}>
+                      <FeatureIcon kind={f.kind} inverse={isSel} />
+                      {f.name}
+                    </span>
                   </Button>
                   <Tooltip title={f.suppressed ? 'Include again' : 'Leave out of the rebuild'}>
                     <Button

@@ -30,6 +30,8 @@ import { create } from 'zustand';
 import {
   createFeature, parseFeatures, rebuildFeatures, needsMeshBoolean, seedFeatureIds,
 } from '../engine/solid/featureTree.js';
+import { holePositions } from '../engine/solid/hole.js';
+import { linkFaceToSolids } from '../engine/sketch/plane.js';
 import { useSketchStore } from './sketchStore.js';
 import { useCamPlanStore, getMesh } from './camPlanStore.js';
 
@@ -256,6 +258,41 @@ export const useFeatureStore = create((set, get) => ({
   },
 
   /**
+   * Hole Wizard: holes of one kind at the open sketch's points.
+   *
+   * Not `buildFromSketch`: a hole needs positions, not a closed profile, and it
+   * always cuts the part already on the machine. A hole that cannot be made is
+   * dropped from the tree with the reason, the same as a build that fails.
+   */
+  async buildHole({ name, ...params } = {}) {
+    const sketch = useSketchStore.getState();
+    const entry = sketch.activeSketch();
+    if (!entry) return null;
+    if (!get().features.length) {
+      sketch.setError('There is no part yet to put a hole in — build or import one first.');
+      return null;
+    }
+    const count = holePositions(sketch.sk).length;
+    if (!count) {
+      sketch.setError('Put a point on the sketch where each hole goes — or a circle, and its centre is used.');
+      return null;
+    }
+    const feature = get().addFeature('hole', {
+      ...params, sketchId: entry.id, name: name || `Hole · ${entry.name}`,
+    });
+    const analysis = await get().rebuild();
+    const failed = get().errors.find((e) => e.id === feature.id);
+    if (failed) {
+      get().removeFeature(feature.id);
+      sketch.setError(`Could not make the hole: ${failed.message}`);
+      await get().rebuild();
+      return null;
+    }
+    sketch.setError(null);
+    return analysis;
+  },
+
+  /**
    * Replay the tree and put the result on the machine.
    *
    * The datum and the current page are **kept**: this is the same part
@@ -288,14 +325,24 @@ export const useFeatureStore = create((set, get) => ({
           return null;
         }
       }
-      const { soup, steps, errors } = rebuildFeatures(features, {
+      const {
+        soup, steps, errors, planes,
+      } = rebuildFeatures(features, {
         sketchOf: (id) => {
           const entry = sketch.sketches.find((s) => s.id === id);
           return entry ? { doc: entry.doc, plane: entry.plane } : null;
         },
+        sketchList: () => sketch.sketches.map((s) => ({ id: s.id, plane: s.plane })),
         importOf: (f) => get().importSoup(f),
         meshBoolean,
       });
+      // Sketches placed on a feature's face follow it: write the plane they were
+      // just built on back onto them, so what is drawn sits where the solid is.
+      // `setSketchPlane` bumps the sketcher's version, which marks the tree
+      // dirty — hence `dirty: false` is set AFTER this, not before.
+      for (const [sketchId, plane] of planes) {
+        useSketchStore.getState().setSketchPlane(sketchId, plane);
+      }
       set({ steps, errors, dirty: false });
       if (!soup) return null;
       const name = features.filter((f) => !f.suppressed).length > 1
@@ -316,6 +363,45 @@ export const useFeatureStore = create((set, get) => ({
     } finally {
       set({ building: false });
     }
+  },
+
+  /**
+   * "Sketch on the picked face", and link it to the feature that made the face.
+   *
+   * The sketcher's own `sketchOnFace` resolves the face to a plane and stops
+   * there — it cannot know about features (see the note at the top of this file).
+   * This wraps it: when the face is an axis-aligned end of one feature's solid,
+   * the plane also records which, so changing that feature later moves the sketch
+   * with it on the next rebuild. A face that is not (angled, or no feature built
+   * yet) behaves exactly as before.
+   *
+   * @returns the sketch id, or null when no face is picked
+   */
+  sketchOnFace(opts) {
+    // The picked face is in the frame on screen (laid down, datum-shifted); the
+    // solids' bounds — and the sketch itself — are in the raw frame. Both the
+    // plane and the link are made from the RAW face, so they cannot disagree and
+    // the sketch sits where the solid really is however the part is laid down.
+    // (Taking the plane from the displayed face was right only while the two
+    // frames agreed; a taller extrude is laid down on another face entirely.)
+    // A face picked on the Sketch page is already in the raw frame: that page
+    // draws the part as built (`opts.face`).
+    const cam = useCamPlanStore.getState();
+    const face = opts?.face ?? cam.faceInRawFrame(cam.selectedFeature);
+    const id = useSketchStore.getState().sketchOnFace({ ...opts, face });
+    if (id == null) return null;
+    // `common` is left out: its result is the overlap of two solids, so neither
+    // solid's bounds are the faces on the part.
+    const solids = get().steps
+      .filter((s) => s.ok && !s.suppressed && s.bounds && s.merge !== 'common')
+      .map((s) => ({ id: s.id, bounds: s.bounds, cut: s.merge === 'cut' }));
+    const ref = linkFaceToSolids(face, solids);
+    if (ref) {
+      const sketch = useSketchStore.getState();
+      const entry = sketch.sketches.find((s) => s.id === id);
+      if (entry) sketch.setSketchPlane(id, { ...entry.plane, ref });
+    }
+    return id;
   },
 
   /** The tree as a project file carries it. Imported soups are not repeated
@@ -352,16 +438,37 @@ export const useFeatureStore = create((set, get) => ({
 }));
 
 /**
- * A sketch edit makes the tree stale.
+ * An edit to a sketch the tree is built from makes the tree stale.
  *
  * Subscribed here rather than called from `sketchStore` so the dependency keeps
  * pointing one way: the sketcher has no idea features exist, and it should not
  * have to. `version` is the token the sketcher already bumps on every mutation.
+ *
+ * `version` does not say *which* sketch changed, so two things are watched:
+ *
+ * - the **open** sketch, when a feature is built from it and it was already open
+ *   at the last bump — opening a sketch bumps too, and looking at a sketch is not
+ *   editing it;
+ * - the **planes** of the sketches features are built from, which change without
+ *   the sketch being open (the Sketches panel, a deleted sketch).
+ *
+ * Anything else — starting a sketch on a face, drawing on one no feature uses
+ * yet — leaves the part as it was, and so leaves the tree up to date. Marking it
+ * stale anyway lit Rebuild for nothing, and a warning that is usually wrong is a
+ * warning nobody reads.
  */
-let _lastVersion = null;
+// Every sketch's plane as text, by id. A sketch absent from the previous map is
+// new, not moved: a feature just built from it has already marked the tree.
+const planesById = (state) => new Map(state.sketches.map((s) => [s.id, JSON.stringify(s.plane)]));
+const initial = useSketchStore.getState();
+let _last = { version: initial.version, activeId: initial.activeId, planes: planesById(initial) };
 useSketchStore.subscribe((state) => {
-  if (state.version === _lastVersion) return;
-  _lastVersion = state.version;
-  const store = useFeatureStore.getState();
-  if (store.features.length) store.markDirty();
+  if (state.version === _last.version) return;
+  const { features } = useFeatureStore.getState();
+  const planes = planesById(state);
+  const used = new Set(features.map((f) => f.sketchId).filter((id) => id != null));
+  const editedUsed = state.activeId === _last.activeId && used.has(state.activeId);
+  const moved = [...used].some((id) => _last.planes.has(id) && planes.get(id) !== _last.planes.get(id));
+  _last = { version: state.version, activeId: state.activeId, planes };
+  if (features.length && (editedUsed || moved)) useFeatureStore.getState().markDirty();
 });

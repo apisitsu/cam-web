@@ -12,6 +12,9 @@ const features = () => useFeatureStore.getState();
 const sketch = () => useSketchStore.getState();
 const cam = () => useCamPlanStore.getState();
 
+/** A mesh boolean grows the new solid by a micron (`lib/csg.js` GROW): near, not exact. */
+const nearVolume = (v, want) => expect(Math.abs(v - want)).toBeLessThan(1);
+
 /** Add a closed rectangle to a sketch document. */
 function addRect(sk, x0, y0, x1, y1) {
   const p1 = addPoint(sk, x0, y0);
@@ -156,7 +159,7 @@ describe('rebuild', () => {
     });
     const analysis = await features().rebuild();
     expect(features().errors).toEqual([]);
-    expect(analysis.volume).toBeCloseTo(16000 - 1000, 1);
+    nearVolume(analysis.volume, 16000 - 1000);
   });
 
   it('keeps the datum across a rebuild — it is the same part, recomputed', async () => {
@@ -244,7 +247,7 @@ describe('the imported mesh as the base of the tree', () => {
     });
     const analysis = await features().rebuild();
     expect(features().errors).toEqual([]);
-    expect(analysis.volume).toBeCloseTo(16000 - 1000, 1);
+    nearVolume(analysis.volume, 16000 - 1000);
   });
 
   it('replaces an earlier import — a second file is a different job', () => {

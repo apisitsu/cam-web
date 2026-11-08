@@ -303,6 +303,23 @@ describe('interpreter — G76 threading', () => {
     expect(near(cut.f, 1.5 * 1000)).toBe(true); // lead 1.5 mm/rev × 1000 rpm
   });
 
+  describe('minimum cut per pass (Q of the first block)', () => {
+    // A 24 TPI internal thread, 0.6 mm deep, first cut 0.1 mm, 0.02 mm left for the finish passes.
+    const prog = (q) => ['G21 G90 G99 S400', 'G0 X8. Z3.', `G76 P020060 Q${q} R0.02`, 'G76 X9.525 Z-25. P600 Q100 F1.0583'].join('\n');
+    const passes = (q) => interpret(prog(q), { mode: 'turn', diameterMode: true })
+      .segments.filter((s) => s.line === 4 && s.type === 'feed').length;
+
+    it('floors the shrinking increment, as a Fanuc does', () => {
+      // 0.1, 0.1414, 0.1732 (the √n steps still above 0.03), then 0.03 a pass to 0.58 deep = 17 rough
+      // passes, + the 2 finishing passes named by P020060. Without the floor it is 34 + 2.
+      expect(passes(30)).toBe(19);
+    });
+
+    it('a tiny minimum leaves the plain √n progression', () => {
+      expect(passes(1)).toBeGreaterThanOrEqual(34);
+    });
+  });
+
   it('warns and skips when the X/Z block has no thread height or first cut', () => {
     const prog = 'G21 G90\nG0 X20 Z0\nG76 P020060 Q100 R0\nG76 X16 Z-20 F1.5';
     const { stats } = interpret(prog, { mode: 'turn' });
@@ -560,6 +577,35 @@ describe('interpreter — constant surface speed (G96 / G97 / G50)', () => {
     // program's G50 is still the tighter of the two.
     const fastMachine = minutes2(src, { maxTurnRpm: 5000 });
     expect(fastMachine).toBeCloseTo(minutes(src), 6);
+  });
+});
+
+describe('interpreter — G96 spindle speed inside a G71 roughing cycle', () => {
+  // The cycle's passes used to be timed at the rpm of the START diameter, because the expansion
+  // never moved `state.pos`. A Ø35 start on a 70 m/min program ran every pass at 637 rpm instead
+  // of climbing as the diameter fell, so a roughing cycle came out ~40 % too slow.
+  const src = [
+    'G50 S2200', 'G96 S70 M3',
+    'G0 X35. Z2.',
+    'G71 U1. R0.5', 'G71 P10 Q20 U0.3 W0.1 F0.2',
+    'N10 G0 X10.', 'G1 Z-30.', 'N20 G1 X35.',
+  ].join('\n');
+  const passes = () => interpret(src, { mode: 'turn', diameterMode: true, rapidRate: 5000 })
+    .segments.filter((s) => s.type !== 'rapid' && Math.abs(s.b[2] - s.a[2]) > 20);
+
+  it('runs each rough pass at the rpm of ITS diameter, rising as the diameter falls', () => {
+    const rpms = passes().map((s) => s.rpm);
+    expect(rpms.length).toBeGreaterThanOrEqual(8);
+    // first pass: Ø33 at 70 m/min
+    expect(near(rpms[0], (1000 * 70) / (Math.PI * 33), 1)).toBe(true);
+    for (let i = 1; i < rpms.length; i++) expect(rpms[i]).toBeGreaterThanOrEqual(rpms[i - 1] - 1e-6);
+    expect(rpms[rpms.length - 1]).toBeGreaterThan(rpms[0] * 2.5);
+    expect(Math.max(...rpms)).toBeLessThanOrEqual(2200 + 1e-6); // the G50 clamp still applies
+  });
+
+  it('feeds faster per minute on the smaller passes (F is per revolution)', () => {
+    const p = passes();
+    expect(p[p.length - 1].f).toBeGreaterThan(p[0].f * 2.5);
   });
 });
 

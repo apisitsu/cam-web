@@ -15,7 +15,7 @@ import { voxelSizeFor, thinnestCut, cellSizeFor, cutterSpan } from './method.js'
 import { createVoxelStock, carveVoxels, voxelSurfaceMesh } from './voxel.js';
 import {
   createTurningStock, carveTurning, carveTurningMove, resetTurningStock,
-  turningMesh, detectFaceZ, turningCutModeResolver, turningCutMode,
+  turningMesh, detectFaceZ, turningCutModeResolver,
   turningCutRadiusResolver, turningGrooveWidthResolver,
 } from './turning.js';
 

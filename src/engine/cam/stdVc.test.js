@@ -347,4 +347,29 @@ describe('rowTimes', () => {
     expect(t['T1#1']).toBeCloseTo(3.5);
     expect(t['T2#1']).toBeCloseTo(4.5);
   });
+
+  it('bills a G70 replay to the finishing tool, not to the block whose lines it re-runs', () => {
+    const rows = [
+      { id: 'T0606#1', tool: 606, startLine: 0, endLine: 9 },
+      { id: 'T0404#1', tool: 404, startLine: 10, endLine: 15 },
+    ];
+    const segs = [
+      { tool: 606, line: 5, t: 100 },
+      { tool: 404, line: 4, t: 50 },   // replays the profile written at line 4, in T0606's block
+      { tool: 404, line: 12, t: 2 },
+    ];
+    const t = rowTimes(segs, rows);
+    expect(t['T0606#1']).toBeCloseTo(100);
+    expect(t['T0404#1']).toBeCloseTo(52);
+  });
+
+  it('uses the line to choose between two blocks of the same tool', () => {
+    const rows = [
+      { id: 'T1#1', tool: 1, startLine: 0, endLine: 4 },
+      { id: 'T1#2', tool: 1, startLine: 5, endLine: 9 },
+    ];
+    const t = rowTimes([{ tool: 1, line: 2, t: 3 }, { tool: 1, line: 8, t: 4 }], rows);
+    expect(t['T1#1']).toBeCloseTo(3);
+    expect(t['T1#2']).toBeCloseTo(4);
+  });
 });

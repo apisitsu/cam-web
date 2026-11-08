@@ -45,7 +45,7 @@ beforeEach(() => {
   server.fail = null;
   useStdStore.setState({
     materials: [], loaded: false, loading: false, error: null, open: false, detection: null,
-    selectedKey: null, proposal: null, off: {}, lastSeen: null, undo: null, result: null, withinStandard: false,
+    selectedKey: null, proposal: null, off: {}, lastSeen: null, lastLoadSeq: null, lastFileName: null, undo: null, result: null, withinStandard: false,
   });
 });
 
@@ -199,5 +199,41 @@ describe('per-tool time', () => {
     expect(sum).toBeLessThanOrEqual(s.timing.before + 1e-6);
     // SLOW (S1700) is moved to the standard's lower bound, which is slower at the same F scale-down? either way after is computed.
     expect(Number.isFinite(t.after)).toBe(true);
+  });
+});
+
+describe('opening a program versus editing it', () => {
+  it('asks when a file is opened, stays quiet when the same program is edited, asks again on a re-open', async () => {
+    load({ gcode: SLOW, fileName: '17-4PH_FORK.nc' });
+    await useStdStore.getState().autoCheck();
+    expect(useStdStore.getState().open).toBe(true);
+
+    // The operator dismisses it, edits the program and presses Parse: same file, new text.
+    useStdStore.setState({ open: false });
+    useCamStore.setState({ gcode: FAST });
+    await useStdStore.getState().autoCheck();
+    let s = useStdStore.getState();
+    expect(s.open).toBe(false);
+    // ...but what the menu would show is up to date.
+    expect(s.proposal.changes).toBe(0);
+
+    // Opening the same file again (camStore bumps loadSeq) is an open, not an edit.
+    useCamStore.setState({ gcode: SLOW, loadSeq: useCamStore.getState().loadSeq + 1 });
+    await useStdStore.getState().autoCheck();
+    s = useStdStore.getState();
+    expect(s.open).toBe(true);
+    expect(s.proposal.changes).toBe(1);
+  });
+
+  it('keeps the diameters the operator typed across an edit, and drops them for a new file', async () => {
+    load({ gcode: SLOW, fileName: '17-4PH_FORK.nc' });
+    await useStdStore.getState().autoCheck();
+    useStdStore.setState({ diameters: { 'T1#1': 8 }, open: false });
+    useCamStore.setState({ gcode: SLOW.replace('F400', 'F410') });
+    await useStdStore.getState().autoCheck();
+    expect(useStdStore.getState().diameters).toEqual({ 'T1#1': 8 });
+    useCamStore.setState({ gcode: SLOW, fileName: 'other.nc' });
+    await useStdStore.getState().autoCheck();
+    expect(useStdStore.getState().diameters).toEqual({});
   });
 });

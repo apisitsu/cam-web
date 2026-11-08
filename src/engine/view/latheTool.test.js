@@ -1,7 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import {
   odHolderGeometry, boringBarGeometry, partingBladeGeometry, drillGeometry,
-  markerYSpan, toolScale, offerToolToggle,
+  markerYSpan, toolScale, offerToolToggle, boringInsertVertex,
 } from './latheTool.js';
 import { STANDARD_TURN_TOOLS } from '../sim/turning.js';
 
@@ -15,11 +15,8 @@ describe('every lathe marker cuts on the spindle centre plane', () => {
   // rather than stopping there. Its insert still keeps the Y=0 invariant.
   it.each(STANDARD_TURN_TOOLS.map((t) => [t.id, t]))('%s has its cutting corner at Y=0', (_id, tool) => {
     const [lo, hi] = markerYSpan(tool.kind, 1.6, tool);
-    if (tool.kind === 'boring') {
-      expect(hi).toBeGreaterThan(0);
-    } else {
-      expect(hi).toBe(0);
-    }
+    // a boring bar's crown rises above the plane; every other marker stops exactly on it
+    expect(tool.kind === 'boring' ? hi > 0 : hi === 0).toBe(true);
     expect(lo).toBeLessThan(0);
   });
 
@@ -80,6 +77,24 @@ describe('every lathe marker cuts on the spindle centre plane', () => {
     const { thickY } = toolScale(1.6);
     expect(g.insertY).toBeCloseTo(-thickY / 2, 12);
     expect(g.insertY + g.insert.thickY / 2).toBeCloseTo(0, 12);
+  });
+
+  it("caps the insert's radius at the bar's own, so a thin bar never carries an oversized insert", () => {
+    // The regression: `r` used to scale purely off the cutting radius (the
+    // diameter the operator typed for the bore being cut), with nothing
+    // relating it to the bar's own `barDiameter`. That mismatch barely
+    // showed from Front/Iso, where the insert is seen near edge-on, but
+    // Top looks straight down the insert's own extrusion axis and reads
+    // its full, undistorted width — and a bar-radius-3 default next to an
+    // uncapped insert read as a slab floating well past the bar carrying
+    // it. A small bar now carries a correspondingly small insert.
+    const thin = boringBarGeometry(20, { sides: 3, angle: 60, barDiameter: 6 });
+    expect(thin.insert.r).toBeLessThanOrEqual(thin.barRadius);
+    // A generously sized bar is never clipped down to something smaller
+    // than what the cutting-radius-driven term would already draw.
+    const thick = boringBarGeometry(1.6, { sides: 3, angle: 60, barDiameter: 32 });
+    const { s } = toolScale(1.6);
+    expect(thick.insert.r).toBeCloseTo(s * 0.42, 9);
   });
 
   it("lands the insert's real cutting-corner vertex on (0, 0) in X/Z, for a triangular insert as much as a diamond one, tilted or not", () => {
@@ -154,6 +169,15 @@ describe('every lathe marker cuts on the spindle centre plane', () => {
       expect(tipPt[0]).toBeCloseTo(0, 9);
       expect(tipPt[1]).toBeCloseTo(0, 9);
       expect(barPt[1]).toBeCloseTo(g.barNearZ, 12);
+      // The bar mesh (`Viewport.jsx`) is positioned at
+      // `-(barRadius + standout)`, so its own near surface — the one this
+      // wedge must actually meet — sits at X = -standout; `-barRadius`
+      // lands inside the bar's solid body instead of at its edge. A version
+      // of this briefly asserted `-barRadius`, on the wrong assumption that
+      // the bar's crown was the target; it passed with nothing on screen to
+      // catch it, and only a close Top view showed the wedge overlapping
+      // the bar's own cylinder rather than meeting its face.
+      expect(barPt[0]).toBeCloseTo(-g.standout, 12);
     }
   });
 
@@ -166,7 +190,73 @@ describe('every lathe marker cuts on the spindle centre plane', () => {
     // the bar rather than hidden inside it. It read as a slab of excess bar
     // material. There is no tilt-aware bend of this triangle that stays a
     // thin sliver, so a tilted mount gets no wedge at all.
+    //
+    // A "fill every floating vertex" backing pad was tried in place of this
+    // skip and reverted — see this field's own comment in
+    // `boringBarGeometry`. It made the live T303 report (X7.899/Z0, this
+    // same shape) look worse, not better: one insert vertex sits ~3mm in
+    // front of the *tip itself* (Z < 0, not just Z < barNearZ) for this
+    // shape at essentially any mount rotation near 90°, tilted or not —
+    // filling that with solid bar-coloured material reads as tool material
+    // that has already cut through the part's own face.
     const g = boringBarGeometry(1.6, { sides: 4, angle: 35, insertTilt: -35 });
+    expect(g.connectorWedge).toBeNull();
+  });
+
+  it('seats the catalogue Boring bar so nothing lies ahead of the tip — Z0 means Z0', () => {
+    // The T303 report: at `G1 X7.899 Z0.0` the marker read as already cutting
+    // into the part's face. The old mount pinned the *obtuse* 145° corner of
+    // the diamond as the tip and tilted it −35° by eye, leaving one corner ~3 mm
+    // ahead of the tip (Z < 0 is inside the part when the tip sits on the face)
+    // and, with the tilt, one corner across the tip radially (X > 0, inside the
+    // bore wall). Z = 0 is the face and +X the wall, so *every* vertex must have
+    // z ≥ 0 and x ≤ 0 with the tip at the origin, for any size, bar and nose.
+    const catalogue = STANDARD_TURN_TOOLS.find((t) => t.id === 'boring');
+    expect(catalogue.frontSeat).toBe(true);
+    for (const radius of [0.5, 1.6, 20]) {
+      for (const barDiameter of [6, 32]) {
+        for (const angle of [20, 35, 55, 80]) {
+          const g = boringBarGeometry(radius, { ...catalogue, angle, barDiameter });
+          const { insert } = g;
+          const vertices = Array.from({ length: insert.sides }, (_, i) => boringInsertVertex(
+            insert.x, insert.z, insert.r, insert.zScale, insert.sides, i, insert.rot,
+          ));
+          const tip = vertices[insert.tipIndex];
+          expect(tip.x).toBeCloseTo(0, 9);
+          expect(tip.z).toBeCloseTo(0, 9);
+          expect(Math.min(...vertices.map((v) => v.z))).toBeGreaterThanOrEqual(-1e-9);
+          expect(Math.max(...vertices.map((v) => v.x))).toBeLessThanOrEqual(1e-9);
+        }
+      }
+    }
+  });
+
+  it('sits a flushHead insert on the bar: tip 1.5 mm proud of the top, nothing hanging past its face', () => {
+    // Thread bar report: the front corner hung ~3 mm ahead of the bar's face
+    // (fixed: the face reaches the insert's frontmost corner), and in X the tip
+    // should stand a millimetre or two out of the bar — not level with it
+    // (read as not reaching) and not the legacy 0.6 mm.
+    for (const id of ['threadbar', 'boringtri']) {
+      const catalogue = STANDARD_TURN_TOOLS.find((t) => t.id === id);
+      expect(catalogue.flushHead).toBe(true);
+      const g = boringBarGeometry(1.6, catalogue);
+      const { insert } = g;
+      const vertices = Array.from({ length: insert.sides }, (_, i) => boringInsertVertex(
+        insert.x, insert.z, insert.r, insert.zScale, insert.sides, i, insert.rot,
+      ));
+      expect(g.barGap).toBeGreaterThanOrEqual(1);
+      expect(g.barGap).toBeLessThanOrEqual(2);
+      expect(Math.max(...vertices.map((v) => v.x))).toBeCloseTo(0, 9);
+      expect(g.barNearZ).toBeCloseTo(Math.min(...vertices.map((v) => v.z)), 9);
+      expect(g.connectorWedge).toBeNull();
+      expect(insert.tipIndex).toBe(0);
+    }
+  });
+
+  it('makes the sharpest corner of the diamond the Boring bar tip, not vertex 0', () => {
+    const g = boringBarGeometry(1.6, { sides: 4, angle: 35, frontSeat: true });
+    // Vertices 1 and 3 are the 35° corners; vertex 0 is the obtuse one.
+    expect([1, 3]).toContain(g.insert.tipIndex);
     expect(g.connectorWedge).toBeNull();
   });
 

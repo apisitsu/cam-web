@@ -1,9 +1,13 @@
 // @vitest-environment jsdom
-import { describe, it, expect, beforeEach } from 'vitest';
+import {
+  describe, it, expect, beforeEach, afterEach,
+} from 'vitest';
 import ReactThreeTestRenderer from '@react-three/test-renderer';
-import PartMesh, { FeatureHighlight, OriginMarker, RotaryAxisLine } from './PartMesh.jsx';
+import PartMesh, {
+  FeatureHighlight, DatumPickHighlight, OriginMarker, RotaryAxisLine,
+} from './PartMesh.jsx';
 import { useCamPlanStore, getMesh } from '../stores/camPlanStore.js';
-import { box, cylinder, turnedShaft } from '../engine/mesh/fixtures.js';
+import { box, cylinder, turnedShaft, tube } from '../engine/mesh/fixtures.js';
 import { CAD } from '../theme.js';
 
 /** A binary-STL File-alike, the way the store receives one from a drop. */
@@ -269,6 +273,168 @@ describe('picking the datum off the model', () => {
     expect(store().selectedFeature).toBeNull();
     expect(store().rotaryZeroAngle()).toBeCloseTo(270, 3);
     expect(store().displayedDatumPoint()).toBeNull();
+  });
+});
+
+describe('PartMesh — showing what an armed pick would take', () => {
+  const fakeVec = (arr) => ({ clone: () => fakeVec(arr), toArray: () => arr });
+  const event = (point, normal, faceIndex = 0) => ({
+    point: fakeVec(point),
+    face: { normal: fakeVec(normal) },
+    faceIndex,
+    object: { worldToLocal: (v) => v },
+    stopPropagation() {},
+  });
+  const partOf = async () => {
+    const r = await ReactThreeTestRenderer.create(<PartMesh meshVer={store().meshVer} />);
+    // eslint-disable-next-line testing-library/await-async-query
+    return r.scene.findAllByType('Mesh')[0];
+  };
+
+  beforeEach(() => { useCamPlanStore.setState({ forceMode: 'mill' }); });
+  afterEach(() => { useCamPlanStore.setState({ forceMode: 'auto' }); });
+
+  it('offers the whole flat face under the cursor to an armed axis pick', async () => {
+    await store().loadStl(stlFile(box(60, 40, 20)));
+    await store().makePlan();
+    store().startPickAxis(2);
+    const part = await partOf();
+    await ReactThreeTestRenderer.act(async () => {
+      part.props.onPointerMove(event([0, 0, 10], [0, 0, 1]));
+    });
+    const expected = store().features().faces.find((f) => f.triangles.includes(0));
+    expect(store().datumHover.face.id).toBe(expected.id);
+  });
+
+  it('offers the circle under the cursor to an armed centre pick', async () => {
+    await store().loadStl(stlFile(tube(20, 10, 30)));
+    await store().makePlan();
+    store().startPickCircle();
+    const part = await partOf();
+    await ReactThreeTestRenderer.act(async () => {
+      part.props.onPointerMove(event([10, 0, 15], [-1, 0, 0]));
+    });
+    expect(store().datumHover.circle.radius).toBeCloseTo(10, 0);
+    expect(store().datumHover.circle.axis).toBe(2);
+  });
+
+  it('offers nothing when no circle is there', async () => {
+    await store().loadStl(stlFile(box(60, 40, 20)));
+    await store().makePlan();
+    store().startPickCircle();
+    const part = await partOf();
+    await ReactThreeTestRenderer.act(async () => {
+      part.props.onPointerMove(event([0, 0, 10], [0, 0, 1]));
+    });
+    expect(store().datumHover).toBeNull();
+  });
+
+  it('keeps the circle on show across a surface with none, and off the part', async () => {
+    await store().loadStl(stlFile(tube(20, 10, 30)));
+    await store().makePlan();
+    store().startPickCircle();
+    const part = await partOf();
+    await ReactThreeTestRenderer.act(async () => {
+      part.props.onPointerMove(event([10, 0, 15], [-1, 0, 0], 0));
+    });
+    const shown = store().datumHover;
+    await ReactThreeTestRenderer.act(async () => {
+      // A chamfer: no circle can be read from a facet at this angle.
+      part.props.onPointerMove(event([10, 0, 30], [-0.6, 0, 0.8], 1));
+      part.props.onPointerOut();
+    });
+    expect(store().datumHover).toBe(shown);
+  });
+
+  it('a click on the part takes the circle on show', async () => {
+    await store().loadStl(stlFile(tube(20, 10, 30)));
+    await store().makePlan();
+    store().startPickCircle();
+    const part = await partOf();
+    await ReactThreeTestRenderer.act(async () => {
+      part.props.onPointerMove(event([10, 0, 15], [-1, 0, 0], 0));
+      // Lands on the chamfer beside the ring, where no circle can be read.
+      part.props.onClick(event([10, 0, 30], [-0.6, 0, 0.8], 1));
+    });
+    expect(store().datumPickMode).toBeNull();
+    expect(store().datum.axesSet).toEqual([true, true, false]);
+  });
+
+  it('clears when the cursor leaves the part', async () => {
+    await store().loadStl(stlFile(box(60, 40, 20)));
+    await store().makePlan();
+    store().startPickAxis(2);
+    const part = await partOf();
+    await ReactThreeTestRenderer.act(async () => {
+      part.props.onPointerMove(event([0, 0, 10], [0, 0, 1]));
+      part.props.onPointerOut();
+    });
+    expect(store().datumHover).toBeNull();
+  });
+
+  it('does not touch the feature preview, which means something else', async () => {
+    await store().loadStl(stlFile(box(60, 40, 20)));
+    await store().makePlan();
+    store().startPickAxis(2);
+    const part = await partOf();
+    await ReactThreeTestRenderer.act(async () => {
+      part.props.onPointerMove(event([0, 0, 10], [0, 0, 1]));
+    });
+    expect(store().previewFeature).toBeNull();
+  });
+});
+
+describe('DatumPickHighlight', () => {
+  const groups = (r) => r.scene.children.filter((c) => c.instance.name === 'datum-pick-highlight');
+
+  beforeEach(() => { useCamPlanStore.setState({ datumPickMode: null, datumHover: null }); });
+
+  it('draws nothing with no pick armed, even with a hover left over', async () => {
+    await store().loadStl(stlFile(box(60, 40, 20)));
+    useCamPlanStore.setState({
+      datumHover: { id: 'circle:x', circle: { axis: 2, center: [0, 0, 0], radius: 5 } },
+    });
+    const r = await ReactThreeTestRenderer.create(<DatumPickHighlight meshVer={store().meshVer} />);
+    expect(groups(r)).toHaveLength(0);
+  });
+
+  it('draws a ring and a centre dot for a circle', async () => {
+    await store().loadStl(stlFile(box(60, 40, 20)));
+    useCamPlanStore.setState({
+      datumPickMode: 'circle',
+      datumHover: { id: 'circle:x', circle: { axis: 2, center: [1, 2, 3], radius: 5 } },
+    });
+    const r = await ReactThreeTestRenderer.create(<DatumPickHighlight meshVer={store().meshVer} />);
+    expect(groups(r)).toHaveLength(1);
+    // eslint-disable-next-line testing-library/await-async-query
+    expect(r.scene.findAllByType('Mesh')).toHaveLength(2);
+  });
+
+  it('takes the circle when the ring itself is clicked', async () => {
+    await store().loadStl(stlFile(box(60, 40, 20)));
+    await store().makePlan();
+    useCamPlanStore.setState({
+      datumPickMode: 'circle',
+      datumHover: { id: 'circle:x', circle: { axis: 2, center: [1, 2, 3], radius: 5 } },
+    });
+    const r = await ReactThreeTestRenderer.create(<DatumPickHighlight meshVer={store().meshVer} />);
+    // eslint-disable-next-line testing-library/await-async-query
+    const ring = r.scene.findAllByType('Mesh')[0];
+    await ReactThreeTestRenderer.act(async () => {
+      ring.props.onClick({ stopPropagation() {} });
+    });
+    expect(store().datumPickMode).toBeNull();
+    expect(store().datum.axesSet).toEqual([true, true, false]);
+  });
+
+  it('draws the face for an axis pick', async () => {
+    await store().loadStl(stlFile(box(60, 40, 20)));
+    await store().makePlan();
+    const face = store().features().faces[0];
+    useCamPlanStore.setState({ datumPickMode: 'z', datumHover: { id: `face:${face.id}`, face } });
+    const r = await ReactThreeTestRenderer.create(<DatumPickHighlight meshVer={store().meshVer} />);
+    // eslint-disable-next-line testing-library/await-async-query
+    expect(r.scene.findAllByType('Mesh')).toHaveLength(1);
   });
 });
 

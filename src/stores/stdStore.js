@@ -104,6 +104,9 @@ export const useStdStore = create((set, get) => ({
   diameters: {},
   /** Text of the program as last offered, so the same program is not asked twice. */
   lastSeen: null,
+  /** camStore.loadSeq / fileName at the last auto-check: tells opening a file from editing one. */
+  lastLoadSeq: null,
+  lastFileName: null,
   /** { text, fileName } to put back — set by apply(). */
   undo: null,
   /** { applied, stale } from the last apply(), for the one line that confirms it. */
@@ -131,7 +134,7 @@ export const useStdStore = create((set, get) => ({
    * dialog whenever a standard table is available, including a program already
    * inside its range. With no table at all, an automatic check stays silent.
    */
-  async check({ manual = false } = {}) {
+  async check({ manual = false, quiet = false } = {}) {
     const cam = useCamStore.getState();
     if (!cam.gcode) {
       if (manual) set({ open: true, error: 'Open a program first.', proposal: null, detection: null });
@@ -159,15 +162,23 @@ export const useStdStore = create((set, get) => ({
     });
     // Always show it, even when everything is already in range: the table is also the
     // per-tool time breakdown, and "nothing to change" should be something the operator sees.
-    set({ open: true });
+    // `quiet` (an edit of the open program) refreshes the proposal without opening the dialog.
+    if (!quiet) set({ open: true });
   },
 
   /** Called when a program arrives: once per distinct text. */
   async autoCheck() {
     const cam = useCamStore.getState();
     if (!cam.gcode || !cam.fileName || cam.gcode === get().lastSeen) return;
-    set({ lastSeen: cam.gcode, modeOverride: null, diameters: {} });
-    await get().check({ manual: false });
+    // A file was OPENED (a different name, or the same one loaded again) versus the same
+    // program EDITED and re-parsed. Opening asks; editing only refreshes what Tools ▸ Standard
+    // cutting speeds would show, so the dialog does not jump up after every keystroke-and-Parse.
+    const fresh = cam.loadSeq !== get().lastLoadSeq || cam.fileName !== get().lastFileName;
+    set({
+      lastSeen: cam.gcode, lastLoadSeq: cam.loadSeq, lastFileName: cam.fileName,
+      ...(fresh ? { modeOverride: null, diameters: {} } : {}),
+    });
+    await get().check({ manual: false, quiet: !fresh });
   },
 
   /** The operator names the material (nothing was detected, or the guess was wrong). */

@@ -80,10 +80,12 @@ export function worldUpFor(mode) {
  * exactly Top/Bottom — leaving the camera roll undefined.
  */
 export function viewBasis(mode, view) {
-  const dir = viewDir(mode, view);
+  // A view is a preset name, or `{ dir, up }` for one that is not a preset: Normal To
+  // looks straight at a sketch plane, which can face any way.
+  const custom = view && typeof view === 'object';
+  const dir = custom ? norm(view.dir) : viewDir(mode, view);
   const forward = [-dir[0], -dir[1], -dir[2]]; // camera → target
-  const worldUp = worldUpFor(mode);
-  let upRef = worldUp;
+  let upRef = custom && view.up ? view.up : worldUpFor(mode);
   if (Math.abs(dot(forward, upRef)) > 0.99) {
     // Looking straight down the world-up axis. Fall back to the axis drawn
     // upward in that plan view: X for the lathe (radius up, the turning-drawing

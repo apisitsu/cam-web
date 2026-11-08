@@ -56,7 +56,7 @@ beforeEach(() => {
   parsed = [];
   useStdStore.setState({
     materials: [], loaded: false, loading: false, error: null, open: false, detection: null,
-    selectedKey: null, proposal: null, off: {}, lastSeen: null, undo: null, result: null, withinStandard: false,
+    selectedKey: null, proposal: null, off: {}, lastSeen: null, lastLoadSeq: null, lastFileName: null, undo: null, result: null, withinStandard: false,
   });
   useCamStore.setState({
     gcode: SLOW, fileName: '17-4PH_FORK.nc', mode: 'mill',

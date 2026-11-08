@@ -47,6 +47,7 @@ function getSimWorker() {
 export const useCamStore = create((set, get) => ({
   gcode: '',
   fileName: null,
+  loadSeq: 0, // +1 each time a program is opened (parse called with a file name)
   // Large binary buffers (rapids, feeds, bounds, stats, path, sim) live in
   // bufferCache — NOT here — to prevent React DevTools DataCloneError.
   bufVer: 0,        // incremented every time bufferCache is updated
@@ -351,6 +352,20 @@ export const useCamStore = create((set, get) => ({
   setViewPreset: (view) => set((s) => ({ view, viewNonce: s.viewNonce + 1 })),
 
   /**
+   * Normal To: look straight at a plane from the side its normal points to, with
+   * `up` up the screen. Asked again while already looking that way, it turns round
+   * to the other side, as SolidWorks does — a face on the underside of a part has
+   * its front on the far side of the plane's normal.
+   */
+  normalTo: (dir, up) => set((s) => {
+    const same = typeof s.view === 'object'
+      && s.view.dir.every((v, i) => Math.abs(v - dir[i]) < 1e-9)
+      && s.view.up.every((v, i) => Math.abs(v - up[i]) < 1e-9);
+    const view = same ? { dir: dir.map((v) => -v), up: [...up] } : { dir: [...dir], up: [...up] };
+    return { view, viewNonce: s.viewNonce + 1 };
+  }),
+
+  /**
    * Switch the top-level workspace tab. Milling / Turning are machine modes and
    * re-interpret the program (delegated to setMode); Sketch is a standalone
    * design page that leaves the loaded program and its machine mode as they were.
@@ -510,7 +525,8 @@ export const useCamStore = create((set, get) => ({
         totalFeeds: 0,
         aIndex: null,
         _lastCarveTarget: null,
-        ...(fileName ? { fileName } : {}),
+        // A file name means a program was OPENED; a bare parse() is the editor re-reading its own text.
+        ...(fileName ? { fileName, loadSeq: get().loadSeq + 1 } : {}),
       });
     } catch (err) {
       set({ status: 'error', error: err.message || String(err) });

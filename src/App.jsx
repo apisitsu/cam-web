@@ -5,730 +5,93 @@
  * workers/engine, all state in camStore. Playback scrubs the ordered path and
  * (optionally) drives progressive material removal.
  */
-import { useEffect, useMemo, useState, useCallback, useRef } from 'react';
+import { useEffect, useMemo, useState, useCallback } from 'react';
 import {
   Layout, Button, Statistic, Alert, Space, Typography, theme,
-  InputNumber, Input, Segmented, Switch, Divider, Slider, Tag, Tooltip, Drawer, Select,
-  Popconfirm, Modal, App as AntdApp,
+  InputNumber, Input, Segmented, Switch, Divider, Slider, Tag, Tooltip, Drawer,
+  App as AntdApp,
 } from 'antd';
 import {
   ThunderboltOutlined,
   PlayCircleFilled, PauseCircleFilled, StepBackwardOutlined,
   StepForwardOutlined, FastBackwardOutlined, RollbackOutlined,
   ExpandOutlined,
-  PlusOutlined, ColumnWidthOutlined, SettingOutlined, EditOutlined,
+  EditOutlined,
 } from '@ant-design/icons';
 import CommandButton from './components/CommandButton.jsx';
 import {
   PartIcon, StockIcon, StockCutIcon, VoxelIcon, TurningIcon, ArborIcon, LatheToolIcon, RotateWorkIcon,
-  ToolpathIcon, CUTTER_ICONS,
+  ToolpathIcon,
 } from './components/glyph.jsx';
-import {
-  CUTTERS, cutterById, cutterWarning, defaultThickness, defaultShank,
-} from './engine/cam/cutters.js';
+import { cutterById } from './engine/cam/cutters.js';
 import { effectiveTool } from './engine/cam/effectiveTool.js';
 import { useCamStore } from './stores/camStore.js';
 import { useFeatureStore } from './stores/featureStore.js';
-import { useCamPlanStore } from './stores/camPlanStore.js';
+import { useCamPlanStore, getRawMesh } from './stores/camPlanStore.js';
+import { boundsOf } from './engine/mesh/analyze.js';
+import { boundsOnPlane } from './engine/sketch/plane.js';
 import { PART_FORMATS } from './engine/mesh/import.js';
 import CamPanel from './components/CamPanel.jsx';
 import { useSketchStore } from './stores/sketchStore.js';
-import { exportGcode, openProjectFile, applyProject } from './lib/projectIO.js';
-import { readDraft, clearDraft, startAutosave, suspendAutosave } from './lib/autosave.js';
+import { exportGcode, openProjectFile, openProgramFile } from './lib/projectIO.js';
+import { useLibraryStore } from './stores/libraryStore.js';
 import LibraryPanel from './components/LibraryPanel.jsx';
-import { fitBoundsFor, fitBoundsForPart, chuckFromBounds } from './engine/view/setup.js';
+import {
+  fitBoundsFor, fitBoundsForPart, chuckFromBounds, chuckFitBounds,
+} from './engine/view/setup.js';
 import { unionBounds } from './engine/view/camera.js';
 import { simMethodFor } from './engine/sim/method.js';
-import { SPEEDS, perTick } from './engine/view/playback.js';
+import { SPEEDS } from './engine/view/playback.js';
 import { sidebarSections } from './engine/view/sidebar.js';
 import { formatDuration, programStatRows, timingBreakdown } from './engine/view/programStats';
 import { toolSpecSummary } from './engine/view/toolRow.js';
-import { autoSimKey, shouldAutoSimulate } from './engine/view/autoSim.js';
 import { offerArborToggle, parkedTip } from './engine/view/millTool.js';
 import { offerToolToggle } from './engine/view/latheTool.js';
 import { sweptFitBox } from './engine/view/rotaryFrame.js';
 import { sketchBounds } from './engine/sketch/edit.js';
 import {
-  lineAt, timeAt, rotaryAt, toolAt, segmentAtTime, toolPointAt, blockTargetAt,
+  lineAt, timeAt, rotaryAt, toolAt, toolPointAt, blockTargetAt,
   runningAt,
 } from './engine/gcode/path.js';
-import { STANDARD_TURN_TOOLS, effectiveTurnTool } from './engine/sim/turning.js';
+import { effectiveTurnTool } from './engine/sim/turning.js';
 import {
   billetBox, billetWarnings, billetExtents, previewSolid, suggestBillet,
 } from './engine/sim/billet.js';
 import Viewport from './components/Viewport.jsx';
 import PositionReadout from './components/PositionReadout.jsx';
 import SketchToolbar from './components/SketchToolbar.jsx';
+import StatusBar from './components/StatusBar.jsx';
 import SketchContextMenu from './components/SketchContextMenu.jsx';
 import SketchConfirmCorner from './components/SketchConfirmCorner.jsx';
 import MenuBar from './components/MenuBar.jsx';
+import CommandRibbon from './components/CommandRibbon.jsx';
+import MeasurePanel from './components/MeasurePanel.jsx';
+import WorkspaceTabs from './components/WorkspaceTabs.jsx';
 import StdVcDialog from './components/StdVcDialog.jsx';
 import CustomTurnToolDialog from './components/CustomTurnToolDialog.jsx';
-import { TurnToolGlyph } from './components/turnToolGlyph.jsx';
 import StdEditorDialog from './components/StdEditorDialog.jsx';
+import { VIEWS } from './components/ViewGlyphs.jsx';
+import ToolEditDialog from './components/ToolEditDialog.jsx';
+import ToolFallback from './components/ToolFallback.jsx';
+import BilletBox from './components/BilletBox.jsx';
 import LeftColumn from './components/LeftColumn.jsx';
 import { TREE_SIZE } from './components/FeatureTree.jsx';
-import { invalidate } from '@react-three/fiber';
+import { usePlayback } from './hooks/usePlayback.js';
+import { useAutoSimulate } from './hooks/useAutoSimulate.js';
+import { useRotaryCenterReparse } from './hooks/useRotaryCenterReparse.js';
+import { useDraftAutosave } from './hooks/useDraftAutosave.jsx';
+import { useTreeResize } from './hooks/useTreeResize.js';
 import { getBuf } from './engine/bufferCache.js';
 import { CAD } from './theme.js';
 
 const { Sider, Content, Header } = Layout;
 const { Title, Text } = Typography;
 
-const PAGES = [
-  { label: 'Milling', value: 'mill' },
-  { label: 'Turning', value: 'turn' },
-  { label: 'Sketch', value: 'sketch' },
-];
-
-/**
- * Isometric view-cube glyphs for the view presets (SolidWorks-style standard
- * views). The cube is drawn from the iso eye (+X, −Y, +Z) so its three visible
- * faces are Top (+Z, upper diamond), Front (−Y, lower-left) and Right (+X,
- * lower-right). Each preset highlights the face you'd be looking down:
- *   - solid accent  → that face is toward you (top / front / right / iso)
- *   - medium accent → the *opposite* (hidden) face, for back / left, which share
- *     a projected rhombus with front / right; the tooltip names the exact view.
- * Pure SVG on `currentColor`, so the glyph inherits the Segmented item's colour
- * (selected vs idle) automatically.
- */
-const CUBE_FACES = {
-  top: [[12, 3], [20, 7.5], [12, 12], [4, 7.5]],
-  front: [[4, 7.5], [12, 12], [12, 21], [4, 16.5]],
-  right: [[20, 7.5], [20, 16.5], [12, 21], [12, 12]],
-};
-function CubeGlyph({ face, whole = false, hollow = false }) {
-  const op = (f) => {
-    if (whole) return f === 'top' ? 0.42 : f === 'front' ? 0.3 : 0.18;
-    if (f !== face) return 0.12;
-    return hollow ? 0.45 : 0.95;
-  };
-  const poly = (f) => (
-    <polygon
-      points={CUBE_FACES[f].map((p) => p.join(',')).join(' ')}
-      fill="currentColor"
-      fillOpacity={op(f)}
-      stroke="currentColor"
-      strokeWidth="1"
-      strokeLinejoin="round"
-    />
-  );
-  return (
-    <span role="img" className="anticon" style={{ display: 'inline-flex' }}>
-      <svg viewBox="0 0 24 24" width="18" height="18" style={{ display: 'block' }}>
-        {poly('top')}
-        {poly('front')}
-        {poly('right')}
-      </svg>
-    </span>
-  );
-}
-const viewGlyph = (title, glyph) => ({
-  title,
-  label: <span title={title} style={{ display: 'inline-flex', padding: '1px 2px' }}>{glyph}</span>,
-});
-const VIEWS = [
-  { value: 'iso', ...viewGlyph('Isometric', <CubeGlyph whole />) },
-  { value: 'top', ...viewGlyph('Top', <CubeGlyph face="top" />) },
-  { value: 'front', ...viewGlyph('Front', <CubeGlyph face="front" />) },
-  { value: 'back', ...viewGlyph('Back', <CubeGlyph face="front" hollow />) },
-  { value: 'left', ...viewGlyph('Left', <CubeGlyph face="right" hollow />) },
-  { value: 'right', ...viewGlyph('Right', <CubeGlyph face="right" />) },
-];
-
-/**
- * Standard boring-bar shank diameters (mm) — the sizes a boring bar actually
- * ships in, not an arbitrary continuous range. Drives both the bar diameter
- * picker below and `boringBarGeometry`'s `barDiameter` shape field.
- */
-const BORING_BAR_DIAMETERS = [6, 8, 10, 12, 16, 20, 25, 32];
-
-/**
- * Icon picker for a tool's turning insert/holder — a row of glyph buttons (one per
- * catalogue holder), replacing the old dropdown. The selected holder is
- * highlighted; the full catalogue name is on each button's tooltip.
- *
- * `custom` (camStore's `customTurnTools`) is drawn after the catalogue, each
- * one dashed-bordered to read as operator-defined rather than a shop standard.
- * Its glyph is the same `TurnToolGlyph`, driven by the same shape fields, so a
- * custom holder looks exactly as consistent as a built-in one — there is no
- * second drawing code path to keep in step. Double-click edits; the small ×
- * deletes, behind a confirm since it is not reversible from the UI. The "+"
- * only appears when `onAdd` is given, so a read-only render of this list (were
- * one ever needed) can simply omit it.
- */
-function TurnInsertPicker({
-  value, onChange, custom = [], onAdd, onEdit, onRemove,
-}) {
-  return (
-    <div style={{ display: 'flex', gap: 2, flexWrap: 'wrap' }}>
-      {STANDARD_TURN_TOOLS.map((x) => (
-        <Tooltip key={x.id} title={x.label} placement="top">
-          <Button
-            size="small"
-            type={value === x.id ? 'primary' : 'text'}
-            icon={<TurnToolGlyph tool={x} />}
-            onClick={() => onChange(x.id)}
-            style={{ width: 32, height: 32, padding: 0, color: value === x.id ? undefined : CAD.icon }}
-          />
-        </Tooltip>
-      ))}
-      {custom.map((x) => (
-        <div key={x.id} style={{ position: 'relative' }}>
-          <Tooltip title={`${x.label} — double-click to edit`} placement="top">
-            <Button
-              size="small"
-              type={value === x.id ? 'primary' : 'text'}
-              icon={<TurnToolGlyph tool={x} />}
-              onClick={() => onChange(x.id)}
-              onDoubleClick={() => onEdit?.(x.id)}
-              style={{
-                width: 32, height: 32, padding: 0, borderStyle: 'dashed',
-                color: value === x.id ? undefined : CAD.icon,
-              }}
-            />
-          </Tooltip>
-          {onRemove && (
-            <Popconfirm
-              title={`Delete "${x.label}"?`}
-              onConfirm={() => onRemove(x.id)}
-              okText="Delete"
-              okButtonProps={{ danger: true }}
-              cancelText="Cancel"
-              placement="top"
-            >
-              <button
-                type="button"
-                aria-label={`Delete ${x.label}`}
-                style={{
-                  position: 'absolute', top: -6, right: -6, width: 14, height: 14,
-                  lineHeight: '12px', fontSize: 9, padding: 0, borderRadius: '50%',
-                  background: CAD.surface, color: CAD.muted,
-                  border: `1px solid ${CAD.borderSoft}`, cursor: 'pointer',
-                }}
-              >
-                ✕
-              </button>
-            </Popconfirm>
-          )}
-        </div>
-      ))}
-      {onAdd && (
-        <Tooltip title="Add a custom holder" placement="top">
-          <Button
-            size="small"
-            type="dashed"
-            icon={<PlusOutlined />}
-            onClick={onAdd}
-            style={{ width: 32, height: 32, padding: 0 }}
-          />
-        </Tooltip>
-      )}
-    </div>
-  );
-}
-
-/**
- * Pick a cutter TYPE — the six shapes in `engine/cam/cutters.js`.
- *
- * Icon-only, per the toolbar convention: the tooltip names each and says what
- * it is for. Shared by the fallback cutter and by every row of the Tool table,
- * because they are the same question asked about different tools — the table
- * used to ask a narrower one (Flat or Ball), which could not say "face mill"
- * at all, so a Ø50 face mill in the program could only ever be drawn and
- * carved as a Ø50 stick.
- */
-function CutterPicker({ value, onChange, box = 32, scope = 'fallback' }) {
-  return (
-    <Space size={2} wrap>
-      {CUTTERS.map((c) => {
-        const Icon = CUTTER_ICONS[c.id];
-        return (
-          <Tooltip
-            key={c.id}
-            title={(
-              <span>
-                <b>{c.label}</b>
-                <span style={{ display: 'block', opacity: 0.82, fontSize: 12, marginTop: 2 }}>
-                  {c.note}
-                </span>
-              </span>
-            )}
-          >
-            <Button
-              size="small"
-              aria-label={c.label}
-              data-cutter={c.id}
-              // Which tool is being typed — the fallback, or a row of the Tool
-              // table. Both render the same six glyphs, so a test that asks for
-              // "the face mill button" has to say whose.
-              data-cutter-scope={scope}
-              type={value === c.id ? 'primary' : 'text'}
-              icon={<Icon />}
-              onClick={() => onChange(c.id)}
-              style={{
-                width: box, height: box, padding: 0,
-                color: value === c.id ? undefined : CAD.icon,
-              }}
-            />
-          </Tooltip>
-        );
-      })}
-    </Space>
-  );
-}
-
-/**
- * Everything about one Tool-table row that is not the compact glance view:
- * insert/cutter shape, diameter, angle, thickness, shank, bar diameter,
- * groove width, gauge length — and the Name field too, so renaming and the
- * rest of the setup are not two different places to look.
- *
- * One dialog shared by every row (`camStore.toolEditDialog` holds which T
- * number, if any), the same reasoning as `CustomTurnToolDialog`: a form per
- * row would mean sixteen mounted-but-hidden dialogs on a sixteen-tool
- * program. `tool` is the matching `detectedTools` row; `null` while closed or
- * for a T number no longer in the program, in which case nothing renders.
- */
-function ToolEditDialog({
-  open, tool, override, turning, eff, effSpec, holder, customTurnTools,
-  addonStyle, edited,
-  onClose, onOverride, onCutter, onThickness, onShank, onClearOverride,
-  onAddCustom, onEditCustom, onRemoveCustom,
-}) {
-  if (!tool) return null;
-  const t = tool;
-  const ov = override || {};
-  const effDia = ov.diameter ?? t.diameter;
-  return (
-    <Modal
-      open={open}
-      title={`Edit T${t.n}${t.desc ? ` — ${t.desc}` : ''}`}
-      width={440}
-      destroyOnHidden
-      onCancel={onClose}
-      footer={(
-        <Space>
-          <Button onClick={onClearOverride} disabled={!edited}>Reset to detected</Button>
-          <Button type="primary" onClick={onClose}>Done</Button>
-        </Space>
-      )}
-    >
-      <Space direction="vertical" size={12} style={{ width: '100%' }}>
-        <div>
-          <Text style={{ color: CAD.label, display: 'block', marginBottom: 4 }}>Name</Text>
-          <Input
-            value={ov.label ?? ''}
-            placeholder={t.type}
-            aria-label={`T${t.n} name (dialog)`}
-            onChange={(e) => onOverride({ label: e.target.value || undefined })}
-            style={{ width: 260 }}
-          />
-          <Text type="secondary" style={{ fontSize: 11, display: 'block', marginTop: 2 }}>
-            Only changes the label shown in the Tool table and the position readout — the
-            simulation still reads the program's own tool comment.
-          </Text>
-        </div>
-
-        {turning ? (
-          <Space direction="vertical" size={8} style={{ width: '100%' }}>
-            <div>
-              <Text style={{ color: CAD.label, display: 'block', marginBottom: 4 }}>Holder</Text>
-              <TurnInsertPicker
-                value={holder?.id}
-                onChange={(id) => onOverride({ insert: id })}
-                custom={customTurnTools}
-                onAdd={onAddCustom}
-                onEdit={onEditCustom}
-                onRemove={onRemoveCustom}
-              />
-            </div>
-            <Space wrap size={12} align="center">
-              <span>
-                <Text style={{ color: CAD.label, marginRight: 6 }}>⌀</Text>
-                <InputNumber controls={false}
-                  size="small"
-                  aria-label={`T${t.n} diameter`}
-                  min={0.1}
-                  step={0.5}
-                  value={effDia}
-                  placeholder="dia"
-                  onChange={(v) => onOverride({ diameter: v ?? undefined })}
-                  style={{ width: 80 }}
-                />
-              </span>
-              {holder?.adjustable && (
-                <span>
-                  <Text style={{ color: CAD.label, marginRight: 6 }}>Insert°</Text>
-                  <InputNumber controls={false}
-                    size="small"
-                    min={20}
-                    max={100}
-                    step={5}
-                    value={ov.insertAngle ?? holder.angle}
-                    onChange={(v) => onOverride({ insertAngle: v ?? holder.angle })}
-                    style={{ width: 72 }}
-                  />
-                </span>
-              )}
-              {holder?.kind === 'boring' && (
-                <Tooltip title="Boring bar shank diameter — standard sizes only; sets the marker's bar thickness, not the bore it cuts (that's the program's own X).">
-                  <Space.Compact>
-                    <span className="ant-input-group-addon" style={addonStyle('left')}>bar⌀</span>
-                    <Select
-                      size="small"
-                      value={ov.barDiameter ?? BORING_BAR_DIAMETERS[0]}
-                      onChange={(v) => onOverride({ barDiameter: v })}
-                      options={BORING_BAR_DIAMETERS.map((d) => ({ value: d, label: `${d}` }))}
-                      style={{ width: 72 }}
-                    />
-                  </Space.Compact>
-                </Tooltip>
-              )}
-              {holder?.kind === 'parting' && (
-                <Tooltip title="Groove width — the blade's kerf, both drawn and cut this wide.">
-                  <Space.Compact>
-                    <span className="ant-input-group-addon" style={addonStyle('left')}>w</span>
-                    <InputNumber controls={false}
-                      size="small"
-                      aria-label={`T${t.n} groove width`}
-                      min={0.5}
-                      step={0.5}
-                      value={ov.grooveW ?? null}
-                      placeholder="3"
-                      onChange={(v) => onOverride({ grooveW: v ?? undefined })}
-                      style={{ width: 64 }}
-                    />
-                  </Space.Compact>
-                </Tooltip>
-              )}
-            </Space>
-          </Space>
-        ) : (
-          <Space direction="vertical" size={8} style={{ width: '100%' }}>
-            <div>
-              <Text style={{ color: CAD.label, display: 'block', marginBottom: 4 }}>Cutter</Text>
-              {/* The type, not just flat/ball: it is what the marker draws
-                  and what the carvers stamp. */}
-              <CutterPicker
-                box={28}
-                scope={`T${t.n}`}
-                value={eff?.cutter}
-                onChange={onCutter}
-              />
-            </div>
-            <Space wrap size={12} align="center">
-              <span>
-                <Text style={{ color: CAD.label, marginRight: 6 }}>⌀</Text>
-                <InputNumber controls={false}
-                  size="small"
-                  min={0.1}
-                  step={0.5}
-                  value={effDia}
-                  placeholder="dia"
-                  onChange={(v) => onOverride({ diameter: v ?? undefined })}
-                  style={{ width: 80 }}
-                />
-              </span>
-              {effSpec?.angleAdjustable && eff?.cutter && (
-                <Tooltip title="Included angle — the chamfer this cutter leaves. 90° gives a 45° chamfer.">
-                  <Space.Compact>
-                    <span className="ant-input-group-addon" style={addonStyle('left')}>∠</span>
-                    <InputNumber controls={false}
-                      size="small"
-                      min={15}
-                      max={175}
-                      step={5}
-                      value={eff.angle}
-                      onChange={(v) => onOverride({ angle: v || 90 })}
-                      style={{ width: 64 }}
-                    />
-                  </Space.Compact>
-                </Tooltip>
-              )}
-              {/* Thickness: the slot this tool leaves. Only the slot cutter
-                  is specified that way. */}
-              {effSpec?.thicknessAdjustable && eff?.cutter && (
-                <Tooltip title="Cutter thickness — the width of the slot this tool leaves.">
-                  <Space.Compact>
-                    <span className="ant-input-group-addon" style={addonStyle('left')}>t</span>
-                    <InputNumber controls={false}
-                      size="small"
-                      aria-label={`T${t.n} cutter thickness`}
-                      min={effSpec.thicknessRange[0]}
-                      max={effSpec.thicknessRange[1]}
-                      step={0.5}
-                      value={eff.thickness ?? null}
-                      placeholder={String(defaultThickness(eff.cutter, eff.radius * 2))}
-                      onChange={(v) => onThickness(v)}
-                      style={{ width: 72 }}
-                    />
-                  </Space.Compact>
-                </Tooltip>
-              )}
-              {/* Shank: a necked slot mill is narrower where the holder
-                  grips it than where it cuts. */}
-              {effSpec?.shankAdjustable && eff?.cutter && (
-                <Tooltip title="Shank diameter — the plain part above the flutes, which the holder grips.">
-                  <Space.Compact>
-                    <span className="ant-input-group-addon" style={addonStyle('left')}>s⌀</span>
-                    <InputNumber controls={false}
-                      size="small"
-                      aria-label={`T${t.n} shank diameter`}
-                      min={effSpec.shankRange[0]}
-                      max={effSpec.shankRange[1]}
-                      step={0.5}
-                      value={eff.shank ?? null}
-                      placeholder={String(defaultShank(eff.cutter, eff.radius * 2))}
-                      onChange={(v) => onShank(v)}
-                      style={{ width: 72 }}
-                    />
-                  </Space.Compact>
-                </Tooltip>
-              )}
-              <span>
-                <Tooltip title="Gauge length — tip to the collet face (stick-out)">
-                  <Text style={{ color: CAD.label, marginRight: 6 }}>L</Text>
-                </Tooltip>
-                <InputNumber controls={false}
-                  size="small"
-                  min={0}
-                  step={1}
-                  value={ov.length ?? t.length ?? undefined}
-                  placeholder="len"
-                  onChange={(v) => onOverride({ length: v ?? undefined })}
-                  style={{ width: 76 }}
-                />
-              </span>
-            </Space>
-          </Space>
-        )}
-      </Space>
-    </Modal>
-  );
-}
-
-/**
- * The cutter the sim falls back to when the program never named one.
- *
- * Always collapsed to a single `+` until asked for. The first cut at this
- * opened it automatically whenever the program declared no tools — which was
- * exactly the common case, so the `+` was never seen and the row looked as
- * permanent as before. A control that is sometimes a button and sometimes a
- * form is worse than either; this is a button, and pressing it gives the form.
- */
-function ToolFallback({
-  open, onOpen, detected, diameter, cutter, flutes, angle, thickness, shank,
-  onDiameter, onCutter, onFlutes, onAngle, onThickness, onShank, addonStyle,
-}) {
-  const spec = cutterById(cutter);
-  if (!open) {
-    return (
-      <Space size={6} align="center">
-        <CommandButton id="toolFallback" size="small" icon={<PlusOutlined />} onClick={onOpen} />
-        <Text style={{ color: CAD.dim, fontSize: 11 }}>
-          {detected > 0
-            ? `Cutter from the program (${detected} ${detected === 1 ? 'tool' : 'tools'})`
-            : `Cutter — the program names none, using ⌀${diameter} ${spec.label.toLowerCase()}`}
-        </Text>
-      </Space>
-    );
-  }
-  const [loF, hiF] = spec.fluteRange;
-  const advice = cutterWarning({ cutter, diameter });
-  return (
-    <Space direction="vertical" size={4} style={{ width: '100%' }}>
-      {/* The TYPE first: it decides what the other two fields mean. */}
-      <CutterPicker value={cutter} onChange={onCutter} />
-      <Space wrap align="center" size="small">
-        <Tooltip title="Cutting diameter">
-          <Space.Compact>
-            <span className="ant-input-group-addon" style={addonStyle('left')}>⌀</span>
-            <InputNumber controls={false}
-              min={0.1} step={0.5} value={diameter} onChange={onDiameter}
-              style={{ width: 74 }}
-            />
-            <span className="ant-input-group-addon" style={addonStyle('right')}>mm</span>
-          </Space.Compact>
-        </Tooltip>
-        {/* Flutes are not decoration: feed = rpm x flutes x chip load, so this
-            number is a term in the cycle time. Clamped to what the type is
-            actually made in. */}
-        <Tooltip title={`Flutes / inserts — feed is rpm x flutes x chip load, so this changes the cycle time (${loF}-${hiF} for a ${spec.label.toLowerCase()})`}>
-          <Space.Compact>
-            <span className="ant-input-group-addon" style={addonStyle('left')}>Z</span>
-            <InputNumber controls={false}
-              min={loF} max={hiF} step={1} value={flutes} onChange={onFlutes}
-              style={{ width: 56 }}
-            />
-          </Space.Compact>
-        </Tooltip>
-        {spec.angleAdjustable && (
-          <Tooltip title="Included angle — the chamfer this cutter leaves. 90° gives a 45° chamfer.">
-            <Space.Compact>
-              <span className="ant-input-group-addon" style={addonStyle('left')}>∠</span>
-              <InputNumber controls={false}
-                min={15} max={175} step={5} value={angle} onChange={onAngle}
-                style={{ width: 62 }}
-              />
-              <span className="ant-input-group-addon" style={addonStyle('right')}>°</span>
-            </Space.Compact>
-          </Tooltip>
-        )}
-        {/* A slot cutter's cutting body and its shank are both numbers the
-            diameter cannot imply — a necked tool is wide where it cuts and
-            narrow where the holder grips it. */}
-        {spec.thicknessAdjustable && (
-          <Tooltip title="Cutter thickness — the width of the slot this tool leaves.">
-            <Space.Compact>
-              <span className="ant-input-group-addon" style={addonStyle('left')}>t</span>
-              <InputNumber controls={false}
-                aria-label="Cutter thickness"
-                min={spec.thicknessRange[0]}
-                max={spec.thicknessRange[1]}
-                step={0.5}
-                // Empty means "not measured": the marker falls back to what the
-                // type implies and the cut is not capped. Showing that default
-                // as a VALUE read as a setting that was already in force, so
-                // pressing Simulate changed nothing and looked broken.
-                value={thickness ?? null}
-                placeholder={String(defaultThickness(spec.id, diameter))}
-                onChange={onThickness}
-                style={{ width: 66 }}
-              />
-              <span className="ant-input-group-addon" style={addonStyle('right')}>mm</span>
-            </Space.Compact>
-          </Tooltip>
-        )}
-        {spec.shankAdjustable && (
-          <Tooltip title="Shank diameter — the plain part above the flutes, which the holder grips.">
-            <Space.Compact>
-              <span className="ant-input-group-addon" style={addonStyle('left')}>s⌀</span>
-              <InputNumber controls={false}
-                aria-label="Shank diameter"
-                min={spec.shankRange[0]}
-                max={spec.shankRange[1]}
-                step={0.5}
-                value={shank ?? null}
-                placeholder={String(defaultShank(spec.id, diameter))}
-                onChange={onShank}
-                style={{ width: 66 }}
-              />
-              <span className="ant-input-group-addon" style={addonStyle('right')}>mm</span>
-            </Space.Compact>
-          </Tooltip>
-        )}
-      </Space>
-      {advice && (
-        <Text style={{ color: '#a16207', fontSize: 11 }}>{advice}</Text>
-      )}
-    </Space>
-  );
-}
-
-/**
- * The billet: how big it is, and where it sits.
- *
- * Every number here is computed in `engine/sim/billet.js` — the box, the
- * extents, whether the program fits inside, and the blank to offer. This places
- * the fields and reports what the engine said.
- *
- * The extents line under the fields is not decoration. "Origin" is ambiguous on
- * its own — a corner, a centre, the middle of the top face are all plausible
- * readings, and no label settles it as well as printing the resulting range.
- * With `X −10.0 … 70.0` on screen there is nothing left to guess at.
- */
-function BilletBox({
-  size, origin, extents, suggestion, warnings, onSize, onOrigin, onFit,
-  enabled, onToggle, addonStyle,
-}) {
-  const field = (k, value, onChange, placeholder, allowNegative) => (
-    <Space.Compact key={k}>
-      <span className="ant-input-group-addon" style={addonStyle('left')}>{k.toUpperCase()}</span>
-      <InputNumber controls={false}
-        disabled={!enabled}
-        {...(allowNegative ? {} : { min: 0 })}
-        placeholder={placeholder}
-        value={value[k]}
-        onChange={(v) => onChange({
-          // A size of 0 is not a billet; an origin of 0 is a perfectly good
-          // place to put one, so only sizes treat zero as "unset".
-          [k]: allowNegative
-            ? (Number.isFinite(v) ? v : null)
-            : (v && v > 0 ? v : null),
-        })}
-        style={{ width: 76 }}
-      />
-    </Space.Compact>
-  );
-  const range = ([lo, hi]) => `${lo.toFixed(1)} … ${hi.toFixed(1)}`;
-
-  return (
-    <Space direction="vertical" size={4} style={{ width: '100%' }}>
-      <Space align="center" wrap size="small">
-        {/* On/off for the whole billet. Off hands the blank back to the
-            automatic fit around the toolpath and takes the preview with it. */}
-        <CommandButton
-          id="stockEnabled"
-          size="small"
-          type={enabled ? 'primary' : 'default'}
-          icon={<StockCutIcon />}
-          onClick={onToggle}
-        />
-        <Tooltip title="The blank in the vice, in mm. Leave an axis blank to wrap the toolpath instead.">
-          <span style={{ color: enabled ? CAD.label : CAD.dim }}>Stock</span>
-        </Tooltip>
-        {['x', 'y', 'z'].map((k) => field(k, size, onSize, 'auto', false))}
-        <span style={{ color: CAD.dim, fontSize: 12 }}>mm</span>
-        {suggestion && enabled && (
-          <CommandButton
-            id="fitStock"
-            size="small"
-            type="text"
-            icon={<ColumnWidthOutlined />}
-            onClick={onFit}
-          />
-        )}
-      </Space>
-      <Space align="center" wrap size="small">
-        <span style={{ width: 24, display: 'inline-block' }} />
-        <Tooltip title="Where the blank's X−/Y−/Z− corner sits in work coordinates. Blank centres it on the cutting in X and Y, and puts the top face on Z0 — which is now only a default, not a rule.">
-          <span style={{ color: enabled ? CAD.label : CAD.dim }}>Origin</span>
-        </Tooltip>
-        {['x', 'y', 'z'].map((k) => field(k, origin, onOrigin, 'auto', true))}
-        <span style={{ color: CAD.dim, fontSize: 12 }}>mm</span>
-      </Space>
-      {enabled && extents && (
-        <Text style={{ color: CAD.dim, fontSize: 11, fontFamily: 'monospace' }}>
-          X {range(extents.x)} · Y {range(extents.y)} · Z {range(extents.z)}
-        </Text>
-      )}
-      {!enabled && (
-        <Text style={{ color: CAD.dim, fontSize: 11 }}>
-          Stock off — the sim fits a blank around the toolpath.
-        </Text>
-      )}
-      {enabled && warnings.length > 0 && (
-        <Alert
-          type="warning"
-          showIcon
-          message="The program cuts outside the blank"
-          description={<ul style={{ margin: 0, paddingLeft: 18 }}>
-            {warnings.map((w) => <li key={w}>{w}</li>)}
-          </ul>}
-        />
-      )}
-    </Space>
-  );
-}
-
 export default function App() {
   const { token } = theme.useToken();
   const { notification } = AntdApp.useApp();
   // Small scalar state from Zustand — large buffers live in bufferCache.
   const gcode = useCamStore((s) => s.gcode);
-  const fileName = useCamStore((s) => s.fileName);
-  const status   = useCamStore((s) => s.status);
   const bufVer   = useCamStore((s) => s.bufVer);  // version counter — triggers re-render
   const playhead = useCamStore((s) => s.playhead);
   const playT    = useCamStore((s) => s.playT);
@@ -778,7 +141,6 @@ export default function App() {
   const simFrameA   = useCamStore((s) => s.simFrameA);
   // Actions are stable references defined once in the store.
   const parse    = useCamStore((s) => s.parse);
-  const loadFile = useCamStore((s) => s.loadFile);
   const setPlayhead = useCamStore((s) => s.setPlayhead);
   const togglePlay  = useCamStore((s) => s.togglePlay);
   const stepBlock   = useCamStore((s) => s.stepBlock);
@@ -808,7 +170,6 @@ export default function App() {
   const toggleTool = useCamStore((s) => s.toggleTool);
   const toggleToolpath = useCamStore((s) => s.toggleToolpath);
   const setCutFollows = useCamStore((s) => s.setCutFollows);
-  const setPage     = useCamStore((s) => s.setPage);
   const setViewPreset = useCamStore((s) => s.setViewPreset);
   const setRapidRate = useCamStore((s) => s.setRapidRate);
   const setToolChangeSeconds = useCamStore((s) => s.setToolChangeSeconds);
@@ -831,29 +192,19 @@ export default function App() {
 
   const [speed, setSpeed] = useState(1);
   const [dragActive, setDragActive] = useState(false);
+  // The docked Ribbon's mount point (below the title bar). A state, not a ref, so
+  // the toolbar re-renders into it the moment it exists.
+  const [ribbonSlot, setRibbonSlot] = useState(null);
+  // Which pane the left column shows, here because the tabs under the viewport set it too.
+  const [leftTab, setLeftTab] = useState('model');
   // The setup drawer, opened from the toolbar. Closed by default: it is a job
   // you do once per part, not something to keep on screen while cutting.
   const [settingsOpen, setSettingsOpen] = useState(false);
   // Drives the feature-tree column's width; the tree itself owns the toggle.
   const treeOpen = useFeatureStore((s) => s.treeOpen);
   const treeWidth = useFeatureStore((s) => s.treeWidth);
-  // While the edge handle is dragged, drop the width transition so the column
-  // tracks the pointer instead of easing behind it.
-  const [treeResizing, setTreeResizing] = useState(false);
-  const startTreeResize = useCallback((e) => {
-    e.preventDefault();
-    const startX = e.clientX;
-    const startW = useFeatureStore.getState().treeWidth;
-    setTreeResizing(true);
-    const onMove = (ev) => useFeatureStore.getState().setTreeWidth(startW + (ev.clientX - startX));
-    const onUp = () => {
-      setTreeResizing(false);
-      window.removeEventListener('pointermove', onMove);
-      window.removeEventListener('pointerup', onUp);
-    };
-    window.addEventListener('pointermove', onMove);
-    window.addEventListener('pointerup', onUp);
-  }, []);
+  const setTreeOpen = useFeatureStore((s) => s.setTreeOpen);
+  const { treeResizing, startTreeResize } = useTreeResize();
   const sketching = page === 'sketch';
   const turning = page === 'turn';
 
@@ -865,41 +216,9 @@ export default function App() {
   const toolToggle = offerToolToggle({ mode, sketching });
 
   // Open on a blank page — no sample program is loaded. The user brings their
-  // own via drag-and-drop, Open file, or the (optional) Load sample button.
+  // own via drag-and-drop or Open file.
 
-  // Animation loop: advance the playhead while playing. Paced by *machine time*,
-  // not segment count — a helix tessellates into tens of thousands of tiny
-  // segments (T3 is 91% of them) while a face mill is a few long moves, so a
-  // segment-paced run parks on the helix and never shows the other tools. Time
-  // pacing gives every operation screen-time proportional to how long it runs.
-  const playTimeRef = useRef(0);
-  useEffect(() => {
-    if (!playing) return undefined;
-    const startPath = getBuf().path;
-    if (!startPath) return undefined;
-    // Resume from wherever the playhead sits (0 after a restart).
-    playTimeRef.current = timeAt(startPath, useCamStore.getState().playhead);
-    const id = setInterval(() => {
-      // The path is read per tick rather than captured, so a re-parse mid-run is
-      // picked up **without** this effect depending on `bufVer`. It must not:
-      // carving bumps `bufVer` on every step, so with "cut with playback" on the
-      // loop was torn down and rebuilt constantly, and each rebuild snapped the
-      // time cursor to `timeAt(playhead)` — the *end* of the segment in progress.
-      // Playback then advanced a whole segment per carve, running at the speed of
-      // the worker instead of the speed setting.
-      const path = getBuf().path;
-      if (!path) return;
-      const totalT = path.totalTime || 1;
-      // 40 ms per tick; the whole program spans PLAY_BASE_SECONDS at 1×.
-      playTimeRef.current += perTick(totalT, speed);
-      const k = segmentAtTime(path, playTimeRef.current);
-      useCamStore.getState().setPlayhead(k);
-      useCamStore.setState({ playT: playTimeRef.current }); // smooth marker interpolation
-      if (k >= path.count) useCamStore.getState().pause();
-      invalidate(); // wake up the demand-mode canvas
-    }, 40);
-    return () => clearInterval(id);
-  }, [playing, speed]);
+  usePlayback(playing, speed);
 
   // Saving / opening work. Errors surface in the store's `error` alert, the same
   // place a parse failure lands, so there is one place to look.
@@ -919,79 +238,45 @@ export default function App() {
   // Whether the library is open in the sidebar. It is a place to work, not a
   // menu, so it stays put until it is closed again.
   const [libraryOpen, setLibraryOpen] = useState(false);
-  // ---- Simulate on its own, once the setup says what to simulate ----------
-  //
-  // A program, a stated billet and an origin are the three things that make
-  // "what will this make?" answerable. Opt-in via `autoSimEnabled` (off by
-  // default) so a session that only wants the backplot never carves; when on,
-  // `autoSimKey` describes the setup as a string so the run happens once per
-  // setup rather than once per render — see `engine/view/autoSim.js`.
-  const autoKey = autoSimKey({
-    gcode, stockEnabled, stockSize, stockOrigin, datum: partDatum, aIndex, mode,
+
+  // Setup is one drawer with several jobs in it, so the Simulation tab lights only
+  // when that is what it was opened for.
+  const [setupForSimulation, setSetupForSimulation] = useState(false);
+
+  /** Open Setup and bring one of its sections into view, once the drawer has slid in. */
+  const openSetupAt = (selector, forSimulation = false) => {
+    setLibraryOpen(false);
+    setSettingsOpen(true);
+    setSetupForSimulation(forSimulation);
+    if (!selector) return;
+    setTimeout(() => {
+      document.querySelector(selector)?.scrollIntoView?.({ block: 'start' });
+    }, 350);
+  };
+
+  // The strip under the viewport reads what is open rather than keeping its own
+  // state, so opening the library any other way moves it as well.
+  let workspaceTab = leftTab;
+  if (libraryOpen) workspaceTab = 'library';
+  else if (settingsOpen && setupForSimulation) workspaceTab = 'simulation';
+
+  const selectWorkspaceTab = (value) => {
+    if (value === 'simulation') { openSetupAt('[data-cam-removal]', true); return; }
+    if (value === 'library') { setSettingsOpen(false); setLibraryOpen(true); return; }
+    setSettingsOpen(false);
+    setLibraryOpen(false);
+    setTreeOpen(true);
+    setLeftTab(value);
+  };
+
+  useAutoSimulate({
+    gcode, stockEnabled, stockSize, stockOrigin, partDatum, aIndex, mode,
+    autoSimEnabled, playing, simStatus, sketching, simulate,
   });
-  const lastAutoKey = useRef(null);
-  useEffect(() => {
-    if (!autoSimEnabled) return;
-    if (!shouldAutoSimulate({
-      key: autoKey,
-      last: lastAutoKey.current,
-      playing,
-      running: simStatus === 'running',
-      sketching,
-    })) return;
-    lastAutoKey.current = autoKey;
-    simulate();
-  }, [autoSimEnabled, autoKey, playing, simStatus, sketching, simulate]);
 
-  // A separately loaded .nc's indexed (A-word) moves pivot about camPlanStore's
-  // rotary centre, which only reaches the interpreter through
-  // `camStore.machineOpts()` at parse time. That store must not import the plan
-  // store back (see camStore.js), so the re-parse when the centre moves is wired
-  // here — the same shape as the auto-simulate effect above. Only the centre
-  // needs it: `reverseX` and the A0-face pick move the model, not the toolpath,
-  // and the viewport already redraws the model for those.
-  const rotaryCenterKey = JSON.stringify(partDatum.rotaryCenter ?? null);
-  const lastRotaryCenterKey = useRef(rotaryCenterKey);
-  useEffect(() => {
-    if (rotaryCenterKey === lastRotaryCenterKey.current) return;
-    lastRotaryCenterKey.current = rotaryCenterKey;
-    if (gcode) parse();
-  }, [rotaryCenterKey, gcode, parse]);
+  useRotaryCenterReparse({ partDatum, gcode, parse });
 
-  // Auto-save draft: mirror the drawing (sketches, feature tree, program) to
-  // localStorage on a debounce, and on load offer back whatever a previous
-  // session left. Cleared on an explicit Save (library or file) or New project.
-  useEffect(() => {
-    const draft = readDraft();
-    if (draft) {
-      const key = 'cam-autosave-draft';
-      notification.info({
-        key,
-        message: 'Unsaved work from a previous session',
-        description: `Last change ${new Date(draft.at).toLocaleString()}.`,
-        duration: 0,
-        actions: (
-          <Space>
-            <Button
-              size="small"
-              type="primary"
-              onClick={() => {
-                notification.destroy(key);
-                suspendAutosave(() => applyProject(draft.project)).catch(() => {});
-              }}
-            >
-              Restore
-            </Button>
-            <Button size="small" onClick={() => { clearDraft(); notification.destroy(key); }}>
-              Discard
-            </Button>
-          </Space>
-        ),
-      });
-    }
-    return startAutosave();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
+  useDraftAutosave(notification);
 
   // Let a save confirmation fade rather than linger.
   useEffect(() => {
@@ -1020,11 +305,21 @@ export default function App() {
         // parser — which would read a JSON document as a program and fail.
         report(async () => {
           await openProjectFile(file);
+          // It is no library item, so Save must not write back to one.
+          useLibraryStore.getState().setOpenItem(null);
           return file.name;
         }, (n) => `Opened project ${n}`);
-      } else loadFile(file);
+      } else {
+        // Anything else is taken for a program, unless its contents say otherwise:
+        // a project saved under a name of the operator's own still opens as one.
+        report(async () => {
+          const isProject = await openProgramFile(file);
+          if (isProject) useLibraryStore.getState().setOpenItem(null);
+          return isProject;
+        }, (isProject) => (isProject ? `Opened project ${file.name}` : null));
+      }
     },
-    [loadFile, loadPart, report]
+    [loadPart, report]
   );
 
   // Read large buffers from cache (not from React state). Viewport slices the
@@ -1047,11 +342,18 @@ export default function App() {
   // *key* there so drawing doesn't snap the camera — only an explicit Fit does).
   const sketchSk = useSketchStore((s) => s.sk);
   const sketchVersion = useSketchStore((s) => s.version);
+  // On the plane it is drawn on, which is not the table once a sketch is on a face.
+  const sketchPlane = useSketchStore((s) => (s.sketches.find((x) => x.id === s.activeId) ?? s.sketches[0])?.plane);
   const sketchFit = useMemo(
-    () => sketchBounds(sketchSk),
+    () => boundsOnPlane(sketchPlane, sketchBounds(sketchSk)),
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    [sketchSk, sketchVersion],
+    [sketchSk, sketchVersion, sketchPlane],
   );
+  // The part as the Sketch page draws it: as built, not laid down for machining.
+  const builtPartFit = useMemo(() => {
+    const { soup } = getRawMesh();
+    return soup?.triangleCount ? boundsOf(soup) : null;
+  }, [partVer]); // eslint-disable-line react-hooks/exhaustive-deps
   // The A-axis centre for the viewport's work rotation. `[0,0]` — the frame's
   // own origin — is what indexing assumed before an operator could pick one,
   // and stays the answer when they haven't.
@@ -1122,14 +424,19 @@ export default function App() {
     const cut = fitBoundsFor(turning ? 'turn' : 'mill', bounds);
     return unionBounds(
       unionBounds(
-        rotaryFrame === 'machine' ? sweptFitBox(cut, rotaryCenter) : cut,
-        // The blank is framed too. Without it, sizing stock on an empty
-        // viewport draws a 50 mm block the camera is nowhere near.
-        billetFit,
+        unionBounds(
+          rotaryFrame === 'machine' ? sweptFitBox(cut, rotaryCenter) : cut,
+          // The blank is framed too. Without it, sizing stock on an empty
+          // viewport draws a 50 mm block the camera is nowhere near.
+          billetFit,
+        ),
+        fitBoundsForPart(turning ? 'turn' : 'mill', partAnalysis?.bounds ?? null),
       ),
-      fitBoundsForPart(turning ? 'turn' : 'mill', partAnalysis?.bounds ?? null),
+      // The chuck is far wider than the bar it grips, and would otherwise run off
+      // the top of the window and under the view toolbar.
+      chuckFitBounds(chuckFromBounds(turning ? 'turn' : 'mill', bounds, stockOversize)),
     );
-  }, [bounds, turning, partAnalysis, rotaryFrame, rotaryCenter, billetFit]);
+  }, [bounds, turning, partAnalysis, rotaryFrame, rotaryCenter, billetFit, stockOversize]);
 
   // Chuck placement uses the *real* cutting bounds (not the padded fit), so the
   // 5 mm clearance to the deepest cut is preserved regardless of framing. The
@@ -1406,26 +713,35 @@ export default function App() {
             // the other, the way `data-open-setup` below already did before
             // Library had a drawer of its own to collide with.
             onToggleLibrary={() => { setSettingsOpen(false); setLibraryOpen((v) => !v); }}
-            onOpenSetup={() => { setLibraryOpen(false); setSettingsOpen(true); }}
+            onOpenSetup={() => openSetupAt()}
+            brand={(
+              <>
+                <ThunderboltOutlined style={{ color: token.colorPrimary, fontSize: 18 }} />
+                <span style={{
+                  color: CAD.text, fontWeight: 600, fontSize: 13, whiteSpace: 'nowrap', margin: '0 8px 0 4px',
+                }}
+                >
+                  Engineer CAM Lite
+                </span>
+              </>
+            )}
           />
-          <div style={{ display: 'flex', alignItems: 'center', gap: 12, padding: '4px 0 8px' }}>
-            <ThunderboltOutlined style={{ color: token.colorPrimary, fontSize: 22 }} />
-            <Title level={4} style={{ color: CAD.text, margin: 0 }}>
-              Engineer CAD/CAM
-            </Title>
-            <Segmented
-              value={page}
-              onChange={setPage}
-              options={PAGES}
-              disabled={status === 'parsing'}
-            />
-            {fileName && <Tag color="blue">{fileName}</Tag>}
-            <Text style={{ color: CAD.muted, marginLeft: 'auto' }}>
-              Rapid <span style={{ color: CAD.rapid }}>-----</span>   Feed {' '}
-              <span style={{ color: CAD.feed }}>-----</span>
-            </Text>
-          </div>
         </Header>
+        <CommandRibbon
+          setRibbonSlot={setRibbonSlot}
+          onSetup={() => openSetupAt()}
+          onWorkOrigin={() => openSetupAt('[data-cam-origin]')}
+          onToolTable={() => openSetupAt('[data-cam-tools]')}
+          hasTools={detectedTools.length > 0}
+          onExportGcode={onExportGcode}
+          // Which run this will be depends on the program and the cutter, and it says
+          // so in the button's name, so an undercut is not carved as a height field.
+          simulateCommand={turning
+            ? { id: 'simulateTurning', icon: <TurningIcon /> }
+            : simPlan.method === 'voxel'
+              ? { id: rotaryIndices.length > 1 ? 'simulateFaces' : 'simulateUndercut', icon: <VoxelIcon /> }
+              : { id: 'simulate', icon: <StockCutIcon /> }}
+        />
         <Layout>
           {/* The left column is the **feature tree**, the way a CAD lays a part
               window out: the model's structure is the thing that stays on
@@ -1444,7 +760,7 @@ export default function App() {
               position: 'relative',
             }}
           >
-            <LeftColumn activeLine={activeLine} />
+            <LeftColumn activeLine={activeLine} tab={leftTab} onTab={setLeftTab} />
             {treeOpen && (
               // Drag the column edge to trade viewport for program/tree width.
               <div
@@ -1596,6 +912,7 @@ export default function App() {
 
               {show.tools && detectedTools.length > 0 && (
                 <>
+                  <span data-cam-tools />
                   <Divider style={{ margin: '4px 0', borderColor: CAD.border }}>
                     <Text style={{ color: CAD.muted }}>
                       Tool table{currentTool ? ` — cutting: T${currentTool.n}` : ''}
@@ -1693,6 +1010,7 @@ export default function App() {
 
               {/* ---- Phase 1: material removal ---- */}
               {show.removal && <>
+              <span data-cam-removal />
               <Divider style={{ margin: '4px 0', borderColor: CAD.border }}>
                 <Text style={{ color: CAD.muted }}>Material removal</Text>
               </Divider>
@@ -1958,7 +1276,7 @@ export default function App() {
           <Content style={{ position: 'relative' }}>
             {/* Sketcher controls float over the viewport — only on the Sketch page,
                 so the design workspace is separate from Milling / Turning. */}
-            {sketching && <SketchToolbar />}
+            {sketching && <SketchToolbar ribbonSlot={ribbonSlot} />}
             {sketching && <SketchContextMenu />}
             {sketching && <SketchConfirmCorner />}
 
@@ -2006,7 +1324,7 @@ export default function App() {
                 bottom bar is measured against. */}
             {!sketching && statRows.length > 0 && (
               <div data-cam-overlay="stats" style={{
-                position: 'absolute', top: 12, left: 12, zIndex: 5,
+                position: 'absolute', top: 8, left: 12, zIndex: 5,
                 display: 'flex', gap: 16, alignItems: 'baseline', flexWrap: 'wrap',
                 background: CAD.glass, border: `1px solid ${CAD.border}`,
                 padding: '6px 12px', borderRadius: 4,
@@ -2037,42 +1355,17 @@ export default function App() {
               </div>
             )}
 
-            {/* Bottom toolbar: view/plan selector and playback controls in one row. */}
-            <div data-cam-overlay="bottom" style={{
-              position: 'absolute', bottom: 12, left: 12, right: 12, zIndex: 5,
-              display: 'flex', gap: 10, alignItems: 'center', flexWrap: 'wrap',
+            {/* The view toolbar across the top of the viewport: how the part is
+                framed and what is drawn. */}
+            <div data-cam-overlay="top" data-cam-hud style={{
+              position: 'absolute', top: 8, left: '50%', transform: 'translateX(-50%)', zIndex: 5,
+              display: 'flex', gap: 4, alignItems: 'center', flexWrap: 'wrap', justifyContent: 'center',
+              maxWidth: 'calc(100% - 24px)',
               background: CAD.glass, border: `1px solid ${CAD.border}`,
-              padding: '6px 12px', borderRadius: 4,
-              // On the old near-black viewport a pale panel lifted off the
-              // background by contrast alone. On a light one it does not, so the
-              // rails that float over the model carry a shadow instead.
+              padding: '3px 6px', borderRadius: 4,
               boxShadow: '0 2px 10px rgba(23,42,66,0.18)',
               backdropFilter: 'blur(2px)',
             }}>
-              <Tooltip title="Setup — files, machine, tooling, stock and the removal simulation">
-                <Button
-                  size="small"
-                  icon={<SettingOutlined />}
-                  onClick={() => { setLibraryOpen(false); setSettingsOpen(true); }}
-                  data-open-setup
-                >
-                  Setup
-                </Button>
-              </Tooltip>
-              {/* Parse sits next to Setup because it is the other thing done *to* the
-                  program rather than to the view: edit the file, press it, watch the
-                  backplot redraw. In the drawer it was behind the very picture it
-                  redraws. */}
-              {!sketching && (
-                <CommandButton
-                  id="parse"
-                  size="small"
-                  type="primary"
-                  icon={<ThunderboltOutlined />}
-                  loading={status === 'parsing'}
-                  onClick={() => parse()}
-                />
-              )}
               <Segmented size="small" value={view} onChange={setViewPreset} options={VIEWS} />
               <CommandButton
                 id="fitView" size="small"
@@ -2084,7 +1377,7 @@ export default function App() {
                   CAD view toolbar does it — a pressed glyph, not a labelled
                   switch. `type` carries the on/off state. Only offered once
                   there is something to hide: a dead toggle is worse than none. */}
-              {!sketching && partAnalysis && (
+              {partAnalysis && (
                 <CommandButton
                   id="showPart" size="small"
                   type={showPart ? 'primary' : 'default'}
@@ -2136,36 +1429,6 @@ export default function App() {
                   onClick={toggleToolpath}
                 />
               )}
-              {/* **Simulate lives here, with the toggles it is judged by.**
-                  Cutting the material and then hiding the holder or the
-                  toolpath to look at what came off is one motion, and it used
-                  to cross the whole screen: press a button in a drawer, close
-                  the drawer, then reach for these. The NUMBERS stay in the
-                  drawer — a grid size is a setting you type once per job, not
-                  something to keep on a rail you press mid-run.
-
-                  **Turning is here too.** It is the same act on the same rail; it
-                  only ever differed in which glyph names it, and leaving it in the
-                  drawer made the lathe the one mode where this motion crossed the
-                  screen. The voxel run keeps its own button in the drawer — that is
-                  the deliberate second opinion, not the one reached for mid-job. */}
-              {!sketching && (
-                <CommandButton
-                  id={turning
-                    ? 'simulateTurning'
-                    : simPlan.method === 'voxel'
-                      ? (rotaryIndices.length > 1 ? 'simulateFaces' : 'simulateUndercut')
-                      : 'simulate'}
-                  size="small"
-                  type="primary"
-                  ghost
-                  icon={turning
-                    ? <TurningIcon />
-                    : simPlan.method === 'voxel' ? <VoxelIcon /> : <StockCutIcon />}
-                  loading={simStatus === 'running'}
-                  onClick={() => simulate()}
-                />
-              )}
               {/* 4th axis: which end of the same rigid motion to watch. A rotary
                   table turns the WORK — that is what a 4-axis machine selects by
                   default — but the part frame, which keeps the workpiece still
@@ -2182,8 +1445,23 @@ export default function App() {
                   onClick={() => setRotaryFrame(rotaryFrame === 'machine' ? 'part' : 'machine')}
                 />
               )}
-              {!sketching && <>
-              <div style={{ width: 1, alignSelf: 'stretch', background: CAD.border }} />
+            </div>
+
+            <MeasurePanel sketching={sketching} />
+
+            {/* Bottom toolbar: playing the program back. A sketch has nothing to play. */}
+            {!sketching && (
+            <div data-cam-overlay="bottom" style={{
+              position: 'absolute', bottom: 12, left: 12, right: 12, zIndex: 5,
+              display: 'flex', gap: 10, alignItems: 'center', flexWrap: 'wrap',
+              background: CAD.glass, border: `1px solid ${CAD.border}`,
+              padding: '6px 12px', borderRadius: 4,
+              // On the old near-black viewport a pale panel lifted off the
+              // background by contrast alone. On a light one it does not, so the
+              // rails that float over the model carry a shadow instead.
+              boxShadow: '0 2px 10px rgba(23,42,66,0.18)',
+              backdropFilter: 'blur(2px)',
+            }}>
               <CommandButton
                 id="restart"
                 size="small" shape="circle"
@@ -2230,12 +1508,13 @@ export default function App() {
               }}>
                 {formatDuration(elapsed)} / {formatDuration(stats?.cycleTime ?? 0)}
               </Text>
-              </>}
             </div>
+            )}
 
             <Viewport
               bounds={bounds}
-              fitBounds={fitBounds}
+              // The Sketch page frames the part it is drawn on, not the program.
+              fitBounds={sketching ? (showPart ? builtPartFit : null) : fitBounds}
               partVer={partVer}
               showPart={showPart}
               sketchFit={sketchFit}
@@ -2267,6 +1546,14 @@ export default function App() {
             />
           </Content>
         </Layout>
+        <WorkspaceTabs
+          // Lined up under the viewport rather than the whole window, without
+          // moving the viewport into a column of its own that its height depends on.
+          indent={treeOpen ? treeWidth : TREE_SIZE.TREE_STRIP + 8}
+          active={workspaceTab}
+          onSelect={selectWorkspaceTab}
+        />
+        <StatusBar />
       </Layout>
     </div>
   );

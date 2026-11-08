@@ -17,13 +17,43 @@
  * React's dev Performance Track structured-clones changed props and dies on
  * large typed arrays.
  */
-import { useEffect, useMemo, useRef } from 'react';
+import {
+  useEffect, useMemo, useRef, useState,
+} from 'react';
 import * as THREE from 'three';
-import { getMesh, useCamPlanStore } from '../stores/camPlanStore.js';
-import { faceOfTriangle } from '../engine/mesh/features.js';
+import { getMesh, getRawMesh, useCamPlanStore } from '../stores/camPlanStore.js';
+import { useSketchStore } from '../stores/sketchStore.js';
+import { useFeatureStore } from '../stores/featureStore.js';
+import { useCamStore } from '../stores/camStore.js';
+import { planeBasis } from '../engine/sketch/plane.js';
+import { detectFeatures, faceOfTriangle } from '../engine/mesh/features.js';
+import { measurePick } from '../engine/mesh/measure.js';
+import { useMeasureStore } from '../stores/measureStore.js';
 import { featureAtPoint } from '../engine/mesh/pickEdge.js';
+import { circlesAt, nearestCircle } from '../engine/mesh/circlePick.js';
 import { originMarkerSize, rotaryAxisLength } from '../engine/view/originMarker.js';
 import { CAD } from '../theme.js';
+
+/** The model to be made, distinct from the simulated stock's aluminium grey. */
+const PART_COLOR = '#93a7bd';
+
+/** A Measure pick from a hit on `welded`, at `point` in its frame. */
+const pickFor = (welded, event, point) => measurePick(
+  welded,
+  event.faceIndex,
+  point,
+  event.face?.normal?.toArray() ?? [0, 0, 1],
+);
+
+/** Flat-shaded geometry for a soup, one normal per facet (see the note at the top). */
+function soupGeometry(soup) {
+  if (!soup || soup.triangleCount === 0) return null;
+  const g = new THREE.BufferGeometry();
+  g.setAttribute('position', new THREE.BufferAttribute(soup.positions, 3));
+  g.computeVertexNormals();
+  g.computeBoundingSphere();
+  return g;
+}
 
 const ORIGIN_AXES = [
   { dir: [1, 0, 0], color: CAD.rapid },
@@ -70,18 +100,15 @@ export default function PartMesh({ meshVer, visible = true, wireframe = false })
   const hoverIdRef = useRef(null);
   const datumPickMode = useCamPlanStore((s) => s.datumPickMode);
   const pickAxisOrigin = useCamPlanStore((s) => s.pickAxisOrigin);
+  const pickCircleCenter = useCamPlanStore((s) => s.pickCircleCenter);
   const pickRotaryCenter = useCamPlanStore((s) => s.pickRotaryCenter);
   const pickRotaryZero = useCamPlanStore((s) => s.pickRotaryZero);
-  const geometry = useMemo(() => {
-    const { soup } = getMesh();
-    if (!soup || soup.triangleCount === 0) return null;
-    const g = new THREE.BufferGeometry();
-    g.setAttribute('position', new THREE.BufferAttribute(soup.positions, 3));
-    g.computeVertexNormals();
-    g.computeBoundingSphere();
-    return g;
+  const setDatumHover = useCamPlanStore((s) => s.setDatumHover);
+  const measuring = useMeasureStore((s) => s.active);
+  const addMeasure = useMeasureStore((s) => s.add);
+  const circleCache = useRef(null);
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [meshVer]);
+  const geometry = useMemo(() => soupGeometry(getMesh().soup), [meshVer]);
 
   useEffect(() => {
     if (!geometry) return undefined;
@@ -117,11 +144,16 @@ export default function PartMesh({ meshVer, visible = true, wireframe = false })
     const localPoint = () => event.object.worldToLocal(event.point.clone()).toArray();
 
     // An armed axis pick ('x'/'y'/'z') sets just that axis's zero at the clicked
-    // point — no plane, no reorientation, the other two axes left alone.
+    // point, and the normal lets a flat face turn square to that axis.
     const axis = { x: 0, y: 1, z: 2 }[datumPickMode];
     if (axis !== undefined) {
       event.stopPropagation();
-      pickAxisOrigin(axis, localPoint());
+      pickAxisOrigin(axis, localPoint(), event.face?.normal?.toArray());
+      return;
+    }
+    if (datumPickMode === 'circle') {
+      event.stopPropagation();
+      if (event.face?.normal) pickCircleCenter(localPoint(), event.face.normal.toArray());
       return;
     }
     if (datumPickMode === 'rotary') {
@@ -132,6 +164,12 @@ export default function PartMesh({ meshVer, visible = true, wireframe = false })
     if (datumPickMode === 'zero') {
       event.stopPropagation();
       if (event.face?.normal) pickRotaryZero(event.face.normal.toArray());
+      return;
+    }
+    // Measure, when it is on, takes the click: it is what the operator just asked for.
+    if (measuring) {
+      event.stopPropagation();
+      addMeasure(pickFor(getMesh().welded, event, localPoint()));
       return;
     }
     const picked = featureUnder(event);
@@ -167,7 +205,9 @@ export default function PartMesh({ meshVer, visible = true, wireframe = false })
    * same feature would re-render the panel and the overlay for nothing.
    */
   const onPointerMove = (event) => {
-    if (datumPickMode) return;   // the cursor means an origin right now, not a feature
+    // The cursor means an origin right now, not a feature, so show that instead.
+    if (datumPickMode) { hoverDatum(event); return; }
+    if (measuring) return;
     const picked = featureUnder(event);
     if (picked === undefined) return;
     if ((picked?.id ?? null) !== (hoverIdRef.current ?? null)) {
@@ -176,7 +216,42 @@ export default function PartMesh({ meshVer, visible = true, wireframe = false })
     }
   };
 
+  /**
+   * What a click would take while a pick is armed: the flat face for an axis or A0
+   * pick, and the circle for a centre pick, by the same rule the click itself uses.
+   *
+   * The sections behind a circle are cut once per facet, not once per pixel. The
+   * nearest one is still chosen on every move, because one end face holds both a
+   * bore and a boss and which is meant depends on where in that facet the cursor is.
+   */
+  const hoverDatum = (event) => {
+    if (datumPickMode === 'circle') {
+      if (!event.face?.normal) return;
+      const point = event.object.worldToLocal(event.point.clone()).toArray();
+      const key = `${meshVer}:${event.faceIndex}`;
+      if (circleCache.current?.key !== key) {
+        circleCache.current = {
+          key,
+          circles: circlesAt(getMesh().welded, point, event.face.normal.toArray()),
+        };
+      }
+      const circle = nearestCircle(circleCache.current.circles, point);
+      // Keep the marker on show until another circle replaces it, or it would vanish
+      // on the way to it: the ring sits on an edge, where the cursor crosses a
+      // chamfer or leaves the part altogether.
+      if (!circle) return;
+      const across = circle.center.filter((_, i) => i !== circle.axis).map((v) => v.toFixed(3));
+      setDatumHover({ id: `circle:${circle.axis}:${across.join(',')}:${circle.radius.toFixed(3)}`, circle });
+      return;
+    }
+    if (datumPickMode === 'rotary') return;
+    const detected = features();
+    const face = detected?.faces?.length ? faceOfTriangle(detected, event.faceIndex) : null;
+    setDatumHover(face ? { id: `face:${face.id}`, face } : null);
+  };
+
   const onPointerOut = () => {
+    if (datumPickMode !== 'circle') setDatumHover(null);
     if (hoverIdRef.current === null) return;
     hoverIdRef.current = null;
     previewFeatureAt(null);
@@ -199,7 +274,7 @@ export default function PartMesh({ meshVer, visible = true, wireframe = false })
           inside-out STL is common enough that back faces must still draw —
           `analyzeMesh` warns about the winding rather than leaving a hole. */}
       <meshStandardMaterial
-        color="#93a7bd"
+        color={PART_COLOR}
         metalness={0.1}
         roughness={0.65}
         transparent
@@ -256,6 +331,217 @@ export function FeatureHighlight({ meshVer }) {
         depthWrite={false}
       />
     </mesh>
+  );
+}
+
+/**
+ * The part on the Sketch page, solid, the way SolidWorks keeps it on screen while
+ * you sketch on it.
+ *
+ * It is the part **as built** (`getRawMesh`), not as laid down for machining: that
+ * is the frame the solids and the sketches live in, so a sketch on a face sits on
+ * that face here.
+ *
+ * Drawn first and then the depth is cleared, so the sketch draws over it: lines
+ * on a face would otherwise fight the face for the same depth, and a sketch plane
+ * inside the part would vanish behind it. The part still hides its own back faces.
+ *
+ * While Sketch on Face waits (`facePick`), the face under the cursor is lit, and a
+ * click starts a sketch on it and turns the view square to it. Otherwise the part
+ * has no handlers at all, so it never takes a click meant for the sketch.
+ */
+export function SketchPart({ meshVer, visible = true }) {
+  const facePick = useSketchStore((s) => s.facePick);
+  const measuring = useMeasureStore((s) => s.active);
+  const addMeasure = useMeasureStore((s) => s.add);
+  const [hover, setHover] = useState(null);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  const geometry = useMemo(() => soupGeometry(getRawMesh().soup), [meshVer]);
+  const highlight = useMemo(
+    () => highlightGeometry(hover, getRawMesh().soup),
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [hover, meshVer],
+  );
+
+  useEffect(() => {
+    if (!geometry) return undefined;
+    return () => geometry.dispose();
+  }, [geometry]);
+  useEffect(() => {
+    if (!highlight) return undefined;
+    return () => highlight.geometry.dispose();
+  }, [highlight]);
+  useEffect(() => { if (!facePick) setHover(null); }, [facePick]);
+
+  if (!geometry || !visible) return null;
+
+  const faceUnder = (event) => {
+    const { welded } = getRawMesh();
+    return welded ? faceOfTriangle(detectFeatures(welded), event.faceIndex) : null;
+  };
+
+  // Measure takes clicks here as on the machining pages, in the frame the part
+  // was built in; Sketch on Face, armed on purpose, comes first.
+  const measure = measuring && !facePick ? {
+    onClick: (event) => {
+      event.stopPropagation();
+      addMeasure(pickFor(getRawMesh().welded, event, event.point.toArray()));
+    },
+  } : {};
+  const pick = facePick ? {
+    onPointerMove: (event) => {
+      event.stopPropagation();
+      const face = faceUnder(event);
+      if ((face?.id ?? null) !== (hover?.id ?? null)) setHover(face);
+    },
+    onPointerOut: () => setHover(null),
+    onClick: (event) => {
+      event.stopPropagation();
+      const face = faceUnder(event);
+      if (!face) return;
+      useSketchStore.getState().setFacePick(false);
+      const id = useFeatureStore.getState().sketchOnFace({ face });
+      const plane = useSketchStore.getState().sketches.find((s) => s.id === id)?.plane;
+      if (!plane) return;
+      const { n, v } = planeBasis(plane);
+      useCamStore.getState().normalTo(n, v);
+    },
+  } : {};
+
+  return (
+    <group name="sketch-part">
+      <mesh
+        name="built-part"
+        geometry={geometry}
+        renderOrder={-1}
+        onAfterRender={(renderer) => renderer.clearDepth()}
+        {...measure}
+        {...pick}
+      >
+        <meshStandardMaterial color={PART_COLOR} metalness={0.1} roughness={0.65} side={THREE.DoubleSide} />
+      </mesh>
+      {highlight?.kind === 'face' && (
+        <mesh geometry={highlight.geometry}>
+          <meshBasicMaterial
+            color={CAD.skHover} transparent opacity={0.6} side={THREE.DoubleSide} depthWrite={false}
+          />
+        </mesh>
+      )}
+    </group>
+  );
+}
+
+/**
+ * What Measure has picked, drawn on the part: the face lit, the circle ringed,
+ * and a dot where a distance is taken from. Drawn over everything, since a mark
+ * hidden behind the part it marks says nothing.
+ *
+ * `raw` is the frame the picks were made in — the part as built on the Sketch
+ * page, as set up for machining elsewhere.
+ */
+export function MeasureMarks({ meshVer, raw = false }) {
+  const picks = useMeasureStore((s) => s.picks);
+  const bounds = useCamPlanStore((s) => s.analysis?.bounds);
+  const size = originMarkerSize(bounds);
+  const geometries = useMemo(() => {
+    const soup = (raw ? getRawMesh() : getMesh()).soup;
+    const out = [];
+    for (const p of picks) {
+      if (p.kind === 'face') {
+        const built = highlightGeometry(p.face, soup);
+        if (built) out.push(built.geometry);
+      }
+      if (p.kind === 'circle') out.push(...circleMarkerGeometry(p.circle, size));
+      else {
+        const dot = new THREE.SphereGeometry(size * 0.04, 12, 8);
+        dot.translate(p.point[0], p.point[1], p.point[2]);
+        out.push(dot);
+      }
+    }
+    return out;
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [picks, size, meshVer, raw]);
+
+  useEffect(() => () => geometries.forEach((g) => g.dispose()), [geometries]);
+
+  if (!geometries.length) return null;
+  return (
+    <group name="measure-marks">
+      {geometries.map((g) => (
+        <mesh key={g.uuid} geometry={g} renderOrder={11} raycast={() => null}>
+          <meshBasicMaterial
+            color={CAD.accent} transparent opacity={0.7} side={THREE.DoubleSide} depthTest={false} depthWrite={false}
+          />
+        </mesh>
+      ))}
+    </group>
+  );
+}
+
+/** A ring and a centre dot, as one geometry per part, for a circle in the mesh's own frame. */
+function circleMarkerGeometry({ axis, center, radius }, size) {
+  // A real tube rather than a line, because WebGL draws every line one pixel wide
+  // however it is asked, and one pixel is what could not be seen on the part.
+  const tube = Math.max(radius * 0.04, size * 0.02);
+  const ring = new THREE.TorusGeometry(radius, tube, 8, 72);
+  if (axis === 0) ring.rotateY(Math.PI / 2);
+  if (axis === 1) ring.rotateX(Math.PI / 2);
+  ring.translate(center[0], center[1], center[2]);
+  const dot = new THREE.SphereGeometry(tube * 2.5, 12, 8);
+  dot.translate(center[0], center[1], center[2]);
+  return [ring, dot];
+}
+
+/**
+ * What the next click would take while a pick is armed, drawn over the part.
+ *
+ * Not `FeatureHighlight`: that one shows a selected face in preference to a hover,
+ * so an operator with a face selected would see nothing change under the cursor.
+ */
+export function DatumPickHighlight({ meshVer }) {
+  const hover = useCamPlanStore((s) => (s.datumPickMode ? s.datumHover : null));
+  const pickCircleCenter = useCamPlanStore((s) => s.pickCircleCenter);
+  const bounds = useCamPlanStore((s) => s.analysis?.bounds);
+  const size = originMarkerSize(bounds);
+  // The ring is a click target of its own, because half of it can hang off the
+  // edge of the part, where a click would otherwise hit nothing.
+  const onClick = hover?.circle
+    ? (event) => { event.stopPropagation(); pickCircleCenter(); }
+    : undefined;
+  const geometries = useMemo(() => {
+    if (hover?.circle) return circleMarkerGeometry(hover.circle, size);
+    if (hover?.face) {
+      const built = highlightGeometry(hover.face, getMesh().soup);
+      return built ? [built.geometry] : [];
+    }
+    return [];
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [hover, size, meshVer]);
+
+  useEffect(() => () => geometries.forEach((g) => g.dispose()), [geometries]);
+
+  if (!geometries.length) return null;
+
+  return (
+    <group name="datum-pick-highlight">
+      {geometries.map((g) => (
+        <mesh key={g.uuid} geometry={g} renderOrder={10} onClick={onClick}>
+          {/* A circle draws over the part, so a bore is still marked from a view
+              that hides its far edge. A face keeps its depth test and only lifts
+              off the facets it covers, so it shows which side is being picked. */}
+          <meshBasicMaterial
+            color={CAD.skHover}
+            transparent
+            opacity={hover?.circle ? 0.95 : 0.75}
+            side={THREE.DoubleSide}
+            depthTest={!hover?.circle}
+            depthWrite={false}
+            polygonOffset
+            polygonOffsetFactor={-2}
+          />
+        </mesh>
+      ))}
+    </group>
   );
 }
 

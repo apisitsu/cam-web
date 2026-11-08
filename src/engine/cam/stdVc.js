@@ -387,11 +387,26 @@ export function proposeStd(scan, material, opts = {}) {
  */
 export function rowTimes(segments, rows) {
   const out = {};
-  for (const r of rows) out[r.id] = 0;
+  const byTool = new Map();
+  for (const r of rows) {
+    out[r.id] = 0;
+    if (!byTool.has(r.tool)) byTool.set(r.tool, []);
+    byTool.get(r.tool).push(r);
+  }
   for (const s of segments) {
+    if (!(s.t > 0)) continue;
+    // The tool that was cutting decides the row. A line number cannot: a lathe's G70 replays
+    // the profile written in the roughing tool's block, so its moves report THOSE lines while
+    // belonging to the finishing tool — which used to leave the finisher with a second or two.
+    // The line only picks between several blocks of the SAME tool.
+    const cands = s.tool != null ? byTool.get(s.tool) : undefined;
     const i = s.line - 1;
-    const r = rows.find((x) => i >= x.startLine && i <= x.endLine);
-    if (r && s.t > 0) out[r.id] += s.t;
+    const inside = (x) => i >= x.startLine && i <= x.endLine;
+    let r = null;
+    if (cands?.length === 1) [r] = cands;
+    else if (cands?.length > 1) r = cands.find(inside) ?? [...cands].reverse().find((x) => x.startLine <= i) ?? cands[0];
+    else r = rows.find(inside) ?? null; // no tool to go by: only a line that sits inside a block counts
+    if (r) out[r.id] += s.t;
   }
   return out;
 }

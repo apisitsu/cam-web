@@ -67,8 +67,9 @@ const TYPES = [
  *
  * `cutter` is the shape from `cam/cutters.js` when the type is a milling cutter
  * we can draw — it is what makes a detected `T1(FACEMILL D50)` appear on screen
- * as a disc, and what the carvers stamp with. Drills, taps, reamers and boring
- * bars have no cutter shape here (`null`): they keep the plain flat/ball.
+ * as a disc, and what the carvers stamp with. A twist drill has its own shape
+ * (the cone its point leaves). Taps, reamers and boring bars have none (`null`):
+ * they keep the plain flat/ball.
  *
  * **An unrecognised comment reports `unclassified: true`**, and that is not the
  * same as a recognised tool with no shape. Two different things both arrive here

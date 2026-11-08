@@ -295,3 +295,22 @@ describe('camStore tool-edit dialog — one shared editor per Tool-table row', (
     expect(useCamStore.getState().toolEditDialog).toEqual({ n: 5 });
   });
 });
+
+describe('camStore.normalTo', () => {
+  beforeEach(() => { useCamStore.setState({ view: 'iso', viewNonce: 0 }); });
+
+  it('looks straight at the plane, and refits', () => {
+    useCamStore.getState().normalTo([0, 0, 1], [0, 1, 0]);
+    expect(useCamStore.getState().view).toEqual({ dir: [0, 0, 1], up: [0, 1, 0] });
+    expect(useCamStore.getState().viewNonce).toBe(1);
+  });
+
+  it('turns round to the other side when asked again, and back', () => {
+    const { normalTo } = useCamStore.getState();
+    normalTo([0, 0, 1], [0, 1, 0]);
+    normalTo([0, 0, 1], [0, 1, 0]);
+    expect(useCamStore.getState().view.dir[2]).toBe(-1);
+    normalTo([0, 0, 1], [0, 1, 0]);
+    expect(useCamStore.getState().view.dir).toEqual([0, 0, 1]);
+  });
+});

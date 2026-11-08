@@ -264,3 +264,18 @@ describe('framing — fitting around the floating chrome', () => {
     expect(Number.isFinite(f.zoom)).toBe(true);
   });
 });
+
+describe('viewBasis — a view that is not a preset (Normal To)', () => {
+  it('looks along the given direction with the given up', () => {
+    const b = viewBasis('mill', { dir: [0, -1, 0], up: [0, 0, 1] });
+    expect(axis(b.dir)).toBe('-Y');
+    expect(axis(b.up)).toBe('+Z');
+    expect(axis(b.right)).toBe('+X');
+  });
+
+  it('frames from it like any preset', () => {
+    const f = framing('mill', { dir: [0, 0, -1], up: [0, 1, 0] }, { min: [0, 0, 0], max: [10, 10, 10] }, { width: 800, height: 600 });
+    expect(f.position[2]).toBeLessThan(0);
+    expect(axis(f.up)).toBe('+Y');
+  });
+});

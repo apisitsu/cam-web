@@ -70,7 +70,7 @@ function dimensionedLine() {
   return sk;
 }
 
-beforeEach(() => setSketch(createSketch()));
+beforeEach(() => { useSketchStore.setState({ sketchOpen: true }); setSketch(createSketch()); });
 afterEach(async () => {
   await renderer?.unmount();
   renderer = undefined;

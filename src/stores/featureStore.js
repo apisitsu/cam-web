@@ -31,9 +31,27 @@ import {
   createFeature, parseFeatures, rebuildFeatures, needsMeshBoolean, seedFeatureIds,
 } from '../engine/solid/featureTree.js';
 import { holePositions } from '../engine/solid/hole.js';
-import { linkFaceToSolids } from '../engine/sketch/plane.js';
+import { linkFaceToSolids, planeBasis } from '../engine/sketch/plane.js';
 import { useSketchStore } from './sketchStore.js';
-import { useCamPlanStore, getMesh } from './camPlanStore.js';
+import { useCamPlanStore, getMesh, getRawMesh } from './camPlanStore.js';
+import { useCamStore } from './camStore.js';
+
+const MAX_FOLLOW_PASSES = 3; // two is the normal case; the limit is for sketches that chase each other
+
+const usedSketchIds = (features) => features.map((f) => f.sketchId).filter((id) => id != null);
+
+/** A set view rather than `normalTo`, which turns to the far side if already square. */
+function lookSquareAt(plane) {
+  const { n, v } = planeBasis(plane);
+  useCamStore.getState().setViewPreset({ dir: [...n], up: [...v] });
+}
+
+/** Close the open sketch; on the Sketch page, back to a view that shows all three planes. */
+function closeOpenSketch() {
+  if (useSketchStore.getState().closeSketch() && useCamStore.getState().page === 'sketch') {
+    useCamStore.getState().setViewPreset('iso');
+  }
+}
 
 /**
  * Soups for `import` features, by feature id.
@@ -254,6 +272,7 @@ export const useFeatureStore = create((set, get) => ({
       return null;
     }
     sketch.setError(null);
+    closeOpenSketch();
     return analysis;
   },
 
@@ -289,7 +308,29 @@ export const useFeatureStore = create((set, get) => ({
       return null;
     }
     sketch.setError(null);
+    closeOpenSketch();
     return analysis;
+  },
+
+  /** Picked a plane: a new sketch on it, opened and seen square. */
+  startSketch(plane) {
+    const id = useSketchStore.getState().beginSketch({ plane, keep: usedSketchIds(get().features) });
+    lookSquareAt(useSketchStore.getState().activeSketch().plane);
+    return id;
+  },
+
+  /** Open a sketch for editing, from whichever page the tree was clicked on. */
+  editSketch(id) {
+    if (!useSketchStore.getState().openSketch(id)) return false;
+    useCamStore.getState().setPage('sketch');
+    lookSquareAt(useSketchStore.getState().activeSketch().plane);
+    return true;
+  },
+
+  /** Done with the sketch: close it, and bring the part up to date with any edit. */
+  async finishSketch() {
+    closeOpenSketch();
+    return get().dirty && get().features.length ? get().rebuild() : null;
   },
 
   /**
@@ -299,7 +340,7 @@ export const useFeatureStore = create((set, get) => ({
    * recomputed, not a new one arriving, and losing the origin every time a
    * dimension changed would make the feature tree worse than not having one.
    */
-  async rebuild() {
+  async rebuild(pass = 0) {
     const { features } = get();
     if (!features.length) {
       set({ dirty: false, steps: [], errors: [] });
@@ -308,6 +349,8 @@ export const useFeatureStore = create((set, get) => ({
     set({ building: true });
     try {
       const sketch = useSketchStore.getState();
+      const meshBefore = getRawMesh().welded;
+      const planesBefore = new Map(sketch.sketches.map((s) => [s.id, s.plane]));
       let meshBoolean;
       if (needsMeshBoolean(features)) {
         try {
@@ -348,10 +391,20 @@ export const useFeatureStore = create((set, get) => ({
       const name = features.filter((f) => !f.suppressed).length > 1
         ? `${features[0].name} +${features.filter((f) => !f.suppressed).length - 1}`
         : features[0].name;
-      return await useCamPlanStore.getState().loadSoup(soup, name, {
+      const analysis = await useCamPlanStore.getState().loadSoup(soup, name, {
         keepDatum: true,
         keepPage: true,
       });
+      // Dimensions taken to the part's edges: a sketch they moved may be what a
+      // later feature is built from, and that feature was just built from it as
+      // it was. Replay once more; the second pass finds nothing further to move.
+      const { moved, lost } = await useSketchStore.getState().followPartChange(meshBefore, planesBefore);
+      if (lost) {
+        useSketchStore.getState().setError(`${lost} dimension reference${lost > 1 ? 's' : ''} lost: the part edge is gone. Kept where it was.`);
+      }
+      const used = usedSketchIds(features);
+      if (moved.some((id) => used.includes(id)) && pass < MAX_FOLLOW_PASSES) return await get().rebuild(pass + 1);
+      return analysis;
     } catch (e) {
       // A rebuild replays arbitrary geometry; anything it throws that the
       // per-feature handling did not already catch becomes a message rather
@@ -388,7 +441,8 @@ export const useFeatureStore = create((set, get) => ({
     // draws the part as built (`opts.face`).
     const cam = useCamPlanStore.getState();
     const face = opts?.face ?? cam.faceInRawFrame(cam.selectedFeature);
-    const id = useSketchStore.getState().sketchOnFace({ ...opts, face });
+    const keep = usedSketchIds(get().features);
+    const id = useSketchStore.getState().sketchOnFace({ ...opts, face, keep });
     if (id == null) return null;
     // `common` is left out: its result is the overlap of two solids, so neither
     // solid's bounds are the faces on the part.
@@ -471,4 +525,12 @@ useSketchStore.subscribe((state) => {
   const moved = [...used].some((id) => _last.planes.has(id) && planes.get(id) !== _last.planes.get(id));
   _last = { version: state.version, activeId: state.activeId, planes };
   if (features.length && (editedUsed || moved)) useFeatureStore.getState().markDirty();
+});
+
+// Leaving the Sketch page by a tab finishes the sketch as the checkmark does, so
+// the part reaching the machine page includes the edit.
+useCamStore.subscribe((state, prev) => {
+  if (prev.page === 'sketch' && state.page !== 'sketch' && useSketchStore.getState().sketchOpen) {
+    useFeatureStore.getState().finishSketch();
+  }
 });

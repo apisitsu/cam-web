@@ -110,9 +110,30 @@ describe('Viewport — Sketch on Face', () => {
     useSketchStore.getState().clear();
     useSketchStore.setState({
       sketches: [{ id: 1, name: 'Sketch1', plane: { preset: 'XY', offset: 0 }, doc: useSketchStore.getState().sk }],
-      activeId: 1, nextSketchId: 2, facePick: false,
+      activeId: 1, nextSketchId: 2, facePick: false, sketchOpen: true,
     });
     useCamStore.setState({ view: 'iso' });
+  });
+
+  it('with no sketch open, a click on a face starts one without pressing anything', async () => {
+    useSketchStore.setState({ sketchOpen: false });
+    await store().loadStl(stlFile(box(20, 30, 10)));
+    const r = await mount({ sketching: true });
+    const { t, top } = topTriangle();
+    await r.fireEvent(builtPart(r)[0], 'click', { faceIndex: t, stopPropagation: () => {} });
+
+    const s = useSketchStore.getState();
+    expect(s.sketchOpen).toBe(true);
+    expect(s.sketches.find((x) => x.id === s.activeId).plane).toMatchObject({ preset: 'XY', offset: top });
+  });
+
+  it('the end of an orbit drag over a face does not start a sketch', async () => {
+    useSketchStore.setState({ sketchOpen: false });
+    await store().loadStl(stlFile(box(20, 30, 10)));
+    const r = await mount({ sketching: true });
+    const { t } = topTriangle();
+    await r.fireEvent(builtPart(r)[0], 'click', { faceIndex: t, delta: 40, stopPropagation: () => {} });
+    expect(useSketchStore.getState().sketchOpen).toBe(false);
   });
 
   it('starts a sketch on the clicked face and looks square at it', async () => {
@@ -123,7 +144,7 @@ describe('Viewport — Sketch on Face', () => {
     await r.fireEvent(builtPart(r)[0], 'click', { faceIndex: t, stopPropagation: () => {} });
 
     const s = useSketchStore.getState();
-    expect(s.sketches).toHaveLength(2);
+    expect(s.sketches).toHaveLength(1); // the blank Sketch1 is used, not left behind
     expect(s.sketches.find((x) => x.id === s.activeId).plane).toMatchObject({ preset: 'XY', offset: top });
     expect(s.facePick).toBe(false);
     expect(useCamStore.getState().view).toEqual({ dir: [0, 0, 1], up: [0, 1, 0] });
@@ -287,7 +308,7 @@ describe('Viewport — Measure', () => {
     const point = v[0].clone().add(v[1]).add(v[2]).divideScalar(3);
     const normal = v[1].clone().sub(v[0]).cross(v[2].clone().sub(v[0])).normalize();
     await r.fireEvent(mesh, 'click', {
-      faceIndex: t, point, face: { normal }, object: mesh.instance, stopPropagation: () => {},
+      faceIndex: t, point, face: { normal }, object: mesh.instance, camera: { zoom: 1000 }, stopPropagation: () => {},
     });
   }
 

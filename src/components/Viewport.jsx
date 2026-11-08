@@ -17,7 +17,7 @@ import PartMesh, {
   FeatureHighlight, DatumPickHighlight, OriginMarker, RotaryAxisLine, SketchPart, MeasureMarks,
 } from './PartMesh.jsx';
 import { CHUCK, chuckBodyRadius } from '../engine/view/setup.js';
-import SketchLayer from './SketchLayer.jsx';
+import SketchStage from './SketchStage.jsx';
 import { getBuf, setView } from '../engine/bufferCache.js';
 import { sliceUpTo } from '../engine/gcode/path.js';
 import { useSketchStore } from '../stores/sketchStore.js';
@@ -658,7 +658,7 @@ export function SceneContents({
         <>
           <SketchPart meshVer={partVer} visible={showPart} />
           {showPart && <MeasureMarks meshVer={partVer} raw />}
-          <SketchLayer />
+          <SketchStage meshVer={partVer} />
         </>
       ) : (
         <>
@@ -730,6 +730,7 @@ export default function Viewport({
   // tumbling the view. Pan (right-drag) and zoom (wheel) are untouched; other
   // sketch tools get orbit back.
   const sketchTool = useSketchStore((s) => s.tool);
+  const sketchOpen = useSketchStore((s) => s.sketchOpen);
 
   // Resolve which rapids/feeds to draw (full backplot, or the sliced sub-path
   // during playback) and stash them in the module view-cache. Children read
@@ -813,7 +814,7 @@ export default function Viewport({
         ref={controlsRef}
         makeDefault
         enabled={!(sketching && sketchDragging)}
-        enableRotate={!(sketching && sketchTool === 'select')}
+        enableRotate={!(sketching && sketchOpen && sketchTool === 'select')}
         minZoom={0.05}
         maxZoom={2000}
       />

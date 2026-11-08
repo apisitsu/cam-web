@@ -61,6 +61,7 @@ export default function StatusBar() {
   const fileName = useCamStore((s) => s.fileName);
   const sketches = useSketchStore((s) => s.sketches);
   const activeId = useSketchStore((s) => s.activeId);
+  const sketchOpen = useSketchStore((s) => s.sketchOpen);
   const features = useFeatureStore((s) => s.features);
   const dirty = useFeatureStore((s) => s.dirty);
   const errors = useFeatureStore((s) => s.errors);
@@ -70,7 +71,7 @@ export default function StatusBar() {
   const active = sketches.find((s) => s.id === activeId);
   const mode = modeText({
     page,
-    sketchName: active?.name,
+    sketchName: sketchOpen ? active?.name : null,
     plane: active ? planeLabel(active.plane) : null,
     fileName,
   });

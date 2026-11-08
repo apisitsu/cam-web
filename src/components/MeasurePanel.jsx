@@ -10,7 +10,8 @@ import { Button, Typography } from 'antd';
 import { CloseOutlined } from '@ant-design/icons';
 import { useMeasureStore } from '../stores/measureStore.js';
 import { useCamPlanStore } from '../stores/camPlanStore.js';
-import { measureResult } from '../engine/mesh/measure.js';
+import { measureResult, planePick } from '../engine/mesh/measure.js';
+import { PLANE_PRESETS } from '../engine/sketch/plane.js';
 import { CAD } from '../theme.js';
 
 const { Text } = Typography;
@@ -20,6 +21,7 @@ export default function MeasurePanel({ sketching }) {
   const picks = useMeasureStore((s) => s.picks);
   const clear = useMeasureStore((s) => s.clear);
   const stop = useMeasureStore((s) => s.stop);
+  const add = useMeasureStore((s) => s.add);
   const meshVer = useCamPlanStore((s) => s.meshVer);
   const hasPart = useCamPlanStore((s) => Boolean(s.analysis));
 
@@ -58,10 +60,18 @@ export default function MeasurePanel({ sketching }) {
           ))}
         </div>
       ) : null}
+      <div style={{ display: 'flex', alignItems: 'center', gap: 2, marginTop: 4 }}>
+        <Text style={{ color: CAD.label, fontSize: 11 }}>Plane</Text>
+        {Object.entries(PLANE_PRESETS).map(([preset, p]) => (
+          <Button key={preset} size="small" type="text" onClick={() => add(planePick(preset))} data-measure-plane={preset}>
+            {p.label.split(' ')[0]}
+          </Button>
+        ))}
+      </div>
       <Text style={{ color: CAD.dim, fontSize: 10, display: 'block', marginTop: 4 }}>
         {picks.length === 1
-          ? 'Click a second face, bore or point for the distance to it.'
-          : 'Click a face, a bore or a boss on the part. Esc to finish.'}
+          ? 'Click a second face, edge, bore, point or plane for the distance to it.'
+          : 'Click a face, an edge or a bore on the part, or a plane. Esc to finish.'}
       </Text>
     </div>
   );

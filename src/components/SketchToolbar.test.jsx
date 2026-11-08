@@ -44,7 +44,7 @@ beforeEach(() => {
   slot = document.createElement('div');
   document.body.appendChild(slot);
   root = createRoot(container);
-  useSketchStore.setState({ sk: createSketch() });
+  useSketchStore.setState({ sk: createSketch(), sketchOpen: true });
 });
 
 afterEach(async () => {

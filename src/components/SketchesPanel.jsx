@@ -28,7 +28,7 @@ const PRESET_OPTIONS = Object.entries(PLANE_PRESETS)
 export default function SketchesPanel({ trigger }) {
   const sketches = useSketchStore((s) => s.sketches);
   const activeId = useSketchStore((s) => s.activeId);
-  const setActiveSketch = useSketchStore((s) => s.setActiveSketch);
+  const editSketch = useFeatureStore((s) => s.editSketch);
   const addSketch = useSketchStore((s) => s.addSketch);
   const removeSketch = useSketchStore((s) => s.removeSketch);
   const renameSketch = useSketchStore((s) => s.renameSketch);
@@ -66,7 +66,7 @@ export default function SketchesPanel({ trigger }) {
               <Button
                 size="small"
                 type={isActive ? 'primary' : 'text'}
-                onClick={() => setActiveSketch(s.id)}
+                onClick={() => editSketch(s.id)}
                 onDoubleClick={() => setRenaming(s.id)}
                 style={{ flex: 1, textAlign: 'left' }}
                 title="Click to open · double-click to rename"

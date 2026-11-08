@@ -80,8 +80,17 @@ describe('StatusBar reads the stores', () => {
 
   const text = (k) => document.querySelector(`[data-status="${k}"]`).textContent;
 
+  it('does not claim a sketch is being edited with none open', async () => {
+    useCamStore.setState({ page: 'sketch' });
+    useSketchStore.setState({ sketchOpen: false });
+    // eslint-disable-next-line testing-library/no-unnecessary-act
+    await act(async () => { root.render(React.createElement(StatusBar)); });
+    expect(text('mode')).toBe('Sketch');
+  });
+
   it('shows the sketch being edited, and that nothing is built yet', async () => {
     useCamStore.setState({ page: 'sketch' });
+    useSketchStore.setState({ sketchOpen: true });
     // eslint-disable-next-line testing-library/no-unnecessary-act
     await act(async () => { root.render(React.createElement(StatusBar)); });
     expect(text('mode')).toBe('Editing Sketch1 · Top (XY) +10');

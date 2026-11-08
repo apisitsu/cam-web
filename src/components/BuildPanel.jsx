@@ -91,6 +91,16 @@ export function useHasBuiltPart() {
   return loaded && featureCount > 0;
 }
 
+export const START_SKETCH_HINT = 'Start a sketch first: pick a plane or a face, or open one from the tree.';
+
+/** The active sketch is closed and already built from, so it is not what a new feature means. */
+export function useSketchSpent() {
+  const open = useSketchStore((s) => s.sketchOpen);
+  const activeId = useSketchStore((s) => s.activeId);
+  const built = useFeatureStore((s) => s.features.some((f) => f.sketchId === activeId));
+  return !open && built;
+}
+
 /**
  * @param {object} props
  * @param {React.ReactNode} props.trigger what opens the panel
@@ -139,7 +149,8 @@ export default function BuildPanel({ trigger, preset }) {
   // will actually be built rather than what was drawn — subtracting two shapes
   // that leave nothing has to say so before the button is pressed, not after.
   const state = regionsOf(combineOp);
-  const summary = describe(state, combineOp);
+  const spent = useSketchSpent();
+  const summary = spent ? { ok: false, text: START_SKETCH_HINT } : describe(state, combineOp);
   const multi = regionsOf(null).regions.length > 1;
   const lines = centerlines(sk);
   const choiceGone = axisChoice?.startsWith('line:') && !lines.some((l) => `line:${l.id}` === axisChoice);

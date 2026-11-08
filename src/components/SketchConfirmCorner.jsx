@@ -9,18 +9,24 @@
  * then exiting, not a mode this corner needs to know about. One checkmark,
  * which is also why it needs no "cancel": closing it is the only action.
  *
+ * It closes the sketch and stays on the Sketch page; the part is rebuilt if the
+ * edit changed it. The machine pages are one tab away.
+ *
  * It occupies the same top-right corner `PositionReadout` uses in mill/turn
  * mode — safe because `showDro` (engine/view/dro.js) hides that panel
  * whenever `sketching` is true, so the two never share the screen.
  */
 import { Tooltip, Button } from 'antd';
 import { CheckOutlined } from '@ant-design/icons';
-import { useCamStore } from '../stores/camStore.js';
+import { useSketchStore } from '../stores/sketchStore.js';
+import { useFeatureStore } from '../stores/featureStore.js';
 import { CAD } from '../theme.js';
 
 export default function SketchConfirmCorner() {
-  const mode = useCamStore((s) => s.mode);
-  const setPage = useCamStore((s) => s.setPage);
+  const sketchOpen = useSketchStore((s) => s.sketchOpen);
+  const finishSketch = useFeatureStore((s) => s.finishSketch);
+
+  if (!sketchOpen) return null;
 
   return (
     // `pointerEvents: 'none'` on the container, `auto` on the button alone —
@@ -30,12 +36,12 @@ export default function SketchConfirmCorner() {
     <div data-cam-overlay="top" style={{
       position: 'absolute', top: 12, right: 12, zIndex: 6, pointerEvents: 'none',
     }}>
-      <Tooltip title={`Exit sketch — back to ${mode === 'turn' ? 'Turning' : 'Milling'}`} placement="bottomLeft">
+      <Tooltip title="Exit sketch" placement="bottomLeft">
         <Button
           type="primary"
           shape="circle"
           icon={<CheckOutlined />}
-          onClick={() => setPage(mode)}
+          onClick={() => finishSketch()}
           data-exit-sketch
           style={{
             pointerEvents: 'auto',

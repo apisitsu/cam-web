@@ -1,8 +1,8 @@
 /**
  * @vitest-environment jsdom
  *
- * The sketch confirmation corner: one checkmark, one job — leave the sketch
- * for whichever machine mode (mill/turn) was active before it was opened.
+ * The sketch confirmation corner: one checkmark, one job — close the sketch and
+ * stay on the Sketch page, whichever machine mode was last active.
  */
 import {
   describe, it, expect, beforeEach, afterEach,
@@ -11,6 +11,7 @@ import React, { act } from 'react';
 import { createRoot } from 'react-dom/client';
 import SketchConfirmCorner from './SketchConfirmCorner.jsx';
 import { useCamStore } from '../stores/camStore.js';
+import { useSketchStore } from '../stores/sketchStore.js';
 
 let container;
 let root;
@@ -28,7 +29,8 @@ beforeEach(() => {
   container = document.createElement('div');
   document.body.appendChild(container);
   root = createRoot(container);
-  useCamStore.setState({ page: 'sketch' });
+  useCamStore.setState({ page: 'sketch', mode: 'mill' });
+  useSketchStore.setState({ sketchOpen: true });
 });
 
 afterEach(async () => {
@@ -37,23 +39,22 @@ afterEach(async () => {
 });
 
 describe('SketchConfirmCorner', () => {
-  it('renders the exit button', async () => {
-    useCamStore.setState({ mode: 'mill' });
+  it('renders the exit button while a sketch is open', async () => {
     await render();
     expect(container.querySelector('[data-exit-sketch]')).not.toBeNull();
   });
 
-  it('clicking it returns to the milling page when that was the last machine mode', async () => {
-    useCamStore.setState({ mode: 'mill' });
+  it('is not there with no sketch open', async () => {
+    useSketchStore.setState({ sketchOpen: false });
     await render();
-    await click(container.querySelector('[data-exit-sketch]'));
-    expect(useCamStore.getState().page).toBe('mill');
+    expect(container.querySelector('[data-exit-sketch]')).toBeNull();
   });
 
-  it('returns to turning instead when that was the machine mode', async () => {
-    useCamStore.setState({ mode: 'turn' });
+  it.each(['mill', 'turn'])('closes the sketch and stays on the Sketch page (last mode %s)', async (mode) => {
+    useCamStore.setState({ mode });
     await render();
     await click(container.querySelector('[data-exit-sketch]'));
-    expect(useCamStore.getState().page).toBe('turn');
+    expect(useCamStore.getState().page).toBe('sketch');
+    expect(useSketchStore.getState().sketchOpen).toBe(false);
   });
 });

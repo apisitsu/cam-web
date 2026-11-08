@@ -20,6 +20,7 @@ import {
   HOLE_TYPES, THREADS, holePositions, drillDiameter,
 } from '../engine/solid/hole.js';
 import { planeLabel } from '../engine/sketch/plane.js';
+import { START_SKETCH_HINT, useSketchSpent } from './BuildPanel.jsx';
 import { CAD } from '../theme.js';
 
 const { Text } = Typography;
@@ -62,7 +63,8 @@ export default function HolePanel({ trigger }) {
   const [reverseChoice, setReverse] = useState(null);
   const [busy, setBusy] = useState(false);
 
-  const positions = holePositions(sk);
+  const spent = useSketchSpent();
+  const positions = spent ? [] : holePositions(sk);
   // A hole runs against the plane's normal unless reversed — into a part the plane
   // is the top of. It needs reversing only when the part lies on the normal's side,
   // which is when a boss would (`defaultReverse` for a boss).
@@ -159,7 +161,7 @@ export default function HolePanel({ trigger }) {
           <span style={{ fontSize: 11 }}>
             {positions.length
               ? `${positions.length} hole${positions.length > 1 ? 's' : ''} — one at each point of the sketch`
-              : 'Put a point where each hole goes (or a circle — its centre is used).'}
+              : (spent ? START_SKETCH_HINT : 'Put a point where each hole goes (or a circle — its centre is used).')}
           </span>
         )}
       />

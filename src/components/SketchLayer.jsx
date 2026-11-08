@@ -12,6 +12,7 @@ import { Line, Html } from '@react-three/drei';
 import { invalidate, useFrame, useThree } from '@react-three/fiber';
 import * as THREE from 'three';
 import { useSketchStore, AXIS_LOCK_FACTOR } from '../stores/sketchStore.js';
+import { useCamPlanStore } from '../stores/camPlanStore.js';
 import { useMeasureStore } from '../stores/measureStore.js';
 import { dimensionAnnotations } from '../engine/sketch/annotations.js';
 import { polygonPreview, slotPreview, axisDistance } from '../engine/sketch/shapes.js';
@@ -286,6 +287,44 @@ const localPoint = (e) => {
   return e.object?.parent ? e.object.worldToLocal(p) : p;
 };
 
+/** The part's edges on this plane, drawn while Dimension can take them. */
+function PartRefLines({ hover }) {
+  const partRefs = useSketchStore((s) => s.partRefs);
+  const meshVer = useCamPlanStore((s) => s.meshVer);
+  const activeId = useSketchStore((s) => s.activeId);
+  const geometry = useMemo(() => {
+    const { segments, circles } = partRefs();
+    const v = [];
+    for (const { a, b } of segments) v.push(a.x, a.y, Z, b.x, b.y, Z);
+    for (const c of circles) {
+      for (let i = 0; i < 64; i += 1) {
+        const [t0, t1] = [i, i + 1].map((k) => (k * Math.PI) / 32);
+        v.push(c.x + c.r * Math.cos(t0), c.y + c.r * Math.sin(t0), Z, c.x + c.r * Math.cos(t1), c.y + c.r * Math.sin(t1), Z);
+      }
+    }
+    return new THREE.BufferGeometry().setAttribute('position', new THREE.Float32BufferAttribute(v, 3));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [meshVer, activeId]);
+  useEffect(() => () => geometry.dispose(), [geometry]);
+
+  return (
+    <>
+      <lineSegments geometry={geometry} raycast={noRaycast}>
+        <lineBasicMaterial color={CAD.dim} />
+      </lineSegments>
+      {hover?.kind === 'line' && (
+        <Line
+          points={[[hover.a.x, hover.a.y, Z], [hover.b.x, hover.b.y, Z]]}
+          color={CAD.skHover}
+          lineWidth={3}
+          raycast={noRaycast}
+        />
+      )}
+      {hover?.kind === 'point' && <Vertex x={hover.x} y={hover.y} color={CAD.skHover} pixels={9} pickable={false} />}
+    </>
+  );
+}
+
 export default function SketchLayer() {
   const version = useSketchStore((s) => s.version);
   const sk = useSketchStore((s) => s.sk);
@@ -293,6 +332,7 @@ export default function SketchLayer() {
   const activeId = useSketchStore((s) => s.activeId);
   const tool = useSketchStore((s) => s.tool);
   const facePick = useSketchStore((s) => s.facePick);
+  const sketchOpen = useSketchStore((s) => s.sketchOpen);
   const measuring = useMeasureStore((s) => s.active);
   const selection = useSketchStore((s) => s.selection);
   const pending = useSketchStore((s) => s.pending);
@@ -308,6 +348,8 @@ export default function SketchLayer() {
   const polygonSides = useSketchStore((s) => s.polygonSides);
   const clickAt = useSketchStore((s) => s.clickAt);
   const hover = useSketchStore((s) => s.hover);
+  const hoverPartRef = useSketchStore((s) => s.hoverPartRef);
+  const partRefHover = useSketchStore((s) => s.partRefHover);
   const clearHover = useSketchStore((s) => s.clearHover);
   const toggleSelect = useSketchStore((s) => s.toggleSelect);
   const beginDrag = useSketchStore((s) => s.beginDrag);
@@ -442,6 +484,7 @@ export default function SketchLayer() {
     const onKey = (e) => {
       const tag = e.target?.tagName;
       if (tag === 'INPUT' || tag === 'TEXTAREA') return;
+      if (!useSketchStore.getState().sketchOpen) return;
       if (e.key === 'Escape') {
         if (useSketchStore.getState().facePick) useSketchStore.getState().setFacePick(false);
         cancelPending();
@@ -490,7 +533,7 @@ export default function SketchLayer() {
 
   // While Sketch on Face waits for a face, or Measure for a click, the clicks are
   // the part's: the sketch neither draws nor picks, or it would take them first.
-  const inert = facePick || measuring;
+  const inert = facePick || measuring || !sketchOpen;
   const drawing = !inert && (tool === 'point' || tool === 'line' || tool === 'rectangle'
     || tool === 'circle' || tool === 'arc' || tool === 'slot' || tool === 'polygon');
   // Geometry is clickable in select/dimension (pick), trim (cut) and chamfer
@@ -612,6 +655,7 @@ export default function SketchLayer() {
               hover(p.x, p.y);
             } else if (picking) {
               hover(p.x, p.y);
+              if (tool === 'dimension') hoverPartRef(p.x, p.y);
             }
           }}
           onPointerLeave={() => clearHover()}
@@ -628,6 +672,8 @@ export default function SketchLayer() {
           <meshBasicMaterial transparent opacity={0} depthWrite={false} side={THREE.DoubleSide} />
         </mesh>
       )}
+
+      {tool === 'dimension' && !inert && <PartRefLines hover={partRefHover} />}
 
       {preview && (
         <Line points={preview} color={PREVIEW} lineWidth={1.5} dashed dashSize={0.8} gapSize={0.5} raycast={noRaycast} />

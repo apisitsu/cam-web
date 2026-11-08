@@ -218,7 +218,7 @@ export default function FeatureTree({ embedded = false }) {
 
   const sketches = useSketchStore((s) => s.sketches);
   const activeSketchId = useSketchStore((s) => s.activeId);
-  const setActiveSketch = useSketchStore((s) => s.setActiveSketch);
+  const editSketch = useFeatureStore((s) => s.editSketch);
   const removeSketch = useSketchStore((s) => s.removeSketch);
 
   const open = useFeatureStore((s) => s.treeOpen);
@@ -268,7 +268,7 @@ export default function FeatureTree({ embedded = false }) {
           },
         ],
         onClick: ({ key }) => {
-          if (key === 'open') setActiveSketch(sk.id);
+          if (key === 'open') editSketch(sk.id);
           else if (key === 'delete') removeSketch(sk.id);
         },
       }}
@@ -276,7 +276,7 @@ export default function FeatureTree({ embedded = false }) {
       <Button
         size="small"
         type="text"
-        onClick={() => setActiveSketch(sk.id)}
+        onClick={() => editSketch(sk.id)}
         style={{
           width: '100%',
           textAlign: 'left',

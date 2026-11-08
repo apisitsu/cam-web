@@ -1,7 +1,9 @@
 import { describe, it, expect } from 'vitest';
-import { measurePick, measureResult } from './measure.js';
+import {
+  measurePick, measureResult, planePick, planeClickPick,
+} from './measure.js';
 import { weld } from './stl.js';
-import { tube } from './fixtures.js';
+import { tube, box } from './fixtures.js';
 
 /** A tube Ø40/Ø20 × 30 along Z, and a way to click the middle of a triangle of it. */
 const soup = tube(20, 10, 30, 64);
@@ -75,5 +77,106 @@ describe('measureResult — what one or two clicks measure', () => {
 
   it('is nothing before a click', () => {
     expect(measureResult([])).toEqual([]);
+  });
+});
+
+describe('reading an edge', () => {
+  const block = weld(box(40, 20, 10));
+  const onTop = (point) => measurePick(block, topTriangle(block), point, [0, 0, 1], 1);
+  function topTriangle(mesh) {
+    const { positions, indices } = mesh;
+    for (let t = 0; t < indices.length / 3; t++) {
+      if ([0, 1, 2].every((k) => Math.abs(positions[indices[t * 3 + k] * 3 + 2] - 5) < 1e-6)) return t;
+    }
+    throw new Error('no top');
+  }
+
+  it('takes a click near a straight edge as the whole edge', () => {
+    const p = onTop([0, 9.5, 5]);
+    expect(p.kind).toBe('edge');
+    expect(p.edge.length).toBeCloseTo(40, 6);
+  });
+
+  it('takes a click well inside as the face', () => {
+    expect(onTop([0, 0, 5]).kind).toBe('face');
+  });
+
+  it('reports an edge by its length', () => {
+    expect(value(measureResult([onTop([0, 9.5, 5])]), 'Edge length')).toBe('40.000 mm');
+  });
+});
+
+describe('what a pair of picks measures', () => {
+  const edge = (a, b) => ({
+    kind: 'edge', point: a, edge: { a, b, length: Math.hypot(b[0] - a[0], b[1] - a[1], b[2] - a[2]) },
+  });
+  const hole = (x, y, z = 5, r = 3) => ({ kind: 'circle', point: [x, y, z], circle: { axis: 2, center: [x, y, z], radius: r } });
+  const face = (normal, centroid, point = centroid) => ({
+    kind: 'face', point, face: { normal, centroid, area: 1 },
+  });
+
+  it('edge to hole: square to the edge, and to the wall', () => {
+    const lines = measureResult([edge([0, 20, 10], [40, 20, 10]), hole(15, 5)]);
+    expect(value(lines, 'Edge to centre')).toBe('15.000 mm');
+    expect(value(lines, 'Edge to wall')).toBe('12.000 mm');
+  });
+
+  it('edge to hole does not count how far down the bore was clicked', () => {
+    const lines = measureResult([hole(15, 5, 0.5), edge([0, 20, 10], [40, 20, 10])]);
+    expect(value(lines, 'Edge to centre')).toBe('15.000 mm');
+  });
+
+  it('plane to plane: parallel is the distance, from any two picks', () => {
+    const lines = measureResult([planePick('XY'), face([0, 0, 1], [20, 10, 10], [3, 4, 10])]);
+    expect(value(lines, 'Distance (normal)')).toBe('10.000 mm');
+    expect(value(lines, 'Distance')).toBeUndefined();
+  });
+
+  it('plane to plane: at an angle, the angle', () => {
+    expect(value(measureResult([planePick('XY'), planePick('XZ')]), 'Angle')).toBe('90.000°');
+  });
+
+  it('wall face to hole: the distance to the centre, not to where the face was clicked', () => {
+    const lines = measureResult([face([0, -1, 0], [20, 0, 5], [39, 0, 9]), hole(15, 12)]);
+    expect(value(lines, 'Distance to centre')).toBe('12.000 mm');
+    expect(value(lines, 'Distance to wall')).toBe('9.000 mm');
+  });
+
+  it('says so when a bore runs square through the plane picked', () => {
+    expect(value(measureResult([planePick('XY'), hole(5, 5)]), 'Note')).toMatch(/square/);
+  });
+
+  it('plane to edge lying along it: the distance', () => {
+    expect(value(measureResult([planePick('XZ'), edge([0, 20, 10], [40, 20, 10])]), 'Distance (normal)')).toBe('20.000 mm');
+  });
+
+  it('edge to edge: parallel distance, or the angle', () => {
+    const a = edge([0, 0, 0], [40, 0, 0]);
+    expect(value(measureResult([a, edge([0, 20, 0], [40, 20, 0])]), 'Distance (normal)')).toBe('20.000 mm');
+    expect(value(measureResult([a, edge([0, 0, 0], [0, 20, 0])]), 'Angle')).toBe('90.000°');
+  });
+
+  it('hole to hole: centres across the axis, and the wall between', () => {
+    const lines = measureResult([hole(0, 0, 1), hole(30, 40, 9)]);
+    expect(value(lines, 'Centre distance')).toBe('50.000 mm');
+    expect(value(lines, 'Between walls')).toBe('44.000 mm');
+    expect(value(lines, 'dX dY dZ')).toBe('30.000  40.000  0.000');
+  });
+});
+
+describe('a click that reaches a reference plane', () => {
+  const pipe = weld(tube(20, 10, 30, 64));
+
+  it('down a through bore means the bore', () => {
+    const p = planeClickPick(pipe, 'XY', [2, 3, 0]);
+    expect(p.kind).toBe('circle');
+    expect(p.circle.axis).toBe(2);
+    expect(p.circle.radius).toBeCloseTo(10, 1);
+    expect(p.circle.center[0]).toBeCloseTo(0, 3);
+  });
+
+  it('anywhere else means the plane', () => {
+    expect(planeClickPick(pipe, 'XY', [50, 0, 0]).kind).toBe('plane');
+    expect(planeClickPick(null, 'XY', [0, 0, 0]).kind).toBe('plane');
   });
 });

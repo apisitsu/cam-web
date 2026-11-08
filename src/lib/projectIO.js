@@ -227,7 +227,9 @@ export async function newProject() {
   for (const entry of [...sketch.sketches]) {
     useSketchStore.getState().removeSketch(entry.id);
   }
-  useSketchStore.setState({ nextSketchId: 2, past: [], future: [], error: null });
+  useSketchStore.setState({
+    nextSketchId: 2, past: [], future: [], error: null, sketchOpen: false,
+  });
 
   // The program last: parsing empties the buffers the viewport reads.
   await useCamStore.getState().parse('', null);

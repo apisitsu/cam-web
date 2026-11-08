@@ -32,6 +32,7 @@ import { useMeasureStore } from '../stores/measureStore.js';
 import { featureAtPoint } from '../engine/mesh/pickEdge.js';
 import { circlesAt, nearestCircle } from '../engine/mesh/circlePick.js';
 import { originMarkerSize, rotaryAxisLength } from '../engine/view/originMarker.js';
+import { CLICK_SLOP } from './SketchStage.jsx';
 import { CAD } from '../theme.js';
 
 /** The model to be made, distinct from the simulated stock's aluminium grey. */
@@ -43,6 +44,8 @@ const pickFor = (welded, event, point) => measurePick(
   event.faceIndex,
   point,
   event.face?.normal?.toArray() ?? [0, 0, 1],
+  // Eight pixels on screen, whatever the zoom.
+  event.camera?.zoom ? 8 / event.camera.zoom : undefined,
 );
 
 /** Flat-shaded geometry for a soup, one normal per facet (see the note at the top). */
@@ -351,8 +354,11 @@ export function FeatureHighlight({ meshVer }) {
  * has no handlers at all, so it never takes a click meant for the sketch.
  */
 export function SketchPart({ meshVer, visible = true }) {
-  const facePick = useSketchStore((s) => s.facePick);
+  const armed = useSketchStore((s) => s.facePick);
+  const sketchOpen = useSketchStore((s) => s.sketchOpen);
   const measuring = useMeasureStore((s) => s.active);
+  // With no sketch open, a click on a face starts one, as a click on a plane does.
+  const facePick = armed || (!sketchOpen && !measuring);
   const addMeasure = useMeasureStore((s) => s.add);
   const [hover, setHover] = useState(null);
   // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -396,6 +402,7 @@ export function SketchPart({ meshVer, visible = true }) {
     },
     onPointerOut: () => setHover(null),
     onClick: (event) => {
+      if (event.delta > CLICK_SLOP) return; // the end of an orbit drag
       event.stopPropagation();
       const face = faceUnder(event);
       if (!face) return;
@@ -414,7 +421,10 @@ export function SketchPart({ meshVer, visible = true }) {
         name="built-part"
         geometry={geometry}
         renderOrder={-1}
-        onAfterRender={(renderer) => renderer.clearDepth()}
+        onAfterRender={(renderer) => {
+          // Only over an open sketch: the reference planes belong behind the part.
+          if (useSketchStore.getState().sketchOpen) renderer.clearDepth();
+        }}
         {...measure}
         {...pick}
       >
@@ -452,6 +462,8 @@ export function MeasureMarks({ meshVer, raw = false }) {
         if (built) out.push(built.geometry);
       }
       if (p.kind === 'circle') out.push(...circleMarkerGeometry(p.circle, size));
+      else if (p.kind === 'plane') out.push(planeMarkerGeometry(p, size * 3));
+      else if (p.kind === 'edge') out.push(edgeMarkerGeometry(p.edge, size * 0.02));
       else {
         const dot = new THREE.SphereGeometry(size * 0.04, 12, 8);
         dot.translate(p.point[0], p.point[1], p.point[2]);
@@ -476,6 +488,26 @@ export function MeasureMarks({ meshVer, raw = false }) {
       ))}
     </group>
   );
+}
+
+/** A square of the reference plane, around the frame's origin. */
+function planeMarkerGeometry({ u, v }, half) {
+  const corner = (a, b) => [0, 1, 2].map((k) => u[k] * a * half + v[k] * b * half);
+  const g = new THREE.BufferGeometry();
+  g.setAttribute('position', new THREE.Float32BufferAttribute(
+    [[-1, -1], [1, -1], [1, 1], [-1, -1], [1, 1], [-1, 1]].flatMap(([a, b]) => corner(a, b)),
+    3,
+  ));
+  return g;
+}
+
+/** A thin bar along a picked edge: a real solid, for the reason `circleMarkerGeometry` gives. */
+function edgeMarkerGeometry({ a, b, length }, radius) {
+  const bar = new THREE.CylinderGeometry(radius, radius, length, 8);
+  const along = new THREE.Vector3(b[0] - a[0], b[1] - a[1], b[2] - a[2]).normalize();
+  bar.applyQuaternion(new THREE.Quaternion().setFromUnitVectors(new THREE.Vector3(0, 1, 0), along));
+  bar.translate((a[0] + b[0]) / 2, (a[1] + b[1]) / 2, (a[2] + b[2]) / 2);
+  return bar;
 }
 
 /** A ring and a centre dot, as one geometry per part, for a circle in the mesh's own frame. */

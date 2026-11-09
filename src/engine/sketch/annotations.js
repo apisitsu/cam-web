@@ -220,7 +220,7 @@ export function dimensionAnnotations(sk, { z: Z = 0 } = {}) {
       // The interior corner angle actually swept, so a 60° corner reads 60° and
       // not the 120° directed angle planegcs stores.
       labels.push({
-        key: `b${k++}`, ci, text: `${fmtDim((Math.abs(d) * 180) / Math.PI)}°`, pos: at(mid, r + 2),
+        key: `b${k++}`, ci, text: `${fmtDim((Math.abs(d) * 180) / Math.PI)}°`, pos: at(mid, r),
       });
     } else if (c.kind === 'lockX' || c.kind === 'lockY') {
       const p = P(c.refs[0]);

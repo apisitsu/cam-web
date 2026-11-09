@@ -580,7 +580,9 @@ export default function SketchLayer() {
   const baseGeom = overDefined ? CAD.skOver : dofState?.state === 'full' ? CAD.skFull : GEOM;
   // While an angle dimension is being entered, colour its base (fixed reference)
   // and rotating line distinctly so it's clear which one moves to the set angle.
-  const angleBase = dimensionPending?.angular ? dimensionPending.refs[0] : null;
+  const mirrorLine = useSketchStore((s) => (s.mirrorPending ? s.mirrorAxis() : null));
+  const patternCentre = useSketchStore((s) => (s.circularPatternPending ? s.circularCenterId : null));
+  const angleBase = dimensionPending?.angular ? dimensionPending.refs[0] : mirrorLine;
   const angleRotate = dimensionPending?.angular ? dimensionPending.refs[1] : null;
 
   // The live drawing endpoint: a positional snap (vertex / rim / tangent) wins,
@@ -923,7 +925,7 @@ export default function SketchLayer() {
 
       {points.map((p) => {
         const isSel = selected.has(p.id);
-        const isPending = p.id === pending;
+        const isPending = p.id === pending || p.id === patternCentre;
         const isHover = selecting && !isSel && hoverId === p.id;
         const onDown = (e) => {
           // Select mode: grab the point for a drag (SW drag-to-modify). The origin

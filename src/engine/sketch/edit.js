@@ -2214,6 +2214,49 @@ export function projectOnto(offset, dir) {
   return [t * dir[0] + 0, t * dir[1] + 0];
 }
 
+/** Of `ids`, the ones a pattern can repeat: geometry and points, never the origin or a part reference. */
+export function patternSeeds(sk, ids) {
+  return ids.filter((id) => {
+    const e = sk.entities.get(id);
+    return e && !e.origin && !e.ref && ['point', 'line', 'circle', 'arc'].includes(e.type);
+  });
+}
+
+/**
+ * Where the first of `seeds` sits about `center`: the PCD it is on and its angle
+ * from +X (0–360°). A point is measured at itself, a circle or arc at its centre,
+ * a line at its middle.
+ */
+export function seedPolar(sk, seeds, center) {
+  const P = (id) => sk.entities.get(id);
+  const e = P(seeds[0]);
+  if (!e || !center) return null;
+  let anchor = e;
+  if (e.type === 'circle' || e.type === 'arc') anchor = P(e.center);
+  else if (e.type === 'line') anchor = { x: (P(e.p1).x + P(e.p2).x) / 2, y: (P(e.p1).y + P(e.p2).y) / 2 };
+  const dx = anchor.x - center.x;
+  const dy = anchor.y - center.y;
+  return {
+    anchor: { x: anchor.x, y: anchor.y },
+    pcd: 2 * Math.hypot(dx, dy),
+    startDeg: ((Math.atan2(dy, dx) * 180) / Math.PI + 360) % 360,
+  };
+}
+
+/** Shift `ids` and the points they hang from; a fixed point stays where it is. */
+export function moveEntities(sk, ids, dx, dy) {
+  const points = new Set();
+  const FIELDS = { point: ['id'], line: ['p1', 'p2'], circle: ['center'], arc: ['center', 'start', 'end'] };
+  for (const id of ids) {
+    const e = sk.entities.get(id);
+    for (const f of FIELDS[e?.type] ?? []) points.add(e[f]);
+  }
+  for (const id of points) {
+    const p = sk.entities.get(id);
+    if (p && !p.fixed && !p.origin) { p.x += dx; p.y += dy; }
+  }
+}
+
 /**
  * Capture a self-contained copy of `ids` (points/lines/circles/arcs) — pulling
  * in every point a selected line/circle/arc references, so the capture never
@@ -2297,12 +2340,14 @@ export function hydrateSnapshot(sk, snapshot, transform) {
   const real = new Map(); // local id -> real sketch id
   const created = [];
   const stampConstruction = (id, construction) => { if (construction) sk.entities.get(id).construction = true; };
+  const anchored = new Set(snapshot.entities.flatMap((e) => [e.p1, e.p2, e.center, e.start, e.end]));
   for (const e of snapshot.entities) {
     if (e.type !== 'point') continue;
     const t = transform(e.x, e.y);
     const id = addPoint(sk, t.x, t.y);
     stampConstruction(id, e.construction);
     real.set(e.local, id);
+    if (!anchored.has(e.local)) created.push(id); // a point on its own is itself what was copied
   }
   for (const e of snapshot.entities) {
     let id = null;

@@ -276,6 +276,8 @@ describe('dimensionAnnotations — angle', () => {
     expect(Math.max(...radii) - Math.min(...radii)).toBeLessThan(1e-6);
     // A 60° corner must read 60, not the 120° supplement.
     expect(labels[0].text).toBe('60°');
+    // And the value sits on the arc, like a length on its line.
+    expect(Math.hypot(labels[0].pos[0], labels[0].pos[1])).toBeCloseTo(radii[0], 6);
   });
 
   it('takes the shorter sweep between the legs', () => {

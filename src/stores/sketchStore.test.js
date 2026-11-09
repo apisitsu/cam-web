@@ -959,8 +959,7 @@ describe('linearPattern', () => {
 
   it('errors when nothing patternable is selected', () => {
     const sk = createSketch();
-    const p = addPoint(sk, 0, 0);
-    useSketchStore.setState({ sk, selection: [p], past: [], error: null });
+    useSketchStore.setState({ sk, selection: [], past: [], error: null });
     useSketchStore.getState().linearPattern(3, 10, 0);
     expect(useSketchStore.getState().error).toMatch(/select/i);
   });
@@ -1001,8 +1000,11 @@ describe('circularPattern', () => {
     const { sk } = withOrigin();
     const centerPt = addPoint(sk, 100, 100);
     const c = addCircle(sk, addPoint(sk, 110, 100), 2); // 10mm right of the custom centre
-    useSketchStore.setState({ sk, selection: [c, centerPt], past: [], error: null });
+    useSketchStore.setState({
+      sk, selection: [c], past: [], error: null, circularAbout: 'point', circularCenterId: centerPt,
+    });
     useSketchStore.getState().circularPattern(2, 360);
+    useSketchStore.setState({ circularAbout: 'origin', circularCenterId: null });
     const circles = [...sk.entities.values()].filter((e) => e.type === 'circle');
     expect(circles.length).toBe(2);
     const second = circles.find((cc) => cc.id !== c);

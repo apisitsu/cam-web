@@ -22,7 +22,7 @@ import {
   deleteEntity, removeConstraint, chamfer as chamferEdit, fillet as filletEdit,
   filletLineArc as filletLineArcEdit, filletArcArc as filletArcArcEdit,
   filletCircleCircle as filletCircleCircleEdit, linesShareCorner,
-  trimLine, trimCircle, trimArc, mirror as mirrorEdit, sketchAxisLine, offsetChain,
+  trimLine, trimCircle, trimArc, mirror as mirrorEdit, sketchAxisLine, patternSeeds, seedPolar, moveEntities, offsetChain,
   distancePointToLine, farEndpointFromLine, nearestRimPoint, nearestTangent,
   nearestIntersection, nearestQuadrant, nearestMidpoint, entitiesInBox, angleGuide,
   measureConstraint, lineArcMeet, arcArcMeet, angleSpec, interiorAngleToModel,
@@ -179,9 +179,12 @@ export const useSketchStore = create((set, get) => ({
   sketchOpen: false, // a sketch is being edited; false on the Sketch page means a plane or face is picked to start one
   mirrorPending: false, // true while the Mirror panel waits for the entities and the axis to be picked
   mirrorAbout: null, // what the Mirror panel was told to mirror about: 'x', 'y', 'line', or null until it is
+  mirrorAxisId: null, // the line clicked as the axis, once mirrorAbout is 'line'
   partRefHover: null, // the part edge or corner a dimension click would take right now
   linearPatternPending: false, // true while the Linear Pattern rail button is waiting for count/spacing
   circularPatternPending: false, // true while the Circular Pattern rail button is waiting for count/angle
+  circularAbout: 'origin', // what a Circular Pattern turns about: 'origin', or 'point' for one clicked
+  circularCenterId: null, // the point clicked as the centre, once circularAbout is 'point'
   clipboard: null, // snapshotEntities() capture from the last Copy — lives on the store (not per sketch), so Paste works after switching sketches
   pasteCount: 0, // successive pastes of the same clipboard step further out each time; reset on a fresh Copy
   editingConstraint: null, // { index, kind, label, angular, value } set when a placed dimension is double-clicked → shows the edit input
@@ -670,11 +673,31 @@ export const useSketchStore = create((set, get) => ({
    * selection. Shared by every picker so nothing pokes `selection` directly.
    */
   toggleSelect(id) {
+    if (get()._takeAsAxisOrCentre(id)) return;
     const sel = get().selection.slice();
     const i = sel.indexOf(id);
     if (i >= 0) sel.splice(i, 1);
     else sel.push(id);
     set({ selection: sel });
+  },
+
+  /** A panel waiting for its axis or centre takes the click as that, not as something to act on. */
+  _takeAsAxisOrCentre(id) {
+    const {
+      sk, selection, mirrorPending, mirrorAbout, mirrorAxisId, circularPatternPending, circularAbout, circularCenterId,
+    } = get();
+    const e = sk.entities.get(id);
+    const without = selection.filter((x) => x !== id);
+    if (mirrorPending && mirrorAbout === 'line') {
+      if (id === mirrorAxisId) { set({ mirrorAxisId: null }); return true; }
+      if (mirrorAxisId == null && e?.type === 'line') { set({ mirrorAxisId: id, selection: without }); return true; }
+    }
+    if (circularPatternPending && circularAbout === 'point') {
+      const centre = e?.type === 'circle' || e?.type === 'arc' ? e.center : (e?.type === 'point' ? id : null);
+      if (centre != null && centre === circularCenterId) { set({ circularCenterId: null }); return true; }
+      if (circularCenterId == null && centre != null) { set({ circularCenterId: centre, selection: without }); return true; }
+    }
+    return false;
   },
 
   // ---- Rubber-band (marquee) selection --------------------------------------
@@ -1683,28 +1706,30 @@ export const useSketchStore = create((set, get) => ({
   },
 
   /**
-   * What a mirror goes about: 'x' or 'y' when that was chosen; otherwise a
-   * construction line if one is picked, and, when Line was chosen, the last line
-   * picked. A box selection has no last line that means anything, so that is never
-   * guessed at.
+   * What a mirror goes about: 'x' or 'y', or the line clicked once Line was chosen.
+   * With nothing chosen, a centerline among the picks is the axis; any other line
+   * might as well be something to mirror, so that is never guessed at.
    */
   mirrorAxis() {
-    const { sk, selection, mirrorAbout } = get();
+    const {
+      sk, selection, mirrorAbout, mirrorAxisId,
+    } = get();
     if (mirrorAbout === 'x' || mirrorAbout === 'y') return mirrorAbout;
-    const lines = selection.filter((id) => sk.entities.get(id)?.type === 'line');
-    const centerline = lines.find((id) => sk.entities.get(id).construction);
-    if (centerline != null) return centerline;
-    return mirrorAbout === 'line' ? (lines[lines.length - 1] ?? null) : null;
+    if (mirrorAbout === 'line') return sk.entities.has(mirrorAxisId) ? mirrorAxisId : null;
+    return selection.find((id) => {
+      const e = sk.entities.get(id);
+      return e?.type === 'line' && e.construction;
+    }) ?? null;
   },
 
   /** Open the Mirror panel; what to mirror and the axis are picked with it open. */
   beginMirror() {
     get().setTool('select');
-    set({ mirrorPending: true, mirrorAbout: null });
+    set({ mirrorPending: true, mirrorAbout: null, mirrorAxisId: null });
   },
 
   setMirrorAbout(mirrorAbout) {
-    set({ mirrorAbout });
+    set({ mirrorAbout, mirrorAxisId: null });
   },
 
   cancelMirror() {
@@ -1788,7 +1813,7 @@ export const useSketchStore = create((set, get) => ({
   },
 
   /**
-   * Stamp `count` copies of the selected lines/circles/arcs in a straight
+   * Stamp `count` copies of the selected points/lines/circles/arcs in a straight
    * line, (`dx`, `dy`) mm apart (SW "Linear Pattern" — one direction; run it
    * twice for a grid). `count` is the total instances **including** the
    * original, which stays exactly where it is — only `count - 1` new copies
@@ -1799,11 +1824,8 @@ export const useSketchStore = create((set, get) => ({
    */
   linearPattern(count, dx, dy) {
     const { sk, selection } = get();
-    const geom = selection.filter((id) => {
-      const t = sk.entities.get(id)?.type;
-      return t === 'line' || t === 'circle' || t === 'arc';
-    });
-    if (!geom.length) { set({ error: 'Select lines/circles/arcs to pattern' }); return; }
+    const geom = patternSeeds(sk, selection);
+    if (!geom.length) { set({ error: 'Select points, lines, circles or arcs to pattern' }); return; }
     const n = Math.round(count);
     if (!(n >= 2 && n <= 200)) { set({ error: 'Count must be 2–200' }); return; }
     if (!Number.isFinite(dx) || !Number.isFinite(dy) || (dx === 0 && dy === 0)) {
@@ -1825,10 +1847,10 @@ export const useSketchStore = create((set, get) => ({
     get().solve();
   },
 
-  /** Open the inline count/angle entry for Circular Pattern (the rail button). */
+  /** Open the inline entry for Circular Pattern (the rail button). */
   beginCircularPattern() {
     get().setTool('select');
-    set({ circularPatternPending: true });
+    set({ circularPatternPending: true, circularAbout: 'origin', circularCenterId: null });
   },
 
   /** Dismiss the inline Circular Pattern input without applying. */
@@ -1836,41 +1858,66 @@ export const useSketchStore = create((set, get) => ({
     set({ circularPatternPending: false });
   },
 
+  setCircularAbout(circularAbout) {
+    set({ circularAbout, circularCenterId: null });
+  },
+
+  /** The point a Circular Pattern turns about: the origin, or the one clicked. */
+  circularCenter() {
+    const { sk, circularAbout, circularCenterId } = get();
+    if (circularAbout === 'point') return sk.entities.get(circularCenterId) ?? null;
+    return [...sk.entities.values()].find((e) => e.origin) ?? null;
+  },
+
+  /** What a Circular Pattern will repeat. */
+  circularSeeds() {
+    const { sk, selection, circularCenterId } = get();
+    return patternSeeds(sk, selection.filter((id) => id !== circularCenterId));
+  },
+
+  /** Where the first thing being repeated sits about the centre: `{ pcd, startDeg, anchor }`. */
+  circularPolar() {
+    return seedPolar(get().sk, get().circularSeeds(), get().circularCenter());
+  },
+
   /**
-   * Stamp `count` copies of the selected lines/circles/arcs in a circle about
-   * a centre — a point in the selection besides the geometry being patterned,
-   * if there is one, else the sketch origin (SW "Circular Pattern"). `count`
-   * includes the original, same convention as `linearPattern`. A full 360°
-   * sweep (the default) spaces every copy evenly all the way around; a
-   * smaller `angleDeg` fans them out from the original across just that much.
+   * Stamp `count` copies of the selection in a circle about the centre (SW
+   * "Circular Pattern"); `count` includes the original. A full 360° sweep spaces
+   * them evenly all the way round, a smaller one fans them from the original to
+   * its far end, and with `byStep`, `angleDeg` is the angle between neighbours.
+   * A `pcd` or `startDeg` moves the original onto that diameter or angle first.
    */
-  circularPattern(count, angleDeg) {
-    const { sk, selection } = get();
-    const geom = selection.filter((id) => {
-      const t = sk.entities.get(id)?.type;
-      return t === 'line' || t === 'circle' || t === 'arc';
-    });
-    if (!geom.length) { set({ error: 'Select lines/circles/arcs to pattern' }); return; }
+  circularPattern(count, angleDeg, { pcd = null, startDeg = null, byStep = false } = {}) {
+    const { sk } = get();
+    const seeds = get().circularSeeds();
+    if (!seeds.length) { set({ error: 'Select points, lines, circles or arcs to pattern' }); return; }
     const n = Math.round(count);
     if (!(n >= 2 && n <= 200)) { set({ error: 'Count must be 2–200' }); return; }
     if (!Number.isFinite(angleDeg) || angleDeg === 0) { set({ error: 'Pattern needs a non-zero sweep angle' }); return; }
-    const centerPointId = selection.find((id) => !geom.includes(id) && sk.entities.get(id)?.type === 'point');
-    const originId = [...sk.entities.values()].find((e) => e.origin)?.id;
-    const cid = centerPointId ?? originId;
-    const center = cid != null ? sk.entities.get(cid) : null;
+    const center = get().circularCenter();
     if (!center) { set({ error: 'No centre to pattern about' }); return; }
-    const snap = snapshotEntities(sk, geom);
-    if (!snap) { set({ error: 'Nothing could be patterned' }); return; }
+    if (pcd != null && !(pcd > 0)) { set({ error: 'The PCD must be more than 0' }); return; }
+    const polar = seedPolar(sk, seeds, center);
+    const radius = (pcd ?? polar.pcd) / 2;
+    if (!(radius > 1e-9)) { set({ error: 'That sits on the centre — enter a PCD to put it on' }); return; }
+
     get()._snapshot();
+    if (pcd != null || startDeg != null) {
+      const a = (startDeg ?? polar.startDeg) * DEG;
+      moveEntities(sk, seeds, center.x + radius * Math.cos(a) - polar.anchor.x, center.y + radius * Math.sin(a) - polar.anchor.y);
+    }
+    const snap = snapshotEntities(sk, seeds);
+    if (!snap) { get()._undoSnapshot(); set({ error: 'Nothing could be patterned' }); return; }
     // A full sweep spaces n copies evenly all the way around (step = 360°/n,
     // so the gap from the last copy back to the original matches every other
     // gap); a partial sweep fans them from the original to the sweep's far
     // end (step = angle/(n-1)).
     const full = Math.abs(angleDeg) >= 360 - 1e-6;
-    const step = (full ? 360 / n : angleDeg / (n - 1)) * DEG;
+    let stepDeg = full ? 360 / n : angleDeg / (n - 1);
+    if (byStep) stepDeg = angleDeg;
     const created = [];
     for (let i = 1; i < n; i += 1) {
-      const a = step * i;
+      const a = stepDeg * DEG * i;
       const cos = Math.cos(a);
       const sin = Math.sin(a);
       created.push(...hydrateSnapshot(sk, snap, (x, y) => {

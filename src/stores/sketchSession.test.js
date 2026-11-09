@@ -219,12 +219,15 @@ describe('the modify tools can be pressed before anything is picked', () => {
     expect([...sk.entities.values()].filter((e) => e.type === 'point' && e.x === 0 && e.y === 0)).toHaveLength(1);
   });
 
-  it('mirrors about the last line picked once Line is chosen', () => {
+  it('takes the first line clicked after Centerline / Line as the axis, not as something to mirror', () => {
     const { a, b } = twoLines();
     sketch().beginMirror();
-    sketch().toggleSelect(a);
-    sketch().toggleSelect(b);
     sketch().setMirrorAbout('line');
+    sketch().toggleSelect(b);
+    expect(sketch().mirrorAxis()).toBe(b);
+    expect(sketch().selection).toEqual([]);
+    sketch().toggleSelect(a);
+    expect(sketch().selection).toEqual([a]);
     expect(sketch().mirrorAxis()).toBe(b);
     const lines = () => [...sketch().sk.entities.values()].filter((e) => e.type === 'line').length;
     const before = lines();
@@ -233,12 +236,98 @@ describe('the modify tools can be pressed before anything is picked', () => {
     expect(sketch().mirrorPending).toBe(false);
   });
 
+  it('clicking the chosen axis again lets another be picked', () => {
+    const { a, b } = twoLines();
+    sketch().beginMirror();
+    sketch().setMirrorAbout('line');
+    sketch().toggleSelect(b);
+    sketch().toggleSelect(b);
+    expect(sketch().mirrorAxis()).toBeNull();
+    sketch().toggleSelect(a);
+    expect(sketch().mirrorAxis()).toBe(a);
+  });
+
   it('a construction line is the axis wherever it comes in the picking', () => {
     const { a, b } = twoLines();
     sketch().sk.entities.get(a).construction = true;
+    sketch().beginMirror();
     sketch().toggleSelect(a);
     sketch().toggleSelect(b);
     expect(sketch().mirrorAxis()).toBe(a);
+  });
+});
+
+describe('patterns of points', () => {
+  const at = (id) => [sketch().sk.entities.get(id).x, sketch().sk.entities.get(id).y];
+  const closeTo = (got, want) => { expect(got[0]).toBeCloseTo(want[0], 6); expect(got[1]).toBeCloseTo(want[1], 6); };
+  const freePoint = (x, y) => { const id = addPoint(sketch().sk, x, y); sketch()._bump(); return id; };
+
+  it('repeats a point in a line', () => {
+    const p = freePoint(5, 5);
+    sketch().beginLinearPattern();
+    sketch().toggleSelect(p);
+    sketch().linearPattern(3, 10, 0);
+    expect(sketch().linearPatternPending).toBe(false);
+    expect(sketch().selection).toHaveLength(2);
+    closeTo(at(sketch().selection[1]), [25, 5]);
+  });
+
+  it('repeats a point round the origin where it already is', () => {
+    const p = freePoint(20, 0);
+    sketch().beginCircularPattern();
+    sketch().toggleSelect(p);
+    expect(sketch().circularPolar().pcd).toBeCloseTo(40, 6);
+    sketch().circularPattern(4, 360);
+    expect(at(p)).toEqual([20, 0]);
+    expect(sketch().selection).toHaveLength(3);
+    closeTo(at(sketch().selection[0]), [0, 20]);
+  });
+
+  it('puts it on the PCD and start angle asked for', () => {
+    const p = freePoint(20, 0);
+    sketch().beginCircularPattern();
+    sketch().toggleSelect(p);
+    sketch().circularPattern(2, 360, { pcd: 100, startDeg: 90 });
+    closeTo(at(p), [0, 50]);
+    closeTo(at(sketch().selection[0]), [0, -50]);
+  });
+
+  it('steps by the angle between neighbours', () => {
+    const p = freePoint(10, 0);
+    sketch().beginCircularPattern();
+    sketch().toggleSelect(p);
+    sketch().circularPattern(3, 30, { byStep: true });
+    closeTo(at(sketch().selection[1]), [10 * Math.cos(Math.PI / 3), 10 * Math.sin(Math.PI / 3)]);
+  });
+
+  it('turns about a clicked point, which is not itself repeated', () => {
+    const centre = freePoint(100, 100);
+    const p = freePoint(110, 100);
+    sketch().beginCircularPattern();
+    sketch().setCircularAbout('point');
+    sketch().toggleSelect(centre);
+    expect(sketch().selection).toEqual([]);
+    sketch().toggleSelect(p);
+    expect(sketch().circularSeeds()).toEqual([p]);
+    sketch().circularPattern(2, 360);
+    closeTo(at(sketch().selection[0]), [90, 100]);
+  });
+
+  it('refuses what sits on the centre until a PCD puts it somewhere', () => {
+    const p = freePoint(0, 0);
+    sketch().beginCircularPattern();
+    sketch().toggleSelect(p);
+    sketch().circularPattern(4, 360);
+    expect(sketch().error).toMatch(/enter a PCD/);
+    sketch().circularPattern(4, 360, { pcd: 20, startDeg: 0 });
+    closeTo(at(p), [10, 0]);
+  });
+
+  it('never repeats the origin', () => {
+    const origin = [...sketch().sk.entities.values()].find((e) => e.origin).id;
+    sketch().beginCircularPattern();
+    useSketchStore.setState({ selection: [origin] });
+    expect(sketch().circularSeeds()).toEqual([]);
   });
 });
 

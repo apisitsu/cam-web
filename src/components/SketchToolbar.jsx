@@ -18,6 +18,7 @@ import { createPortal } from 'react-dom';
 import { useSketchStore } from '../stores/sketchStore.js';
 import { useCamPlanStore } from '../stores/camPlanStore.js';
 import { useCamStore } from '../stores/camStore.js';
+import { patternSeeds } from '../engine/sketch/edit.js';
 import { PLANE_PRESETS, planeBasis } from '../engine/sketch/plane.js';
 import { useFeatureStore } from '../stores/featureStore.js';
 import RibbonButton from './RibbonButton.jsx';
@@ -543,15 +544,15 @@ const geomCount = (s) => s.selection.filter((id) => {
 }).length;
 
 /** How many entities the open panel will act on, or the prompt to pick some. */
-function PickPrompt({ count }) {
+function PickPrompt({ count, empty = 'Click the geometry in the sketch' }) {
   return (
     <Text style={{ color: count ? CAD.dim : CAD.skOver, fontSize: 11, whiteSpace: 'nowrap' }}>
-      {count ? `${count} selected` : 'Click the geometry in the sketch'}
+      {count ? `${count} selected` : empty}
     </Text>
   );
 }
 
-const MIRROR_AXES = [['x', 'X axis'], ['y', 'Y axis'], ['line', 'Line']];
+const MIRROR_AXES = [['x', 'X axis'], ['y', 'Y axis'], ['line', 'Centerline / Line']];
 
 /** Mirror: pick what to mirror and say what about, with the panel open. */
 function MirrorInput() {
@@ -562,13 +563,13 @@ function MirrorInput() {
   const setAbout = useSketchStore((s) => s.setMirrorAbout);
   const selected = useSketchStore((s) => s.selection.length);
   const axis = useSketchStore((s) => s.mirrorAxis());
+  const axisPicked = useSketchStore((s) => s.selection.includes(s.mirrorAxis()));
 
   if (!mirrorPending) return null;
-  // A picked axis line is in the selection without being mirrored.
-  const count = axis === 'x' || axis === 'y' ? selected : selected - 1;
+  const count = axisPicked ? selected - 1 : selected;
   const ready = axis != null && count >= 1;
   let prompt = `${count} to mirror`;
-  if (axis == null) prompt = about === 'line' ? 'Click the line to mirror about, last' : 'Choose what to mirror about';
+  if (axis == null) prompt = about === 'line' ? 'Click the centerline or line to mirror about' : 'Choose what to mirror about';
   else if (!ready) prompt = 'Click what to mirror';
 
   return (
@@ -631,10 +632,10 @@ function OffsetInput() {
 /**
  * Inline count/spacing entry for Linear Pattern — the rail button arms it
  * (`linearPatternPending`), matching how Offset takes its distance. `dX`/`dY`
- * are the step between consecutive copies (either may be 0, not both).
+ * are the step between instances, so a horizontal row is just dY = 0.
  */
 function LinearPatternInput() {
-  const picked = useSketchStore(geomCount);
+  const picked = useSketchStore((s) => patternSeeds(s.sk, s.selection).length);
   const linearPatternPending = useSketchStore((s) => s.linearPatternPending);
   const linearPattern = useSketchStore((s) => s.linearPattern);
   const cancelLinearPattern = useSketchStore((s) => s.cancelLinearPattern);
@@ -654,9 +655,10 @@ function LinearPatternInput() {
         background: CAD.glassSolid, border: `1px solid ${CAD.skTangent}`,
         padding: '6px 10px', borderRadius: 4, boxShadow: FLOAT_SHADOW,
       }}
+      data-linear-panel
     >
       <Text style={{ color: CAD.icon, fontSize: 12 }}>Linear Pattern</Text>
-      <PickPrompt count={picked} />
+      <PickPrompt count={picked} empty="Click the points or geometry to repeat" />
       <Tooltip title="Instances — total copies including the original">
         <InputNumber controls={false} size="small" min={2} max={200} value={count} onChange={(v) => setCount(v ?? 2)} style={{ width: 56 }} />
       </Tooltip>
@@ -668,40 +670,71 @@ function LinearPatternInput() {
   );
 }
 
+const PATTERN_CENTRES = [['origin', 'Origin'], ['point', 'Point']];
+const round3 = (v) => Math.round(v * 1000) / 1000;
+
 /**
- * Inline count/angle entry for Circular Pattern — same arming pattern as
- * Linear Pattern. The centre is whichever selected point isn't part of the
- * geometry being patterned, else the sketch origin (`circularPattern` picks
- * it); there's nothing to configure for it here.
+ * Inline entry for Circular Pattern: what it turns about, how many, the PCD and
+ * start angle of the first one, and either the total sweep or the step between
+ * neighbours. PCD and start read where the first pick already is, until edited.
  */
 function CircularPatternInput() {
-  const picked = useSketchStore(geomCount);
+  const picked = useSketchStore((s) => s.circularSeeds().length);
   const circularPatternPending = useSketchStore((s) => s.circularPatternPending);
   const circularPattern = useSketchStore((s) => s.circularPattern);
   const cancelCircularPattern = useSketchStore((s) => s.cancelCircularPattern);
+  const about = useSketchStore((s) => s.circularAbout);
+  const setAbout = useSketchStore((s) => s.setCircularAbout);
+  const hasCentre = useSketchStore((s) => s.circularCenter() != null);
+  const seedKey = useSketchStore((s) => `${s.version}|${s.selection.join()}|${s.circularAbout}|${s.circularCenterId}`);
   const [count, setCount] = useState(6);
   const [angle, setAngle] = useState(360);
+  const [byStep, setByStep] = useState(false);
+  const [pcd, setPcd] = useState(null);
+  const [start, setStart] = useState(null);
+  useEffect(() => { setPcd(null); setStart(null); }, [seedKey]);
 
   if (!circularPatternPending) return null;
-  const apply = () => { if (picked && Number.isFinite(count) && Number.isFinite(angle) && angle !== 0) circularPattern(count, angle); };
+  const polar = useSketchStore.getState().circularPolar();
+  const ready = picked > 0 && hasCentre && Number.isFinite(angle) && angle !== 0;
+  const apply = () => { if (ready && Number.isFinite(count)) circularPattern(count, angle, { pcd, startDeg: start, byStep }); };
+  const chooseStep = (step) => {
+    setByStep(step);
+    setAngle(step ? round3(360 / Math.max(count, 1)) : 360);
+  };
 
   return (
     <div
       onKeyDown={(e) => { if (e.key === 'Escape') cancelCircularPattern(); }}
       style={{
         position: 'absolute', top: 60, left: 12, zIndex: 6,
-        display: 'flex', gap: 6, alignItems: 'center',
+        display: 'flex', flexWrap: 'wrap', gap: 6, alignItems: 'center', maxWidth: 'calc(100% - 24px)',
         background: CAD.glassSolid, border: `1px solid ${CAD.skTangent}`,
         padding: '6px 10px', borderRadius: 4, boxShadow: FLOAT_SHADOW,
       }}
+      data-circular-panel
     >
-      <Text style={{ color: CAD.icon, fontSize: 12 }}>Circular Pattern</Text>
-      <PickPrompt count={picked} />
+      <Text style={{ color: CAD.icon, fontSize: 12 }}>Circular Pattern about</Text>
+      {PATTERN_CENTRES.map(([value, label]) => (
+        <Button key={value} size="small" type={about === value ? 'primary' : 'default'} onClick={() => setAbout(value)}>{label}</Button>
+      ))}
+      <PickPrompt
+        count={hasCentre ? picked : 0}
+        empty={hasCentre ? 'Click the points or geometry to repeat' : 'Click the centre point'}
+      />
       <Tooltip title="Instances — total copies including the original">
         <InputNumber controls={false} size="small" min={2} max={200} value={count} onChange={(v) => setCount(v ?? 2)} style={{ width: 56 }} />
       </Tooltip>
-      <UnitInput autoFocus value={angle} onChange={(v) => setAngle(v ?? 0)} onPressEnter={apply} unit="° sweep" width={110} />
-      <Button size="small" type="primary" disabled={!picked} onClick={apply}>Set</Button>
+      <UnitInput value={pcd ?? (polar ? round3(polar.pcd) : null)} onChange={setPcd} onPressEnter={apply} unit="PCD mm" width={80} />
+      <UnitInput value={start ?? (polar ? round3(polar.startDeg) : null)} onChange={setStart} onPressEnter={apply} unit="° start" width={70} />
+      <Segmented
+        size="small"
+        value={byStep ? 'step' : 'sweep'}
+        onChange={(v) => chooseStep(v === 'step')}
+        options={[{ value: 'sweep', label: 'Sweep' }, { value: 'step', label: 'Step' }]}
+      />
+      <UnitInput autoFocus value={angle} onChange={(v) => setAngle(v ?? 0)} onPressEnter={apply} unit="°" width={70} />
+      <Button size="small" type="primary" disabled={!ready} onClick={apply}>Set</Button>
       <Button size="small" type="text" style={{ color: CAD.label }} onClick={cancelCircularPattern}>✕</Button>
     </div>
   );
@@ -906,7 +939,7 @@ export default function SketchToolbar({ ribbonSlot = null }) {
           onClick={() => beginLinearPattern()}
         />
       </Tooltip>
-      <Tooltip title="Circular Pattern — stamp copies of the selection around a centre (a selected point, else the origin)" placement="bottom">
+      <Tooltip title="Circular Pattern — stamp copies of the selection around a centre, on a PCD" placement="bottom">
         <RibbonButton
           icon={<CircularPatternIcon />}
           label="Circular Pattern"

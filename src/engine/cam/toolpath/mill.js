@@ -14,10 +14,11 @@
  * Pure functions. No React, no store, no DOM.
  */
 
-import { sliceLoops } from '../../mesh/slice.js';
-import { zLevels } from '../../mesh/slice.js';
 import {
-  offsetLoops, clearingRings, differenceLoops, rectLoop, perimeterOf, areaOf,
+  sliceLoops, zLevels, normalizeLoops, eachTriangle,
+} from '../../mesh/slice.js';
+import {
+  offsetLoops, clearingRings, differenceLoops, booleanLoops, rectLoop, perimeterOf, areaOf,
 } from '../offset.js';
 import { millingSpeeds, millingEngagement, drillingSpeeds } from '../feeds.js';
 
@@ -52,6 +53,87 @@ function cutLoop(moves, loop, z, safeZ, plungeZ) {
   moves.push({ t: 'feed', x: loop[0], y: loop[1], z }); // close it
   moves.push({ t: 'rapid', x: loop[0], y: loop[1], z: safeZ });
 }
+
+/** Coarsest spacing (mm) the part is sampled at for what hangs over a cutting level. */
+const SHADOW_STEP = 0.5;
+/** Most samples the shadow takes over the whole part, so a tall one stays quick. */
+const SHADOW_SAMPLES = 200;
+/** How far either side of a flat face it is sectioned, to catch thin flanges. */
+const FLAT_OFFSET = 1e-3;
+
+/** The heights of the part's flat faces, highest first. */
+function flatHeights(mesh, part) {
+  const seen = new Set();
+  eachTriangle(mesh, (a, b, c, p) => {
+    if (Math.abs(p[a + 2] - p[b + 2]) < 1e-5 && Math.abs(p[a + 2] - p[c + 2]) < 1e-5) {
+      seen.add(Number(p[a + 2].toFixed(3)));
+    }
+  });
+  return [...seen].filter((z) => z <= part.top && z >= part.bottom).sort((x, y) => y - x);
+}
+
+const netArea = (loops) => loops.reduce((sum, l) => sum + areaOf(l.points), 0);
+
+/**
+ * What a cutter coming down from above has to stay clear of at each level.
+ *
+ * A 3-axis tool's body occupies everything above its tip, so at height z it must
+ * avoid the part at z **and at every height above z**. Using only the section at z
+ * sends the cutter straight through whatever overhangs that level.
+ *
+ * Returns a function to call with descending heights. It gives the section at z,
+ * the accumulated `outline` and whether anything overhangs z.
+ */
+function partShadow(mesh, part) {
+  const step = Math.max(SHADOW_STEP, (part.top - part.bottom) / SHADOW_SAMPLES);
+  const flats = flatHeights(mesh, part);
+  let shadow = [];
+  let previous = part.top;
+
+  const add = (loops) => {
+    if (loops.length) shadow = normalizeLoops(booleanLoops(shadow, loops, 'union'));
+  };
+
+  return (z) => {
+    const samples = new Set();
+    for (let s = previous - step; s > z; s -= step) samples.add(s);
+    for (const f of flats) {
+      for (const s of [f + FLAT_OFFSET, f - FLAT_OFFSET]) {
+        if (s < previous && s > z) samples.add(s);
+      }
+    }
+    for (const s of [...samples].sort((a, b) => b - a)) add(sliceLoops(mesh, 2, s).loops);
+
+    // Exactly at the bottom face a section comes back empty, which would read as
+    // "no part here" and send the cutter straight through it.
+    const section = sliceLoops(mesh, 2, Math.max(z, part.bottom + FLAT_OFFSET)).loops;
+    add(section);
+    previous = z;
+    const sectionArea = netArea(section);
+    return {
+      section,
+      outline: shadow,
+      overhang: netArea(shadow) - sectionArea > Math.max(0.05, sectionArea * 0.002),
+    };
+  };
+}
+
+/** The loops of an outline that are real walls at this level, not overhang edges. */
+function wallsAtLevel(outline, section) {
+  const key = (x, y) => `${Math.round(x * 1000)},${Math.round(y * 1000)}`;
+  const onSection = new Set();
+  for (const l of section) {
+    for (let i = 0; i < l.points.length; i += 2) onSection.add(key(l.points[i], l.points[i + 1]));
+  }
+  return outline.filter((l) => {
+    for (let i = 0; i < l.points.length; i += 2) {
+      if (onSection.has(key(l.points[i], l.points[i + 1]))) return true;
+    }
+    return false;
+  });
+}
+
+const OVERHANG_NOTE = 'Material under an overhang cannot be reached from above and is left on';
 
 /**
  * Face the top of the stock down to the top of the part.
@@ -120,12 +202,19 @@ export function roughingOp(mesh, stock, part, opts) {
   const r = tool.diameter / 2;
 
   const levels = zLevels(part.top, part.bottom, ap);
-  const stockRect = [rectLoop(stock.minX, stock.minY, stock.maxX, stock.maxY)];
+  // The sides of a block are open: the cutter may run past them. Without this a
+  // margin narrower than the cutter leaves nowhere for its centre to go.
+  const open = r * 2;
+  const stockRect = [rectLoop(stock.minX - open, stock.minY - open, stock.maxX + open, stock.maxY + open)];
   const moves = [];
   let cleared = 0;
+  let overhung = false;
+  const shadowAt = partShadow(mesh, part);
 
   for (const z of levels) {
-    const { loops } = sliceLoops(mesh, 2, z);
+    const { section, outline, overhang } = shadowAt(z);
+    overhung = overhung || overhang;
+    const loops = overhang ? outline : section;
     // Grow the part by the allowance so the finisher has stock to cut.
     const keepOut = loops.length ? offsetLoops(loops, allowance) : [];
     const toRemove = keepOut.length ? differenceLoops(stockRect, keepOut) : stockRect;
@@ -143,6 +232,7 @@ export function roughingOp(mesh, stock, part, opts) {
   return makeOp('rough', 'Z-level roughing', tool, speeds, moves, [
     `${cleared} level(s) at ${ap.toFixed(2)} mm depth of cut`,
     `${ae.toFixed(2)} mm stepover, ${allowance} mm left on for finishing`,
+    ...(overhung ? [OVERHANG_NOTE] : []),
   ]);
 }
 
@@ -162,9 +252,13 @@ export function contourOp(mesh, part, opts) {
   const step = stepdown ?? tool.diameter * 0.5;
 
   const moves = [];
+  let overhung = false;
+  const shadowAt = partShadow(mesh, part);
   for (const z of zLevels(part.top, part.bottom, step)) {
-    const { loops } = sliceLoops(mesh, 2, z);
-    if (loops.length === 0) continue;
+    const { section, outline, overhang } = shadowAt(z);
+    if (section.length === 0) continue;
+    overhung = overhung || overhang;
+    const loops = overhang ? wallsAtLevel(outline, section) : section;
     // Outers grow by the radius; holes shrink by it. offsetLoops does both from
     // the winding, which is why sliceLoops normalises it.
     for (const loop of offsetLoops(loops, r)) cutLoop(moves, loop, z, safeZ, z + 1);
@@ -173,6 +267,7 @@ export function contourOp(mesh, part, opts) {
   if (moves.length === 0) return null;
   return makeOp('finish', 'Contour finishing', tool, speeds, moves, [
     `${step.toFixed(2)} mm stepdown following the part wall`,
+    ...(overhung ? [OVERHANG_NOTE] : []),
   ]);
 }
 
@@ -253,6 +348,33 @@ function holeFrom(mesh, part, pts, cx, cy, entry, { roundness, probeDepth }) {
     depth: Number(depth.toFixed(3)),
     throughHole: depth >= height - stepZ,
   };
+}
+
+/**
+ * Give holes found in the mesh the exact data of the CAD hole at the same place.
+ *
+ * Only a hole drilled along the tool axis qualifies. A hole with no CAD record, such
+ * as any hole in an imported STL, is left exactly as the mesh measured it.
+ *
+ * @param {object[]} holes  from `detectHoles`
+ * @param {object[]} cadHoles  from `holeRecords`, in the frame the mesh is in
+ */
+export function attachCadHoles(holes, cadHoles, part) {
+  if (!cadHoles?.length) return holes;
+  return holes.map((h) => {
+    const cad = cadHoles.find((c) => c.axis[2] < -0.99
+      && Math.hypot(c.at[0] - h.x, c.at[1] - h.y) < Math.max(h.diameter / 4, 0.2));
+    if (!cad) return h;
+    return {
+      ...h,
+      x: cad.at[0],
+      y: cad.at[1],
+      diameter: cad.drill,
+      depth: cad.through ? part.top - part.bottom : part.top - cad.at[2] + cad.depth + cad.tip,
+      throughHole: cad.through,
+      cad,
+    };
+  });
 }
 
 function centroidDist(pts, cx, cy) {

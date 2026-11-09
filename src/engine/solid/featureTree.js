@@ -49,7 +49,7 @@ import { buildSolid } from './extrude.js';
 import { resolvePlaneRef, lineFrame, planeBasis } from '../sketch/plane.js';
 import { centerlines } from '../sketch/model.js';
 import {
-  HOLE_TYPES, THREADS, holeSolid, holePositions,
+  HOLE_TYPES, THREADS, holeSolid, holePositions, holeRecords,
 } from './hole.js';
 import { boundsOf } from '../mesh/analyze.js';
 
@@ -278,9 +278,14 @@ function makeHoles(feature, doc, plane, partBounds) {
     if (!(reach > 1e-6)) throw new Error('the hole points away from the part — reverse it');
     depth = reach + THROUGH_PAST;
   }
-  return holeSolid(holePositions(doc, feature.pointIds), plane, feature, {
+  const positions = holePositions(doc, feature.pointIds);
+  const solid = holeSolid(positions, plane, feature, {
     depth, through, reverse: feature.reverse, segments: feature.segments ?? undefined,
   });
+  return {
+    ...solid,
+    holes: holeRecords(positions, plane, feature, { depth, through, reverse: feature.reverse }),
+  };
 }
 
 /**
@@ -316,7 +321,9 @@ function revolveAboutLine(regions, doc, lineId, shape) {
  *   rebuilding only from the first changed feature, which is worth adding once
  *   a boolean on a real part is slow enough to notice. Off by default: every
  *   soup is a `Float32Array` and a deep tree of big parts is real memory.
- * @returns {{soup:object|null, steps:object[], errors:object[], planes:Map<number,object>}}
+ * @returns {{soup:object|null, steps:object[], errors:object[], planes:Map<number,object>,
+ *   holes:object[]}}
+ *   `holes` are the Hole features' `holeRecords`, for CAM.
  *   `planes` maps a sketch id to the plane it was **built on** when that differs
  *   from the one it stores — i.e. a face link that moved. Each ok step also
  *   carries `bounds` (its own solid's) and `merge`, which is what a new link to
@@ -333,6 +340,7 @@ export function rebuildFeatures(features, ctx = {}, { keepIntermediates = false 
   const planes = new Map();
   const used = new Set(); // sketches a feature was actually built from
   const fctx = { ...ctx, refBounds, planes, used };
+  let holes = [];
 
   const fail = (f, message) => {
     const step = {
@@ -363,6 +371,7 @@ export function rebuildFeatures(features, ctx = {}, { keepIntermediates = false 
     // whatever merge mode it happens to carry.
     if (!current || f.merge === 'new') {
       current = made;
+      holes = [];
     } else if (!meshBoolean) {
       fail(f, 'no solid boolean is available to combine it with the part');
       continue;
@@ -375,6 +384,7 @@ export function rebuildFeatures(features, ctx = {}, { keepIntermediates = false 
       }
     }
 
+    if (made.holes) holes.push(...made.holes);
     const bounds = boundsOf(made);
     refBounds.set(f.id, bounds);
     steps.push({
@@ -400,7 +410,9 @@ export function rebuildFeatures(features, ctx = {}, { keepIntermediates = false 
     if (plane !== s.plane) planes.set(s.id, plane);
   }
 
-  return { soup: current, steps, errors, planes };
+  return {
+    soup: current, steps, errors, planes, holes,
+  };
 }
 
 /** Whether replaying this tree will need a solid boolean at all. */

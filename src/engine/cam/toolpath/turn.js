@@ -136,6 +136,11 @@ export function roughingOp(profile, opts) {
       const cutR = Math.max(rp, p.r + allowance);
       if (cutR < prev - 1e-9) {
         if (!open) spans.push(open = []);
+        // A straight line across a shoulder cuts through its corner, so go round it.
+        const last = open[open.length - 1];
+        if (last && Math.abs(cutR - last.r) > 2 * Math.abs(p.z - last.z)) {
+          open.push(cutR > last.r ? { z: last.z, r: cutR } : { z: p.z, r: last.r });
+        }
         open.push({ z: p.z, r: cutR });
       } else open = null;
     }

@@ -29,6 +29,7 @@
  */
 
 import { dialectFor, programHeader } from './dialect.js';
+import { fitArcs } from './arcs.js';
 
 /**
  * Fanuc number format: always a decimal point, because a bare `X10` is read as
@@ -70,7 +71,7 @@ class Writer {
   blank() { return this.raw(''); }
 
   /** A motion block. Words equal to the current modal value are omitted. */
-  move({ g, x, y, z, a, f }) {
+  move({ g, x, y, z, a, i, j, k, f }) {
     const parts = [];
     if (g != null && g !== this.state.g) { parts.push(g); this.state.g = g; }
     const axis = (word, value, key) => {
@@ -86,6 +87,10 @@ class Writer {
     // at the same angle writes it once — which is also what makes it obvious in
     // the file where the table actually turns.
     axis('A', a, 'a');
+    // Arc centres are not modal: every arc block states its own.
+    if (i != null) parts.push(`I${num(i)}`);
+    if (j != null) parts.push(`J${num(j)}`);
+    if (k != null) parts.push(`K${num(k)}`);
     if (f != null && f !== this.state.f) { parts.push(`F${num(f, 4)}`); this.state.f = f; }
     if (parts.length === 0) return this;
     const body = parts.join(' ');
@@ -159,7 +164,14 @@ export function postTurning(program, opts = {}) {
     if (coolant) w.code('M08');
     w.resetPosition();
 
-    for (const m of op.moves) {
+    for (const m of fitArcs(op.moves, { plane: 'zx' })) {
+      if (m.t === 'arc') {
+        // I stays a radius value on a lathe, even when X is programmed on diameter.
+        w.move({
+          g: m.cw ? 'G02' : 'G03', x: xOut(m.x), z: m.z, i: m.i, k: m.k, f: op.speeds.fn,
+        });
+        continue;
+      }
       w.move({
         g: m.t === 'rapid' ? 'G00' : 'G01',
         x: xOut(m.x),
@@ -244,9 +256,15 @@ export function postMilling(program, opts = {}) {
       }
     }
 
-    for (const m of op.moves) {
+    for (const m of fitArcs(op.moves, { plane: 'xy' })) {
       if (m.cycle) { // drilling: emit a canned cycle instead of point moves
         w.code(cannedCycle(m, op));
+        continue;
+      }
+      if (m.t === 'arc') {
+        w.move({
+          g: m.cw ? 'G02' : 'G03', x: m.x, y: m.y, z: m.z, i: m.i, j: m.j, f: op.speeds.feed,
+        });
         continue;
       }
       w.move({

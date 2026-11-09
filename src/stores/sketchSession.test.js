@@ -6,7 +6,7 @@ import {
   describe, it, expect, beforeEach,
 } from 'vitest';
 import { useSketchStore } from './sketchStore.js';
-import { getRawMesh } from './camPlanStore.js';
+import { getRawMesh, useCamPlanStore } from './camPlanStore.js';
 import { useCamStore } from './camStore.js';
 import { useFeatureStore } from './featureStore.js';
 import { addPoint, addLine } from '../engine/sketch/model.js';
@@ -381,6 +381,18 @@ describe('Hole Wizard at picked points', () => {
     expect(sketch().error).toMatch(/Click the points/);
     expect(holes()).toHaveLength(0);
     expect(volumeOf()).toBe(triangles);
+  });
+
+  it('hands what the hole is to the CAM planner', async () => {
+    sketch().toggleSelect(points[0]);
+    await tree().buildHole({
+      holeType: 'tap', thread: 'M8', threadDepth: 4, depth: 5, end: 'blind',
+    });
+    expect(getRawMesh().cad.holes).toHaveLength(1);
+    expect(getRawMesh().cad.holes[0].thread.name).toBe('M8');
+    expect(getRawMesh().cad.holes[0].drill).toBe(6.8);
+    await useCamPlanStore.getState().loadSoup(getRawMesh().soup, 'imported');
+    expect(getRawMesh().cad).toBeNull();
   });
 
   it('cuts only the points picked, and stays open for the next kind', async () => {

@@ -46,7 +46,7 @@ export const getMesh = () => _mesh;
  * currently holds, so picking a plane, then a point, then clearing the datum
  * always lands where it should instead of compounding transforms.
  */
-const _raw = { soup: null, welded: null };
+const _raw = { soup: null, welded: null, cad: null };
 /** The part as imported or built: where the solids are, and so where sketches are drawn. */
 export const getRawMesh = () => _raw;
 
@@ -203,20 +203,22 @@ export const useCamPlanStore = create((set, get) => ({
    *
    * @param {{positions:Float32Array, triangleCount:number, format:string}} soup
    * @param {string} name  what to call it in the UI
-   * @param {{keepDatum?:boolean, keepPage?:boolean}} [opts]
-   *   Both exist for **rebuilding a feature tree**, which is not a new part but
+   * @param {{keepDatum?:boolean, keepPage?:boolean, cad?:{holes:object[]}}} [opts]
+   *   `cad` is what the feature tree knows about the part and triangles cannot say.
+   *   The other two exist for **rebuilding a feature tree**, which is not a new part but
    *   the same one recomputed. Clearing the datum is right for an imported file
    *   and wrong here — it would throw away the X0/Y0/Z0 the operator set every
    *   time they changed a dimension. Moving them to the machine page is right
    *   when a part appears out of nowhere and wrong when they are stood at the
    *   sketch they are editing.
    */
-  async loadSoup(soup, name, { keepDatum = false, keepPage = false } = {}) {
+  async loadSoup(soup, name, { keepDatum = false, keepPage = false, cad = null } = {}) {
     set({ status: 'loading', error: null, plan: null, nc: null });
     try {
       const welded = weld(soup);
       _raw.soup = soup;
       _raw.welded = welded;
+      _raw.cad = cad;
       _mesh.soup = soup;
       _mesh.welded = welded;
       // Measurements of the previous part must not survive it. Tool choices
@@ -298,7 +300,7 @@ export const useCamPlanStore = create((set, get) => ({
       || datum.rotaryZero || flipOf(datum).some(Boolean))
       ? datum : null;
     _ctx = planContext(_raw.soup, _raw.welded, {
-      mode: forceMode, partOff, machineId, datum: activeDatum,
+      mode: forceMode, partOff, machineId, datum: activeDatum, cad: _raw.cad,
     });
 
     // The plan may have laid the part down and/or shifted its origin. Show it

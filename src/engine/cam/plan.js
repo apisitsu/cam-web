@@ -142,7 +142,8 @@ export function planContext(soup, welded, opts = {}) {
   const oriented = (laid.orientation.changed || datum?.point)
     ? analyzeMesh(laid.soup, laid.welded)
     : analysis;
-  const ctx = millContext(laid.welded, oriented, opts);
+  const cadHoles = cadHolesInFrame(opts.cad?.holes, laid.orientation, datum);
+  const ctx = millContext(laid.welded, oriented, { ...opts, cadHoles });
   ctx.analysisSource = analysis;
   ctx.orientation = laid.orientation;
   ctx.orientedMesh = laid;
@@ -161,6 +162,17 @@ export function planContext(soup, welded, opts = {}) {
   // the planner and close an import cycle.
   ctx.indexAt = (angle) => indexContext(ctx, angle);
   return ctx;
+}
+
+/** CAD hole records moved into the frame the mesh was laid down and shifted to. */
+function cadHolesInFrame(holes, orientation, datum) {
+  if (!holes?.length) return [];
+  const origin = datum?.point ? pointFromRawFrame(datum.point, orientation) : [0, 0, 0];
+  return holes.map((h) => ({
+    ...h,
+    at: pointFromRawFrame(h.at, orientation).map((v, i) => v - origin[i]),
+    axis: pointFromRawFrame(h.axis, orientation),
+  }));
 }
 
 /**
@@ -282,7 +294,7 @@ function millContext(welded, analysis, opts) {
 
   // Holes of the same size are one operation with several positions — one tool
   // change, several plunges — so they are grouped before anything picks a drill.
-  const holes = mill.detectHoles(welded, part);
+  const holes = mill.attachCadHoles(mill.detectHoles(welded, part), opts.cadHoles, part);
   const byDiameter = new Map();
   for (const h of holes) {
     const key = h.diameter.toFixed(2);

@@ -18,7 +18,7 @@
  */
 
 /** Iterate triangles as corner offsets into `positions`, soup or indexed. */
-function eachTriangle(mesh, fn) {
+export function eachTriangle(mesh, fn) {
   const p = mesh.positions;
   if (mesh.indices) {
     for (let t = 0; t < mesh.indices.length; t += 3) {

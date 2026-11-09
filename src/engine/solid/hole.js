@@ -159,6 +159,39 @@ export function unusedHoleSites(doc, pickedSets) {
 }
 
 /**
+ * What each hole of a feature is, for CAM: what a Ø5 cylinder in a mesh cannot say.
+ *
+ * `at` is the mouth in world coordinates, `axis` runs from it into the part, `depth`
+ * is the full-diameter length and `tip` the drill point below that.
+ */
+export function holeRecords(positions, plane, spec, { depth, through = false, reverse = false }) {
+  const { n } = planeBasis(plane);
+  const axis = reverse ? [...n] : n.map((v) => -v);
+  const drill = drillDiameter(spec);
+  const thread = spec.holeType === 'tap'
+    ? { name: spec.thread, pitch: THREADS[spec.thread]?.pitch ?? THREADS.M6.pitch, depth: spec.threadDepth }
+    : null;
+  const counterbore = spec.holeType === 'cbore'
+    ? { diameter: spec.cbDiameter, depth: spec.cbDepth }
+    : null;
+  const countersink = spec.holeType === 'csk'
+    ? { diameter: spec.cskDiameter, angle: spec.cskAngle || 90 }
+    : null;
+  return positions.map(([x, y]) => ({
+    holeType: spec.holeType,
+    at: planeToWorld(plane, x, y),
+    axis,
+    drill,
+    depth,
+    through,
+    tip: through ? 0 : drill / 2 / Math.tan(TIP_HALF),
+    thread,
+    counterbore,
+    countersink,
+  }));
+}
+
+/**
  * The solid to cut: one hole at each position, running into the part.
  *
  * @param {number[][]} positions  sketch (x, y)

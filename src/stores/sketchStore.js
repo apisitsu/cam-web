@@ -22,7 +22,7 @@ import {
   deleteEntity, removeConstraint, chamfer as chamferEdit, fillet as filletEdit,
   filletLineArc as filletLineArcEdit, filletArcArc as filletArcArcEdit,
   filletCircleCircle as filletCircleCircleEdit, linesShareCorner,
-  trimLine, trimCircle, trimArc, mirror as mirrorEdit, sketchAxisLine, patternSeeds, seedPolar, moveEntities, offsetChain,
+  trimLine, trimCircle, trimArc, mirror as mirrorEdit, sketchAxisLine, patternSeeds, seedPolar, offsetChain,
   distancePointToLine, farEndpointFromLine, nearestRimPoint, nearestTangent,
   nearestIntersection, nearestQuadrant, nearestMidpoint, entitiesInBox, angleGuide,
   measureConstraint, lineArcMeet, arcArcMeet, angleSpec, interiorAngleToModel,
@@ -1813,22 +1813,24 @@ export const useSketchStore = create((set, get) => ({
   },
 
   /**
-   * Stamp `count` copies of the selected points/lines/circles/arcs in a straight
-   * line, (`dx`, `dy`) mm apart (SW "Linear Pattern" — one direction; run it
-   * twice for a grid). `count` is the total instances **including** the
-   * original, which stays exactly where it is — only `count - 1` new copies
-   * are stamped, at i·(dx, dy) for i = 1..count-1. Each copy keeps whatever
-   * relations were entirely internal to the selection (e.g. a patterned
+   * Stamp the selected points/lines/circles/arcs in a grid: `nx` along X, `dx` mm
+   * apart, by `ny` along Y, `dy` mm apart (SW "Linear Pattern", both directions).
+   * The counts include the original, which stays where it is. Each copy keeps
+   * whatever relations were entirely internal to the selection (e.g. a patterned
    * rectangle is still a rectangle), via the same capture/replay
    * `copySelection`/`paste` use.
    */
-  linearPattern(count, dx, dy) {
+  linearPattern(nx, dx, ny = 1, dy = 0) {
     const { sk, selection } = get();
     const geom = patternSeeds(sk, selection);
     if (!geom.length) { set({ error: 'Select points, lines, circles or arcs to pattern' }); return; }
-    const n = Math.round(count);
-    if (!(n >= 2 && n <= 200)) { set({ error: 'Count must be 2–200' }); return; }
-    if (!Number.isFinite(dx) || !Number.isFinite(dy) || (dx === 0 && dy === 0)) {
+    const cols = Math.round(nx);
+    const rows = Math.round(ny);
+    if (!(cols >= 1 && rows >= 1 && cols * rows >= 2 && cols * rows <= 1000)) {
+      set({ error: 'Count must give 2–1000 in all' });
+      return;
+    }
+    if ((cols > 1 && !(Number.isFinite(dx) && dx !== 0)) || (rows > 1 && !(Number.isFinite(dy) && dy !== 0))) {
       set({ error: 'Pattern needs a non-zero spacing' });
       return;
     }
@@ -1836,8 +1838,11 @@ export const useSketchStore = create((set, get) => ({
     if (!snap) { set({ error: 'Nothing could be patterned' }); return; }
     get()._snapshot();
     const created = [];
-    for (let i = 1; i < n; i += 1) {
-      created.push(...hydrateSnapshot(sk, snap, (x, y) => ({ x: x + dx * i, y: y + dy * i })));
+    for (let r = 0; r < rows; r += 1) {
+      for (let c = 0; c < cols; c += 1) {
+        if (r === 0 && c === 0) continue;
+        created.push(...hydrateSnapshot(sk, snap, (x, y) => ({ x: x + dx * c, y: y + dy * r })));
+      }
     }
     if (!created.length) { get()._undoSnapshot(); set({ error: 'Nothing could be patterned' }); return; }
     set({
@@ -1881,31 +1886,31 @@ export const useSketchStore = create((set, get) => ({
   },
 
   /**
-   * Stamp `count` copies of the selection in a circle about the centre (SW
-   * "Circular Pattern"); `count` includes the original. A full 360° sweep spaces
-   * them evenly all the way round, a smaller one fans them from the original to
-   * its far end, and with `byStep`, `angleDeg` is the angle between neighbours.
-   * A `pcd` or `startDeg` moves the original onto that diameter or angle first.
+   * Stamp `count` copies of the selection round a circle (SW "Circular Pattern");
+   * `count` includes the first pick, which is where the pattern starts and stays
+   * put. A 360° sweep spaces them evenly and comes back round to it. A `pcd` or
+   * `startDeg` says where that first pick is on the circle, so they place the
+   * centre: `startDeg` is the first pick's angle as seen from it.
    */
-  circularPattern(count, angleDeg, { pcd = null, startDeg = null, byStep = false } = {}) {
+  circularPattern(count, angleDeg, { pcd = null, startDeg = null } = {}) {
     const { sk } = get();
     const seeds = get().circularSeeds();
     if (!seeds.length) { set({ error: 'Select points, lines, circles or arcs to pattern' }); return; }
     const n = Math.round(count);
     if (!(n >= 2 && n <= 200)) { set({ error: 'Count must be 2–200' }); return; }
     if (!Number.isFinite(angleDeg) || angleDeg === 0) { set({ error: 'Pattern needs a non-zero sweep angle' }); return; }
-    const center = get().circularCenter();
+    let center = get().circularCenter();
     if (!center) { set({ error: 'No centre to pattern about' }); return; }
     if (pcd != null && !(pcd > 0)) { set({ error: 'The PCD must be more than 0' }); return; }
     const polar = seedPolar(sk, seeds, center);
     const radius = (pcd ?? polar.pcd) / 2;
     if (!(radius > 1e-9)) { set({ error: 'That sits on the centre — enter a PCD to put it on' }); return; }
-
-    get()._snapshot();
     if (pcd != null || startDeg != null) {
       const a = (startDeg ?? polar.startDeg) * DEG;
-      moveEntities(sk, seeds, center.x + radius * Math.cos(a) - polar.anchor.x, center.y + radius * Math.sin(a) - polar.anchor.y);
+      center = { x: polar.anchor.x - radius * Math.cos(a), y: polar.anchor.y - radius * Math.sin(a) };
     }
+
+    get()._snapshot();
     const snap = snapshotEntities(sk, seeds);
     if (!snap) { get()._undoSnapshot(); set({ error: 'Nothing could be patterned' }); return; }
     // A full sweep spaces n copies evenly all the way around (step = 360°/n,
@@ -1913,8 +1918,7 @@ export const useSketchStore = create((set, get) => ({
     // gap); a partial sweep fans them from the original to the sweep's far
     // end (step = angle/(n-1)).
     const full = Math.abs(angleDeg) >= 360 - 1e-6;
-    let stepDeg = full ? 360 / n : angleDeg / (n - 1);
-    if (byStep) stepDeg = angleDeg;
+    const stepDeg = full ? 360 / n : angleDeg / (n - 1);
     const created = [];
     for (let i = 1; i < n; i += 1) {
       const a = stepDeg * DEG * i;

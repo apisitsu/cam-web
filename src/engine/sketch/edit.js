@@ -2243,20 +2243,6 @@ export function seedPolar(sk, seeds, center) {
   };
 }
 
-/** Shift `ids` and the points they hang from; a fixed point stays where it is. */
-export function moveEntities(sk, ids, dx, dy) {
-  const points = new Set();
-  const FIELDS = { point: ['id'], line: ['p1', 'p2'], circle: ['center'], arc: ['center', 'start', 'end'] };
-  for (const id of ids) {
-    const e = sk.entities.get(id);
-    for (const f of FIELDS[e?.type] ?? []) points.add(e[f]);
-  }
-  for (const id of points) {
-    const p = sk.entities.get(id);
-    if (p && !p.fixed && !p.origin) { p.x += dx; p.y += dy; }
-  }
-}
-
 /**
  * Capture a self-contained copy of `ids` (points/lines/circles/arcs) — pulling
  * in every point a selected line/circle/arc references, so the capture never

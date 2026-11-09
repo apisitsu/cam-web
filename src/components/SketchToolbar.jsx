@@ -630,28 +630,29 @@ function OffsetInput() {
 }
 
 /**
- * Inline count/spacing entry for Linear Pattern — the rail button arms it
- * (`linearPatternPending`), matching how Offset takes its distance. `dX`/`dY`
- * are the step between instances, so a horizontal row is just dY = 0.
+ * Inline entry for Linear Pattern — the rail button arms it (`linearPatternPending`),
+ * matching how Offset takes its distance. How many along X and Y, counting the
+ * original, and the distance between neighbours each way.
  */
 function LinearPatternInput() {
   const picked = useSketchStore((s) => patternSeeds(s.sk, s.selection).length);
   const linearPatternPending = useSketchStore((s) => s.linearPatternPending);
   const linearPattern = useSketchStore((s) => s.linearPattern);
   const cancelLinearPattern = useSketchStore((s) => s.cancelLinearPattern);
-  const [count, setCount] = useState(3);
+  const [nx, setNx] = useState(3);
   const [dx, setDx] = useState(10);
-  const [dy, setDy] = useState(0);
+  const [ny, setNy] = useState(1);
+  const [dy, setDy] = useState(10);
 
   if (!linearPatternPending) return null;
-  const apply = () => { if (picked && Number.isFinite(count)) linearPattern(count, dx ?? 0, dy ?? 0); };
+  const apply = () => { if (picked) linearPattern(nx, dx ?? 0, ny, dy ?? 0); };
 
   return (
     <div
       onKeyDown={(e) => { if (e.key === 'Escape') cancelLinearPattern(); }}
       style={{
         position: 'absolute', top: 60, left: 12, zIndex: 6,
-        display: 'flex', gap: 6, alignItems: 'center',
+        display: 'flex', flexWrap: 'wrap', gap: 6, alignItems: 'center', maxWidth: 'calc(100% - 24px)',
         background: CAD.glassSolid, border: `1px solid ${CAD.skTangent}`,
         padding: '6px 10px', borderRadius: 4, boxShadow: FLOAT_SHADOW,
       }}
@@ -659,11 +660,10 @@ function LinearPatternInput() {
     >
       <Text style={{ color: CAD.icon, fontSize: 12 }}>Linear Pattern</Text>
       <PickPrompt count={picked} empty="Click the points or geometry to repeat" />
-      <Tooltip title="Instances — total copies including the original">
-        <InputNumber controls={false} size="small" min={2} max={200} value={count} onChange={(v) => setCount(v ?? 2)} style={{ width: 56 }} />
-      </Tooltip>
-      <UnitInput autoFocus value={dx} onChange={(v) => setDx(v ?? 0)} onPressEnter={apply} unit="dX mm" width={110} />
-      <UnitInput value={dy} onChange={(v) => setDy(v ?? 0)} onPressEnter={apply} unit="dY mm" width={110} />
+      <UnitInput autoFocus value={nx} onChange={(v) => setNx(v ?? 1)} onPressEnter={apply} unit="X count" width={50} />
+      <UnitInput value={dx} onChange={(v) => setDx(v ?? 0)} onPressEnter={apply} unit="dX mm" width={70} />
+      <UnitInput value={ny} onChange={(v) => setNy(v ?? 1)} onPressEnter={apply} unit="Y count" width={50} />
+      <UnitInput value={dy} onChange={(v) => setDy(v ?? 0)} onPressEnter={apply} unit="dY mm" width={70} />
       <Button size="small" type="primary" disabled={!picked} onClick={apply}>Set</Button>
       <Button size="small" type="text" style={{ color: CAD.label }} onClick={cancelLinearPattern}>✕</Button>
     </div>
@@ -674,9 +674,9 @@ const PATTERN_CENTRES = [['origin', 'Origin'], ['point', 'Point']];
 const round3 = (v) => Math.round(v * 1000) / 1000;
 
 /**
- * Inline entry for Circular Pattern: what it turns about, how many, the PCD and
- * start angle of the first one, and either the total sweep or the step between
- * neighbours. PCD and start read where the first pick already is, until edited.
+ * Inline entry for Circular Pattern: the first pick is where it starts and stays
+ * put; how many, on what PCD, and that pick's angle on the circle. PCD and start
+ * read from the centre chosen, until edited; editing them places the centre.
  */
 function CircularPatternInput() {
   const picked = useSketchStore((s) => s.circularSeeds().length);
@@ -689,7 +689,6 @@ function CircularPatternInput() {
   const seedKey = useSketchStore((s) => `${s.version}|${s.selection.join()}|${s.circularAbout}|${s.circularCenterId}`);
   const [count, setCount] = useState(6);
   const [angle, setAngle] = useState(360);
-  const [byStep, setByStep] = useState(false);
   const [pcd, setPcd] = useState(null);
   const [start, setStart] = useState(null);
   useEffect(() => { setPcd(null); setStart(null); }, [seedKey]);
@@ -697,12 +696,7 @@ function CircularPatternInput() {
   if (!circularPatternPending) return null;
   const polar = useSketchStore.getState().circularPolar();
   const ready = picked > 0 && hasCentre && Number.isFinite(angle) && angle !== 0;
-  const apply = () => { if (ready && Number.isFinite(count)) circularPattern(count, angle, { pcd, startDeg: start, byStep }); };
-  const chooseStep = (step) => {
-    setByStep(step);
-    setAngle(step ? round3(360 / Math.max(count, 1)) : 360);
-  };
-
+  const apply = () => { if (ready && Number.isFinite(count)) circularPattern(count, angle, { pcd, startDeg: start }); };
   return (
     <div
       onKeyDown={(e) => { if (e.key === 'Escape') cancelCircularPattern(); }}
@@ -720,20 +714,12 @@ function CircularPatternInput() {
       ))}
       <PickPrompt
         count={hasCentre ? picked : 0}
-        empty={hasCentre ? 'Click the points or geometry to repeat' : 'Click the centre point'}
+        empty={hasCentre ? 'Click the first point' : 'Click the centre point'}
       />
-      <Tooltip title="Instances — total copies including the original">
-        <InputNumber controls={false} size="small" min={2} max={200} value={count} onChange={(v) => setCount(v ?? 2)} style={{ width: 56 }} />
-      </Tooltip>
+      <UnitInput autoFocus value={count} onChange={(v) => setCount(v ?? 2)} onPressEnter={apply} unit="count" width={50} />
       <UnitInput value={pcd ?? (polar ? round3(polar.pcd) : null)} onChange={setPcd} onPressEnter={apply} unit="PCD mm" width={80} />
       <UnitInput value={start ?? (polar ? round3(polar.startDeg) : null)} onChange={setStart} onPressEnter={apply} unit="° start" width={70} />
-      <Segmented
-        size="small"
-        value={byStep ? 'step' : 'sweep'}
-        onChange={(v) => chooseStep(v === 'step')}
-        options={[{ value: 'sweep', label: 'Sweep' }, { value: 'step', label: 'Step' }]}
-      />
-      <UnitInput autoFocus value={angle} onChange={(v) => setAngle(v ?? 0)} onPressEnter={apply} unit="°" width={70} />
+      <UnitInput value={angle} onChange={(v) => setAngle(v ?? 0)} onPressEnter={apply} unit="° sweep" width={70} />
       <Button size="small" type="primary" disabled={!ready} onClick={apply}>Set</Button>
       <Button size="small" type="text" style={{ color: CAD.label }} onClick={cancelCircularPattern}>✕</Button>
     </div>

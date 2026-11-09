@@ -922,7 +922,7 @@ describe('linearPattern', () => {
     const sk = createSketch();
     const l = addLine(sk, addPoint(sk, 0, 0), addPoint(sk, 10, 0));
     useSketchStore.setState({ sk, selection: [l], past: [], error: null });
-    useSketchStore.getState().linearPattern(3, 20, 0);
+    useSketchStore.getState().linearPattern(3, 20);
     const st = useSketchStore.getState();
     // solve() needs a Worker, which node has no notion of — it sets its own
     // error after the geometry is already built; only the pattern's own
@@ -944,7 +944,7 @@ describe('linearPattern', () => {
     const sk = createSketch();
     const l = addLine(sk, addPoint(sk, 0, 0), addPoint(sk, 10, 0));
     useSketchStore.setState({ sk, selection: [l], past: [], error: null });
-    useSketchStore.getState().linearPattern(1, 10, 0);
+    useSketchStore.getState().linearPattern(1, 10);
     expect(useSketchStore.getState().error).toMatch(/count/i);
     expect(useSketchStore.getState().past.length).toBe(0);
   });
@@ -953,14 +953,14 @@ describe('linearPattern', () => {
     const sk = createSketch();
     const l = addLine(sk, addPoint(sk, 0, 0), addPoint(sk, 10, 0));
     useSketchStore.setState({ sk, selection: [l], past: [], error: null });
-    useSketchStore.getState().linearPattern(3, 0, 0);
+    useSketchStore.getState().linearPattern(3, 0);
     expect(useSketchStore.getState().error).toMatch(/spacing/i);
   });
 
   it('errors when nothing patternable is selected', () => {
     const sk = createSketch();
     useSketchStore.setState({ sk, selection: [], past: [], error: null });
-    useSketchStore.getState().linearPattern(3, 10, 0);
+    useSketchStore.getState().linearPattern(3, 10);
     expect(useSketchStore.getState().error).toMatch(/select/i);
   });
 });

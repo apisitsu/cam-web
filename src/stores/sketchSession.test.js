@@ -266,7 +266,7 @@ describe('patterns of points', () => {
     const p = freePoint(5, 5);
     sketch().beginLinearPattern();
     sketch().toggleSelect(p);
-    sketch().linearPattern(3, 10, 0);
+    sketch().linearPattern(3, 10);
     expect(sketch().linearPatternPending).toBe(false);
     expect(sketch().selection).toHaveLength(2);
     closeTo(at(sketch().selection[1]), [25, 5]);
@@ -283,21 +283,47 @@ describe('patterns of points', () => {
     closeTo(at(sketch().selection[0]), [0, 20]);
   });
 
-  it('puts it on the PCD and start angle asked for', () => {
+  it('makes a grid, X count by Y count, the original in one corner', () => {
+    const p = freePoint(5, 5);
+    sketch().beginLinearPattern();
+    sketch().toggleSelect(p);
+    sketch().linearPattern(3, 10, 2, 20);
+    expect(sketch().selection).toHaveLength(5);
+    expect(at(p)).toEqual([5, 5]);
+    const got = sketch().selection.map(at);
+    expect(got).toEqual(expect.arrayContaining([[15, 5], [25, 5], [5, 25], [15, 25], [25, 25]]));
+  });
+
+  it('needs a spacing only along the way it repeats', () => {
+    const p = freePoint(5, 5);
+    useSketchStore.setState({ selection: [p] });
+    sketch().linearPattern(1, 0, 3, 10);
+    expect(sketch().selection).toHaveLength(2);
+    useSketchStore.setState({ selection: [p] });
+    sketch().linearPattern(1, 10, 3, 0);
+    expect(sketch().error).toMatch(/spacing/);
+  });
+
+  it('keeps the first point where it is, and puts the centre where PCD and start say', () => {
     const p = freePoint(20, 0);
     sketch().beginCircularPattern();
     sketch().toggleSelect(p);
     sketch().circularPattern(2, 360, { pcd: 100, startDeg: 90 });
-    closeTo(at(p), [0, 50]);
-    closeTo(at(sketch().selection[0]), [0, -50]);
+    expect(at(p)).toEqual([20, 0]);
+    closeTo(at(sketch().selection[0]), [20, -100]); // centre (20, -50), half a turn on
   });
 
-  it('steps by the angle between neighbours', () => {
-    const p = freePoint(10, 0);
+  it('comes back round to the first point, count evenly spaced', () => {
+    const p = freePoint(20, 0);
     sketch().beginCircularPattern();
     sketch().toggleSelect(p);
-    sketch().circularPattern(3, 30, { byStep: true });
-    closeTo(at(sketch().selection[1]), [10 * Math.cos(Math.PI / 3), 10 * Math.sin(Math.PI / 3)]);
+    sketch().circularPattern(6, 360, { pcd: 60, startDeg: 0 }); // centre (-10, 0)
+    const all = [at(p), ...sketch().selection.map(at)];
+    expect(all).toHaveLength(6);
+    all.forEach(([x, y], i) => {
+      const a = (i * Math.PI) / 3;
+      closeTo([x, y], [-10 + 30 * Math.cos(a), 30 * Math.sin(a)]);
+    });
   });
 
   it('turns about a clicked point, which is not itself repeated', () => {
@@ -320,7 +346,8 @@ describe('patterns of points', () => {
     sketch().circularPattern(4, 360);
     expect(sketch().error).toMatch(/enter a PCD/);
     sketch().circularPattern(4, 360, { pcd: 20, startDeg: 0 });
-    closeTo(at(p), [10, 0]);
+    expect(at(p)).toEqual([0, 0]);
+    closeTo(at(sketch().selection[0]), [-10, 10]);
   });
 
   it('never repeats the origin', () => {

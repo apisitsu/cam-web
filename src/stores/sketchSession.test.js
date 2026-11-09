@@ -173,11 +173,58 @@ describe('the modify tools can be pressed before anything is picked', () => {
     expect(sketch().mirrorPending).toBe(false);
   });
 
-  it('mirrors about the last line picked when none is construction', () => {
+  it('never guesses a line as the axis until Line is chosen', () => {
     const { a, b } = twoLines();
     sketch().beginMirror();
     sketch().toggleSelect(a);
     sketch().toggleSelect(b);
+    expect(sketch().mirrorAxis()).toBeNull();
+    sketch().mirror();
+    expect(sketch().error).toMatch(/Choose what to mirror about/);
+    expect(sketch().mirrorPending).toBe(true);
+  });
+
+  it.each([
+    ['x', ([x, y]) => [x, -y]],
+    ['y', ([x, y]) => [-x, y]],
+  ])('mirrors everything picked about the %s axis', (axis, image) => {
+    const { sk } = sketch();
+    const p = addPoint(sk, 10, 5);
+    const q = addPoint(sk, 30, 25);
+    const line = addLine(sk, p, q);
+    sketch()._bump();
+    sketch().beginMirror();
+    sketch().toggleSelect(line);
+    sketch().setMirrorAbout(axis);
+    expect(sketch().mirrorAxis()).toBe(axis);
+    sketch().mirror();
+    expect(sketch().mirrorPending).toBe(false);
+    const made = [...sk.entities.values()].filter((e) => e.type === 'line' && !e.construction && e.id !== line);
+    expect(made).toHaveLength(1);
+    const at = (id) => [sk.entities.get(id).x, sk.entities.get(id).y];
+    expect(at(made[0].p1)).toEqual(image([10, 5]));
+    expect(at(made[0].p2)).toEqual(image([30, 25]));
+    expect([...sk.entities.values()].filter((e) => e.type === 'line' && e.construction)).toHaveLength(1);
+  });
+
+  it('a box selection that caught the origin leaves the origin alone', () => {
+    const { sk } = sketch();
+    const origin = [...sk.entities.values()].find((e) => e.origin).id;
+    const line = addLine(sk, addPoint(sk, 10, 5), addPoint(sk, 30, 5));
+    sketch()._bump();
+    sketch().beginMirror();
+    useSketchStore.setState({ selection: [origin, line] });
+    sketch().setMirrorAbout('y');
+    sketch().mirror();
+    expect([...sk.entities.values()].filter((e) => e.type === 'point' && e.x === 0 && e.y === 0)).toHaveLength(1);
+  });
+
+  it('mirrors about the last line picked once Line is chosen', () => {
+    const { a, b } = twoLines();
+    sketch().beginMirror();
+    sketch().toggleSelect(a);
+    sketch().toggleSelect(b);
+    sketch().setMirrorAbout('line');
     expect(sketch().mirrorAxis()).toBe(b);
     const lines = () => [...sketch().sk.entities.values()].filter((e) => e.type === 'line').length;
     const before = lines();
@@ -192,6 +239,51 @@ describe('the modify tools can be pressed before anything is picked', () => {
     sketch().toggleSelect(a);
     sketch().toggleSelect(b);
     expect(sketch().mirrorAxis()).toBe(a);
+  });
+});
+
+describe('Hole Wizard at picked points', () => {
+  const volumeOf = () => getRawMesh().soup.triangleCount;
+  let points;
+
+  beforeEach(async () => {
+    tree().startSketch({ preset: 'XY', offset: 0 });
+    rect(40, 40);
+    await tree().buildFromSketch({ op: 'extrude', depth: 10 });
+    tree().startSketch({ preset: 'XY', offset: 10 });
+    const { sk } = sketch();
+    points = [[10, 10], [30, 10], [20, 30]].map(([x, y]) => addPoint(sk, x, y));
+    sketch()._bump();
+  });
+
+  const drill = (d) => tree().buildHole({ diameter: d, depth: 5, end: 'blind', holeType: 'drill' });
+  const holes = () => tree().features.filter((f) => f.kind === 'hole');
+
+  it('makes nothing with no point picked', async () => {
+    const triangles = volumeOf();
+    expect(await drill(6)).toBeNull();
+    expect(sketch().error).toMatch(/Click the points/);
+    expect(holes()).toHaveLength(0);
+    expect(volumeOf()).toBe(triangles);
+  });
+
+  it('cuts only the points picked, and stays open for the next kind', async () => {
+    sketch().toggleSelect(points[0]);
+    await drill(6);
+    expect(holes()).toHaveLength(1);
+    expect(holes()[0].pointIds).toEqual([points[0]]);
+    expect(sketch().sketchOpen).toBe(true);
+    expect(sketch().selection).toEqual([]);
+  });
+
+  it('closes once every point has a hole', async () => {
+    sketch().toggleSelect(points[0]);
+    await drill(6);
+    sketch().toggleSelect(points[1]);
+    sketch().toggleSelect(points[2]);
+    await drill(8);
+    expect(holes().map((f) => f.pointIds)).toEqual([[points[0]], [points[1], points[2]]]);
+    expect(sketch().sketchOpen).toBe(false);
   });
 });
 

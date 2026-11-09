@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import {
-  holeSection, holePositions, holeSolid, drillDiameter, THREADS, holeSegments,
+  holeSection, holePositions, holePointIds, unusedHoleSites, holeSolid, drillDiameter, THREADS, holeSegments,
 } from './hole.js';
 import { createFeature, rebuildFeatures, describeFeature } from './featureTree.js';
 import { meshBoolean } from '../../lib/csg.js';
@@ -39,6 +39,63 @@ describe('holePositions', () => {
     const sk = createSketch();
     addCircle(sk, addPoint(sk, 3, 4), 2);
     expect(holePositions(sk)).toEqual([[3, 4]]);
+  });
+
+  it('takes only what was picked: a point itself, a circle its centre', () => {
+    const sk = createSketch();
+    const a = addPoint(sk, 1, 2);
+    addPoint(sk, 3, 4);
+    const c = addCircle(sk, addPoint(sk, 5, 6), 2);
+    expect(holePositions(sk, [a, c])).toEqual([[1, 2], [5, 6]]);
+  });
+
+  it('counts a circle and its own centre once, and ignores lines', () => {
+    const sk = createSketch();
+    const centre = addPoint(sk, 5, 6);
+    const c = addCircle(sk, centre, 2);
+    const line = addLine(sk, addPoint(sk, 0, 0), addPoint(sk, 9, 0));
+    expect(holePointIds(sk, [c, centre, line])).toEqual([centre]);
+  });
+
+  it('picking nothing means no holes, not all of them', () => {
+    const sk = createSketch();
+    addPoint(sk, 1, 2);
+    expect(holePositions(sk, [])).toEqual([]);
+  });
+
+  it('skips a picked point deleted since', () => {
+    const sk = createSketch();
+    const a = addPoint(sk, 1, 2);
+    const b = addPoint(sk, 3, 4);
+    sk.entities.delete(a);
+    expect(holePositions(sk, [a, b])).toEqual([[3, 4]]);
+  });
+
+  it('says which sites no hole has used yet', () => {
+    const sk = createSketch();
+    const a = addPoint(sk, 1, 2);
+    const b = addPoint(sk, 3, 4);
+    const centre = addPoint(sk, 5, 6);
+    addCircle(sk, centre, 2);
+    expect(unusedHoleSites(sk, [[a]])).toEqual([b, centre]);
+    expect(unusedHoleSites(sk, [[a], [b, centre]])).toEqual([]);
+  });
+});
+
+describe('a hole feature at picked points', () => {
+  it('cuts those and keeps the choice', () => {
+    const sketches = plateAndPoints([[10, 10], [30, 30]]);
+    const picked = [...sketches[2].doc.entities.values()].filter((e) => e.type === 'point')[1].id;
+    const plate = createFeature('extrude', { sketchId: 1, depth: 10 });
+    const one = createFeature('hole', {
+      sketchId: 2, diameter: 6, end: 'through', pointIds: [picked],
+    });
+    const all = createFeature('hole', { sketchId: 2, diameter: 6, end: 'through' });
+    expect(one.pointIds).toEqual([picked]);
+    expect(all.pointIds).toBeNull();
+    const after = (hole) => volume(rebuildFeatures([plate, hole], ctx(sketches)).soup);
+    near(after(one), 16000 - faceted(3, 10), 30);
+    near(after(all), 16000 - 2 * faceted(3, 10), 30);
   });
 });
 

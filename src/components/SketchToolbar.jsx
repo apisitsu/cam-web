@@ -551,19 +551,25 @@ function PickPrompt({ count }) {
   );
 }
 
-/**
- * Mirror: pick what to mirror and then the line to mirror about, with the panel
- * open. A construction line, if one is picked, is always the axis.
- */
+const MIRROR_AXES = [['x', 'X axis'], ['y', 'Y axis'], ['line', 'Line']];
+
+/** Mirror: pick what to mirror and say what about, with the panel open. */
 function MirrorInput() {
   const mirrorPending = useSketchStore((s) => s.mirrorPending);
   const mirror = useSketchStore((s) => s.mirror);
   const cancelMirror = useSketchStore((s) => s.cancelMirror);
+  const about = useSketchStore((s) => s.mirrorAbout);
+  const setAbout = useSketchStore((s) => s.setMirrorAbout);
   const selected = useSketchStore((s) => s.selection.length);
-  const axisReady = useSketchStore((s) => s.mirrorAxis() != null);
+  const axis = useSketchStore((s) => s.mirrorAxis());
 
   if (!mirrorPending) return null;
-  const ready = axisReady && selected >= 2;
+  // A picked axis line is in the selection without being mirrored.
+  const count = axis === 'x' || axis === 'y' ? selected : selected - 1;
+  const ready = axis != null && count >= 1;
+  let prompt = `${count} to mirror`;
+  if (axis == null) prompt = about === 'line' ? 'Click the line to mirror about, last' : 'Choose what to mirror about';
+  else if (!ready) prompt = 'Click what to mirror';
 
   return (
     <div
@@ -576,12 +582,11 @@ function MirrorInput() {
       }}
       data-mirror-panel
     >
-      <Text style={{ color: CAD.icon, fontSize: 12 }}>Mirror</Text>
-      <Text style={{ color: ready ? CAD.dim : CAD.skOver, fontSize: 11, whiteSpace: 'nowrap' }}>
-        {ready
-          ? `${selected - 1} to mirror, about the line picked`
-          : 'Click what to mirror, then the line to mirror about'}
-      </Text>
+      <Text style={{ color: CAD.icon, fontSize: 12 }}>Mirror about</Text>
+      {MIRROR_AXES.map(([value, label]) => (
+        <Button key={value} size="small" type={about === value ? 'primary' : 'default'} onClick={() => setAbout(value)}>{label}</Button>
+      ))}
+      <Text style={{ color: ready ? CAD.dim : CAD.skOver, fontSize: 11, whiteSpace: 'nowrap' }}>{prompt}</Text>
       <Button size="small" type="primary" disabled={!ready} onClick={() => mirror()}>Set</Button>
       <Button size="small" type="text" style={{ color: CAD.label }} onClick={cancelMirror}>✕</Button>
     </div>

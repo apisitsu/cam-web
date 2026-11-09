@@ -118,8 +118,8 @@ describe('SketchLayer — dimensions are drawn on canvas', () => {
     setSketch(dimensionedLine());
     // eslint-disable-next-line testing-library/render-result-naming-convention
     const r = await render(<SketchLayer />);
-    // Two witness lines plus the dimension line itself.
-    expect(countOf(r.scene, DIM)).toBe(3);
+    // Two witness lines, the dimension line itself, and its two arrowheads.
+    expect(countOf(r.scene, DIM)).toBe(5);
   });
 
   it('draws nothing extra for a relation that carries no value', async () => {
@@ -139,7 +139,7 @@ describe('SketchLayer — dimensions are drawn on canvas', () => {
     setSketch(sk);
     // eslint-disable-next-line testing-library/render-result-naming-convention
     const r = await render(<SketchLayer />);
-    expect(countOf(r.scene, DIM)).toBe(3);
+    expect(countOf(r.scene, DIM)).toBe(5);
     sk.constraints.length = 0;
     await update(() => setSketch(sk));
     expect(countOf(r.scene, DIM)).toBe(0);

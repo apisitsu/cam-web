@@ -3,7 +3,7 @@ import {
   createSketch, addPoint, addLine, addCircle, addArc, addConstraint,
 } from './model.js';
 import { dimensionAnnotations, fmtDim } from './annotations.js';
-import { dimensionLockDir } from './edit.js';
+import { angleSpec, dimensionLockDir, interiorAngleToModel } from './edit.js';
 
 const DEG = Math.PI / 180;
 /** Distance from a label to a point, for "is it near the geometry" checks. */
@@ -20,8 +20,8 @@ describe('dimensionAnnotations — what gets drawn at all', () => {
   });
 
   it('survives an empty or malformed sketch instead of throwing', () => {
-    expect(dimensionAnnotations(null)).toEqual({ segs: [], labels: [] });
-    expect(dimensionAnnotations(createSketch())).toEqual({ segs: [], labels: [] });
+    expect(dimensionAnnotations(null)).toEqual({ segs: [], labels: [], arrows: [] });
+    expect(dimensionAnnotations(createSketch())).toEqual({ segs: [], labels: [], arrows: [] });
   });
 
   it('skips a constraint whose geometry was deleted', () => {
@@ -235,12 +235,15 @@ describe('dimensionAnnotations — circles and arcs', () => {
     expect(labels[0].text).toBe('Ø20');
   });
 
-  it('labels a radius without drawing a line across the circle', () => {
+  it('draws a radius as a spoke to the rim, not a line across the circle', () => {
     const sk = createSketch();
     const c = addCircle(sk, addPoint(sk, 0, 0), 10);
     addConstraint(sk, 'radius', [c], 10);
     const { segs, labels } = dimensionAnnotations(sk);
-    expect(segs).toHaveLength(0);
+    expect(segs).toHaveLength(1);
+    const [ctr, rim] = segs[0].pts;
+    expect(ctr).toEqual([0, 0, 0]);
+    expect(Math.hypot(rim[0], rim[1])).toBeCloseTo(10, 6);
     expect(labels[0].text).toBe('R10');
   });
 
@@ -286,6 +289,119 @@ describe('dimensionAnnotations — angle', () => {
   });
 });
 
+describe('dimensionAnnotations — an angle between lines that share no point', () => {
+  const crossing = (deg) => {
+    const sk = createSketch();
+    // The base line stops short of the vertex; the other starts away from it, and
+    // their first points are not where they meet.
+    const l1 = addLine(sk, addPoint(sk, 20, 0), addPoint(sk, 5, 0));
+    const c = Math.cos(deg * DEG);
+    const n = Math.sin(deg * DEG);
+    const l2 = addLine(sk, addPoint(sk, 6 * c, 6 * n), addPoint(sk, 30 * c, 30 * n));
+    return { sk, l1, l2 };
+  };
+
+  it('finds the vertex where they would meet and reads the angle between them', () => {
+    const { sk, l1, l2 } = crossing(30);
+    addConstraint(sk, 'angle', [l1, l2], Math.PI - 30 * DEG);
+    const { segs, labels } = dimensionAnnotations(sk);
+    const radii = segs[0].pts.map((p) => Math.hypot(p[0], p[1]));
+    expect(Math.max(...radii) - Math.min(...radii)).toBeLessThan(1e-6);
+    expect(labels[0].text).toBe('30°');
+  });
+
+  it('agrees with what the angle dialog seeds and stores', () => {
+    const { sk, l1, l2 } = crossing(30);
+    const spec = angleSpec(sk, l1, l2);
+    expect(spec.interiorDeg).toBeCloseTo(30, 6);
+    expect(Math.abs(interiorAngleToModel(spec, 30))).toBeCloseTo(Math.abs(spec.parametric) * DEG, 6);
+  });
+
+  it('runs a witness out from a line that stops short of the arc', () => {
+    const { sk, l1, l2 } = crossing(30);
+    addConstraint(sk, 'angle', [l1, l2], Math.PI - 30 * DEG);
+    const { segs } = dimensionAnnotations(sk);
+    // rest radius 8: line 1 starts at 5 and line 2 at 6 from the vertex, so neither
+    // needs one there; slide the arc in to 3 and both do.
+    expect(segs).toHaveLength(1);
+    sk.constraints[0].labelOffset = [-5 * Math.cos(15 * DEG), -5 * Math.sin(15 * DEG)];
+    expect(dimensionAnnotations(sk).segs).toHaveLength(3);
+  });
+
+  it('keeps the arc centred on the vertex when it is dragged', () => {
+    const { sk, l1, l2 } = crossing(30);
+    const ci = addConstraint(sk, 'angle', [l1, l2], Math.PI - 30 * DEG);
+    sk.constraints[ci].labelOffset = [20, 10];
+    const radii = dimensionAnnotations(sk).segs[0].pts.map((p) => Math.hypot(p[0], p[1]));
+    expect(Math.max(...radii) - Math.min(...radii)).toBeLessThan(1e-6);
+    expect(radii[0]).toBeGreaterThan(8);
+  });
+});
+
+describe('dimensionAnnotations — arrowheads', () => {
+  const tipsOut = (from, to, arrows) => {
+    expect(arrows).toHaveLength(2);
+    expect(arrows[0].pos).toEqual(from);
+    expect(arrows[1].pos).toEqual(to);
+    const len = Math.hypot(to[0] - from[0], to[1] - from[1]);
+    expect(arrows[1].dir[0]).toBeCloseTo((to[0] - from[0]) / len, 9);
+    expect(arrows[0].dir[0]).toBeCloseTo(-(to[0] - from[0]) / len, 9);
+    expect(arrows[0].span).toBeCloseTo(len, 9);
+  };
+
+  it('ends a distance line in two, pointing at its ends', () => {
+    const s = createSketch();
+    addConstraint(s, 'distance', [addPoint(s, 0, 0), addPoint(s, 10, 0)], 10);
+    const { segs, arrows } = dimensionAnnotations(s);
+    tipsOut(segs[2].pts[0], segs[2].pts[1], arrows);
+  });
+
+  it.each(['distanceX', 'distanceY'])('ends a %s line in two', (kind) => {
+    const s = createSketch();
+    addConstraint(s, kind, [addPoint(s, 0, 0), addPoint(s, 30, 20)], kind === 'distanceX' ? 30 : 20);
+    const { segs, arrows } = dimensionAnnotations(s);
+    const dim = segs[segs.length - 1];
+    expect(arrows.map((a) => a.pos)).toEqual(dim.pts);
+  });
+
+  it('ends a diameter in two and a radius in one, at the rim', () => {
+    const s = createSketch();
+    const c = addCircle(s, addPoint(s, 0, 0), 10);
+    addConstraint(s, 'diameter', [c], 20);
+    expect(dimensionAnnotations(s).arrows).toHaveLength(2);
+    const r = createSketch();
+    const rc = addCircle(r, addPoint(r, 0, 0), 10);
+    addConstraint(r, 'radius', [rc], 10);
+    const { arrows } = dimensionAnnotations(r);
+    expect(arrows).toHaveLength(1);
+    expect(Math.hypot(arrows[0].pos[0], arrows[0].pos[1])).toBeCloseTo(10, 6);
+    expect(arrows[0].span).toBeNull();
+  });
+
+  it('puts one at each end of an angle arc, along the arc and pointing away from it', () => {
+    const sk = createSketch();
+    const v = addPoint(sk, 0, 0);
+    const l1 = addLine(sk, v, addPoint(sk, 20, 0));
+    const l2 = addLine(sk, v, addPoint(sk, 0, 20));
+    addConstraint(sk, 'angle', [l1, l2], 90 * DEG);
+    const { arrows } = dimensionAnnotations(sk);
+    expect(arrows).toHaveLength(2);
+    expect(arrows[0].dir[0]).toBeCloseTo(0, 9);
+    expect(arrows[0].dir[1]).toBeCloseTo(-1, 9); // on +X, heading clockwise, out of the sweep
+    expect(arrows[1].dir[0]).toBeCloseTo(-1, 9); // on +Y, heading counter-clockwise
+    expect(arrows[1].dir[1]).toBeCloseTo(0, 9);
+  });
+
+  it('tags each with its constraint, so it colours with the selection', () => {
+    const s = createSketch();
+    const a = addPoint(s, 0, 0);
+    const b = addPoint(s, 10, 0);
+    addConstraint(s, 'horizontal', [a, b]);
+    addConstraint(s, 'distance', [a, b], 10);
+    expect(dimensionAnnotations(s).arrows.every((x) => x.ci === 1)).toBe(true);
+  });
+});
+
 describe('dimensionAnnotations — point to line', () => {
   it('draws the perpendicular from the point to its foot', () => {
     const sk = createSketch();
@@ -306,6 +422,19 @@ describe('dimensionAnnotations — point to line', () => {
     addConstraint(sk, 'pointLineDistance', [p, line], 5);
     const { segs } = dimensionAnnotations(sk);
     expect(segs).toHaveLength(2); // perpendicular + the extension witness
+  });
+
+  it('keeps a witness on both sides once the dimension is dragged clear', () => {
+    const sk = createSketch();
+    const line = addLine(sk, addPoint(sk, -10, 5), addPoint(sk, 10, 5));
+    const p = addPoint(sk, 0, 0);
+    const ci = addConstraint(sk, 'pointLineDistance', [p, line], 5);
+    sk.constraints[ci].labelOffset = [15, 0]; // along the line, past its end
+    const { segs } = dimensionAnnotations(sk);
+    expect(segs).toHaveLength(3);
+    const [, fromPoint, fromLine] = segs;
+    expect(fromPoint.pts).toEqual([[0, 0, 0], [15, 0, 0]]);
+    expect(fromLine.pts).toEqual([[0, 5, 0], [15, 5, 0]]);
   });
 });
 

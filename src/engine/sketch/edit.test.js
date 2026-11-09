@@ -9,8 +9,10 @@ import {
   axisDimensionGeometry, measureConstraint, axisFromPlacement, arcArcMeet,
   filletCircleCircle, entityIntersections, nearestIntersection, entitiesInBox,
   nearestQuadrant, nearestMidpoint, linesShareCorner, angleGuide,
-  snapshotEntities, hydrateSnapshot,
+  snapshotEntities, hydrateSnapshot, sketchAxisLine,
 } from './edit.js';
+
+import { sketchLoops } from './loops.js';
 
 const near = (a, b, eps = 1e-6) => Math.abs(a - b) <= eps;
 const entities = (sk) => [...sk.entities.values()];
@@ -318,6 +320,54 @@ describe('mirror', () => {
   });
 });
 
+describe('mirror about something the drawing touches', () => {
+  /** Three sides of a box standing on the Y axis, open towards it. */
+  function halfBox(sk) {
+    const p = [[0, 0], [20, 0], [20, 10], [0, 10]].map(([x, y]) => addPoint(sk, x, y));
+    return [addLine(sk, p[0], p[1]), addLine(sk, p[1], p[2]), addLine(sk, p[2], p[3])];
+  }
+
+  it('shares the points on the axis, so the two halves join up', () => {
+    const sk = createSketch();
+    const src = halfBox(sk);
+    const axis = sketchAxisLine(sk, 'y');
+    const before = ofType(sk, 'point').length;
+    expect(mirror(sk, src, axis)).toHaveLength(3);
+    expect(ofType(sk, 'point').length).toBe(before + 2); // only the two off the axis got an image
+    expect(sketchLoops(sk)).toMatchObject({ loops: [expect.anything()], open: [] });
+  });
+
+  it('leaves alone what lies wholly on the axis', () => {
+    const sk = createSketch();
+    const onAxis = addLine(sk, addPoint(sk, 0, 2), addPoint(sk, 0, 8));
+    expect(mirror(sk, [onAxis], sketchAxisLine(sk, 'y'))).toBeNull();
+  });
+});
+
+describe('sketchAxisLine', () => {
+  it('draws a centerline on the axis asked for, out past the drawing', () => {
+    const sk = createSketch();
+    addPoint(sk, 50, -80);
+    for (const [axis, along] of [['x', 'x'], ['y', 'y']]) {
+      const l = sk.entities.get(sketchAxisLine(sk, axis));
+      expect(l.construction).toBe(true);
+      const [a, b] = [sk.entities.get(l.p1), sk.entities.get(l.p2)];
+      const across = along === 'x' ? 'y' : 'x';
+      expect(a[across]).toBe(0);
+      expect(b[across]).toBe(0);
+      expect(Math.abs(b[along] - a[along])).toBeGreaterThan(80);
+      expect(b.fixed).toBe(true);
+    }
+  });
+
+  it('uses a centerline already on that axis', () => {
+    const sk = createSketch();
+    const drawn = addLine(sk, addPoint(sk, -5, 0), addPoint(sk, 5, 0));
+    sk.entities.get(drawn).construction = true;
+    expect(sketchAxisLine(sk, 'x')).toBe(drawn);
+  });
+});
+
 describe('offsetEntity', () => {
   it('offsets a line along its normal by the given distance', () => {
     const sk = createSketch();
@@ -353,6 +403,22 @@ describe('angleSpec (interior corner angle)', () => {
     // Entering interior 60 stores the directed value planegcs needs (±120°).
     const model = (interiorAngleToModel(spec, 60) * 180) / Math.PI;
     expect(near(Math.abs(model), 120, 1e-3)).toBe(true);
+  });
+
+  it('measures at where unjoined lines meet, not along their drawn direction', () => {
+    const sk = createSketch();
+    const lh = addLine(sk, addPoint(sk, 20, 0), addPoint(sk, 5, 0)); // dir -x, lying on +x
+    const ld = addLine(sk, addPoint(sk, 0, 5), addPoint(sk, 0, 20));
+    const spec = angleSpec(sk, lh, ld);
+    expect(spec.shared).toBeNull();
+    expect(near(spec.interiorDeg, 90, 1e-6)).toBe(true);
+  });
+
+  it('falls back on the drawn directions for parallel lines', () => {
+    const sk = createSketch();
+    const a = addLine(sk, addPoint(sk, 0, 0), addPoint(sk, 10, 0));
+    const b = addLine(sk, addPoint(sk, 10, 5), addPoint(sk, 0, 5));
+    expect(near(angleSpec(sk, a, b).interiorDeg, 180, 1e-6)).toBe(true);
   });
 });
 

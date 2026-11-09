@@ -4,7 +4,8 @@
  *
  * Opened from the Ribbon like the four named features. It asks only for what the
  * kind needs — a thread for a tapped hole, a counterbore's diameter and depth —
- * and says how many holes it will make and where they come from before Build.
+ * and makes them at the points clicked on the sketch, so one sketch can hold
+ * holes of several kinds. It stays open while those are clicked.
  */
 import { useMemo, useState } from 'react';
 import {
@@ -17,10 +18,10 @@ import { useCamPlanStore, getRawMesh } from '../stores/camPlanStore.js';
 import { boundsOf } from '../engine/mesh/analyze.js';
 import { defaultReverse } from '../engine/solid/featureTree.js';
 import {
-  HOLE_TYPES, THREADS, holePositions, drillDiameter,
+  HOLE_TYPES, THREADS, holePointIds, drillDiameter,
 } from '../engine/solid/hole.js';
 import { planeLabel } from '../engine/sketch/plane.js';
-import { START_SKETCH_HINT, useSketchSpent } from './BuildPanel.jsx';
+import { START_SKETCH_HINT } from './BuildPanel.jsx';
 import { CAD } from '../theme.js';
 
 const { Text } = Typography;
@@ -40,8 +41,9 @@ const mmInput = (label, value, onChange, extra = {}) => (
 );
 
 export default function HolePanel({ trigger }) {
-  useSketchStore((s) => s.version); // the count follows the points as they are drawn
   const sk = useSketchStore((s) => s.sk);
+  const selection = useSketchStore((s) => s.selection);
+  const sketchOpen = useSketchStore((s) => s.sketchOpen);
   const active = useSketchStore((s) => s.sketches.find((x) => x.id === s.activeId) ?? s.sketches[0]);
   const buildHole = useFeatureStore((s) => s.buildHole);
   const meshVer = useCamPlanStore((s) => s.meshVer);
@@ -62,9 +64,9 @@ export default function HolePanel({ trigger }) {
   const [depth, setDepth] = useState(15);
   const [reverseChoice, setReverse] = useState(null);
   const [busy, setBusy] = useState(false);
+  const [open, setOpen] = useState(false);
 
-  const spent = useSketchSpent();
-  const positions = spent ? [] : holePositions(sk);
+  const count = sketchOpen ? holePointIds(sk, selection).length : 0;
   // A hole runs against the plane's normal unless reversed — into a part the plane
   // is the top of. It needs reversing only when the part lies on the normal's side,
   // which is when a boss would (`defaultReverse` for a boss).
@@ -79,16 +81,26 @@ export default function HolePanel({ trigger }) {
       await buildHole({
         ...spec, end, depth, reverse,
       });
+      if (!useSketchStore.getState().sketchOpen) setOpen(false);
     } finally {
       setBusy(false);
     }
   };
 
+  const toggle = () => {
+    if (!partBounds) return;
+    if (!open) useSketchStore.getState().setTool('select');
+    setOpen(!open);
+  };
+
   const content = (
     <Space direction="vertical" size={8} style={{ minWidth: 280 }} data-hole-panel>
-      <Text style={{ color: CAD.dim, fontSize: 11 }}>
-        Hole Wizard at the points of “{active?.name}” on {planeLabel(active?.plane)}
-      </Text>
+      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+        <Text style={{ color: CAD.dim, fontSize: 11 }}>
+          Hole Wizard on “{active?.name}”, {planeLabel(active?.plane)}
+        </Text>
+        <Button size="small" type="text" style={{ color: CAD.label }} onClick={() => setOpen(false)}>✕</Button>
+      </div>
       <Segmented
         size="small"
         block
@@ -154,14 +166,14 @@ export default function HolePanel({ trigger }) {
       </Space>
 
       <Alert
-        type={positions.length ? 'info' : 'warning'}
+        type={count ? 'info' : 'warning'}
         showIcon
         style={{ padding: '4px 8px' }}
         message={(
           <span style={{ fontSize: 11 }}>
-            {positions.length
-              ? `${positions.length} hole${positions.length > 1 ? 's' : ''} — one at each point of the sketch`
-              : (spent ? START_SKETCH_HINT : 'Put a point where each hole goes (or a circle — its centre is used).')}
+            {count
+              ? `${count} hole${count > 1 ? 's' : ''} — at the points picked`
+              : (sketchOpen ? 'Click the points where this hole goes (a circle uses its centre).' : START_SKETCH_HINT)}
           </span>
         )}
       />
@@ -170,7 +182,7 @@ export default function HolePanel({ trigger }) {
         type="primary"
         block
         loading={busy}
-        disabled={!positions.length}
+        disabled={!count}
         onClick={onBuild}
         data-hole-build
       >
@@ -180,8 +192,10 @@ export default function HolePanel({ trigger }) {
   );
 
   return (
-    <Popover trigger="click" placement="bottomLeft" content={content}>
-      {trigger}
+    // No trigger of its own: a click-away would close it, and clicks on the sketch
+    // are how the points get picked.
+    <Popover trigger={[]} open={open} placement="bottomLeft" content={content}>
+      <span style={{ display: 'inline-flex' }} onClick={toggle}>{trigger}</span>
     </Popover>
   );
 }

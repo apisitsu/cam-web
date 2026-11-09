@@ -964,38 +964,77 @@ export function distancePointToLine(sk, pointId, lineId) {
 }
 
 /**
+ * Where the angle between two lines is: its vertex and the ray each line lies on.
+ * The vertex is their shared point, or, for lines that only meet by position or
+ * would meet if extended, the intersection. Each ray runs from the vertex to the
+ * line's far end; `near`/`far` are where the drawn line starts and stops along it.
+ * Parallel lines have no vertex: the rays are their directions, from between them.
+ *
+ * @returns {{v:{x:number,y:number}, shared:number|null, rays:{angle:number,near:number,far:number}[], sweep:number}|null}
+ *   `sweep` is the signed turn from the first ray to the second, within ±180°
+ */
+export function angleGeometry(sk, l1Id, l2Id) {
+  const l1 = sk.entities.get(l1Id);
+  const l2 = sk.entities.get(l2Id);
+  if (l1?.type !== 'line' || l2?.type !== 'line') return null;
+  const [a1, b1, a2, b2] = [l1.p1, l1.p2, l2.p1, l2.p2].map((id) => sk.entities.get(id));
+  if (!a1 || !b1 || !a2 || !b2) return null;
+
+  const shared = [l1.p1, l1.p2].find((id) => id === l2.p1 || id === l2.p2) ?? null;
+  const ux = b1.x - a1.x;
+  const uy = b1.y - a1.y;
+  const wx = b2.x - a2.x;
+  const wy = b2.y - a2.y;
+  const cross = ux * wy - uy * wx;
+  const parallel = shared == null && Math.abs(cross) <= 1e-9 * Math.hypot(ux, uy) * Math.hypot(wx, wy);
+
+  let v;
+  if (shared != null) v = sk.entities.get(shared);
+  else if (parallel) v = { x: (a1.x + b1.x + a2.x + b2.x) / 4, y: (a1.y + b1.y + a2.y + b2.y) / 4 };
+  else {
+    const t = ((a2.x - a1.x) * wy - (a2.y - a1.y) * wx) / cross;
+    v = { x: a1.x + ux * t, y: a1.y + uy * t };
+  }
+
+  const ray = (p, q) => {
+    if (parallel) return { angle: Math.atan2(q.y - p.y, q.x - p.x), near: 0, far: Infinity };
+    const dp = Math.hypot(p.x - v.x, p.y - v.y);
+    const dq = Math.hypot(q.x - v.x, q.y - v.y);
+    const end = dq > dp ? q : p;
+    return { angle: Math.atan2(end.y - v.y, end.x - v.x), near: Math.min(dp, dq), far: Math.max(dp, dq) };
+  };
+  const rays = [ray(a1, b1), ray(a2, b2)];
+  let sweep = rays[1].angle - rays[0].angle;
+  while (sweep > Math.PI) sweep -= TAU;
+  while (sweep <= -Math.PI) sweep += TAU;
+  return { v: { x: v.x, y: v.y }, shared, rays, sweep };
+}
+
+/**
  * Angle-dimension model for two lines. planegcs measures the **directed angle
  * between the lines' point-order directions** (p1→p2), which for a corner is often
  * the *supplement* of the angle you'd read with a protractor there (e.g. a 60°
  * corner shows as 120° if one line points into the vertex). This returns the
- * intuitive **interior angle at the shared vertex** (0–180°, `interiorDeg`) for
- * display, plus the `sign`/`offsetDeg` to convert a user-entered interior angle θ
- * back to the value planegcs must store: `norm180(sign*θ + offsetDeg)`. With no
- * shared vertex it falls back to the directed angle's magnitude.
+ * intuitive **interior angle at the vertex** (0–180°, `interiorDeg`) for display,
+ * plus the `sign`/`offsetDeg` to convert a user-entered interior angle θ back to
+ * the value planegcs must store: `norm180(sign*θ + offsetDeg)`.
  */
 export function angleSpec(sk, l1Id, l2Id) {
-  const l1 = sk.entities.get(l1Id);
-  const l2 = sk.entities.get(l2Id);
-  if (!l1 || l1.type !== 'line' || !l2 || l2.type !== 'line') return null;
+  const g = angleGeometry(sk, l1Id, l2Id);
+  if (!g) return null;
   const norm180 = (d) => { const m = ((d % 360) + 360) % 360; return m > 180 ? m - 360 : m; };
-  const dirOf = (l) => {
+  const dirOf = (id) => {
+    const l = sk.entities.get(id);
     const a = sk.entities.get(l.p1);
     const b = sk.entities.get(l.p2);
     return (Math.atan2(b.y - a.y, b.x - a.x) * 180) / Math.PI;
   };
-  const parametric = norm180(dirOf(l2) - dirOf(l1));
-  const shared = [l1.p1, l1.p2].find((id) => id === l2.p1 || id === l2.p2);
-  if (shared == null) {
-    return { shared: null, interiorDeg: Math.abs(parametric), sign: parametric < 0 ? -1 : 1, offsetDeg: 0, parametric };
-  }
-  const V = sk.entities.get(shared);
-  const f1 = sk.entities.get(l1.p1 === shared ? l1.p2 : l1.p1);
-  const f2 = sk.entities.get(l2.p1 === shared ? l2.p2 : l2.p1);
-  const ray1 = (Math.atan2(f1.y - V.y, f1.x - V.x) * 180) / Math.PI;
-  const ray2 = (Math.atan2(f2.y - V.y, f2.x - V.x) * 180) / Math.PI;
-  const interiorSigned = norm180(ray2 - ray1);
+  const parametric = norm180(dirOf(l2Id) - dirOf(l1Id));
+  const interiorSigned = (g.sweep * 180) / Math.PI;
   const offsetDeg = Math.round((parametric - interiorSigned) / 180) * 180; // multiple of 180
-  return { shared, interiorDeg: Math.abs(interiorSigned), sign: interiorSigned < 0 ? -1 : 1, offsetDeg, parametric };
+  return {
+    shared: g.shared, interiorDeg: Math.abs(interiorSigned), sign: interiorSigned < 0 ? -1 : 1, offsetDeg, parametric,
+  };
 }
 
 /** The planegcs angle value (radians) for a desired interior angle θ° on this pair. */
@@ -1783,7 +1822,8 @@ export function mirror(sk, ids, axisLineId) {
     if (map.has(pid)) return map.get(pid);
     const p = sk.entities.get(pid);
     const r = reflectPoint(p.x, p.y, a, b);
-    const nid = addPoint(sk, r.x, r.y);
+    // On the axis a point is its own image: the two halves meet there.
+    const nid = Math.hypot(r.x - p.x, r.y - p.y) < 1e-6 ? pid : addPoint(sk, r.x, r.y);
     map.set(pid, nid);
     return nid;
   };
@@ -1792,9 +1832,10 @@ export function mirror(sk, ids, axisLineId) {
   for (const id of targets) {
     const e = sk.entities.get(id);
     let nid = null;
-    if (e.type === 'point') nid = mp(id);
-    else if (e.type === 'line') nid = addLine(sk, mp(e.p1), mp(e.p2));
-    else if (e.type === 'circle') { nid = addCircle(sk, mp(e.center), e.r); radiusLinks.push([id, nid]); }
+    const ownImage = (...pids) => pids.every((pid) => mp(pid) === pid);
+    if (e.type === 'point') { if (!ownImage(id)) nid = mp(id); }
+    else if (e.type === 'line') { if (!ownImage(e.p1, e.p2)) nid = addLine(sk, mp(e.p1), mp(e.p2)); }
+    else if (e.type === 'circle') { if (!ownImage(e.center)) { nid = addCircle(sk, mp(e.center), e.r); radiusLinks.push([id, nid]); } }
     else if (e.type === 'arc') { nid = addArc(sk, mp(e.center), mp(e.end), mp(e.start), e.r); radiusLinks.push([id, nid]); } // swap → CCW
     if (nid != null) {
       if (e.construction) sk.entities.get(nid).construction = true;
@@ -1804,13 +1845,31 @@ export function mirror(sk, ids, axisLineId) {
   // Parametric links (SW keeps a mirror driven by its source).
   for (const [oldPid, newPid] of map) {
     const op = sk.entities.get(oldPid);
-    if (op?.origin || op?.fixed) continue; // don't tie a fixed datum to its image
+    if (oldPid === newPid || op?.origin || op?.fixed) continue; // don't tie a fixed datum to its image
     try { addConstraint(sk, 'symmetric', [oldPid, newPid, axisLineId]); } catch { /* skip unlinkable pair */ }
   }
   for (const [oldId, newId] of radiusLinks) {
     try { addConstraint(sk, 'equalRadius', [oldId, newId]); } catch { /* skip */ }
   }
   return created.length ? created : null;
+}
+
+/**
+ * The centerline on the sketch's X or Y axis: one already drawn there, else a new
+ * one from the origin to past the drawing, its far end fixed so the axis cannot
+ * swing when what is mirrored about it moves.
+ */
+export function sketchAxisLine(sk, axis) {
+  const P = (id) => sk.entities.get(id);
+  const onAxis = (p) => Math.abs(axis === 'x' ? p.y : p.x) < 1e-6;
+  const all = [...sk.entities.values()];
+  const drawn = all.find((e) => e.type === 'line' && e.construction && onAxis(P(e.p1)) && onAxis(P(e.p2)));
+  if (drawn) return drawn.id;
+  const reach = 1.2 * Math.max(10, ...all.filter((e) => e.type === 'point').flatMap((p) => [Math.abs(p.x), Math.abs(p.y)]));
+  const origin = all.find((e) => e.origin)?.id ?? addPoint(sk, 0, 0, true);
+  const id = addLine(sk, origin, addPoint(sk, axis === 'x' ? reach : 0, axis === 'y' ? reach : 0, true));
+  sk.entities.get(id).construction = true;
+  return id;
 }
 
 /**
@@ -2137,20 +2196,9 @@ export function dimensionLockDir(sk, kind, refs = []) {
       return [Math.cos(mid), Math.sin(mid)]; // along the spoke
     }
     case 'angle': {
-      const l1 = P(refs[0]);
-      const l2 = P(refs[1]);
-      if (!l1 || !l2) return null;
-      const sharedId = [l1.p1, l1.p2].find((id) => id === l2.p1 || id === l2.p2);
-      const vId = sharedId != null ? sharedId : l1.p1;
-      const v = P(vId);
-      const f1 = P(l1.p1 === vId ? l1.p2 : l1.p1);
-      const f2 = P(l2.p1 === vId ? l2.p2 : l2.p1);
-      if (!v || !f1 || !f2) return null;
-      const a1 = Math.atan2(f1.y - v.y, f1.x - v.x);
-      let d = Math.atan2(f2.y - v.y, f2.x - v.x) - a1;
-      while (d > Math.PI) d -= TAU;
-      while (d < -Math.PI) d += TAU;
-      const mid = a1 + d / 2;
+      const g = angleGeometry(sk, refs[0], refs[1]);
+      if (!g) return null;
+      const mid = g.rays[0].angle + g.sweep / 2;
       return [Math.cos(mid), Math.sin(mid)]; // along the bisector
     }
     default:

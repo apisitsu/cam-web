@@ -14,7 +14,9 @@
 // Hoisted above the file body. It sits next to its re-export further down in
 // cam-web, which vite accepts; CRA's eslint config makes `import/first` a build
 // error. The re-export stays where it is, with the prose explaining it.
-import { axisDimensionGeometry, dimensionLockDir, projectOnto } from './edit.js';
+import {
+  angleGeometry, axisDimensionGeometry, dimensionLockDir, projectOnto,
+} from './edit.js';
 
 const TWO_PI = Math.PI * 2;
 const normAngle = (a) => ((a % TWO_PI) + TWO_PI) % TWO_PI;
@@ -34,14 +36,32 @@ export { axisDimensionGeometry } from './edit.js';
  *
  * @param {object} sk  sketch document
  * @param {{z?:number}} [opts]  z to lift the drawing off the pick plane
- * @returns {{segs:{key:string,ci:number,pts:number[][]}[], labels:{key:string,ci:number,pos:number[],text:string}[]}}
+ * @returns {{
+ *   segs:{key:string,ci:number,pts:number[][]}[],
+ *   labels:{key:string,ci:number,pos:number[],text:string}[],
+ *   arrows:{key:string,ci:number,pos:number[],dir:number[],span:number|null}[],
+ * }} an arrow's tip is at `pos`, pointing along `dir`; `span` is the length of the
+ *   dimension line it ends, null when it is the only arrow on it
  */
 export function dimensionAnnotations(sk, { z: Z = 0 } = {}) {
   const P = (id) => sk?.entities?.get(id);
   const segs = [];
   const labels = [];
+  const arrows = [];
   let k = 0;
-  if (!sk?.constraints) return { segs, labels };
+  if (!sk?.constraints) return { segs, labels, arrows };
+
+  const arrow = (pos, dir, span = null) => arrows.push({
+    key: `a${k++}`, pos, dir, span,
+  });
+  /** A dimension line's two arrows, each pointing out at the end it stops on. */
+  const arrowsOn = (p, q) => {
+    const len = Math.hypot(q[0] - p[0], q[1] - p[1]);
+    if (len < 1e-9) return;
+    const u = [(q[0] - p[0]) / len, (q[1] - p[1]) / len];
+    arrow(p, [-u[0], -u[1]], len);
+    arrow(q, u, len);
+  };
 
   sk.constraints.forEach((c, ci) => {
     if (c.value == null) return;
@@ -59,6 +79,7 @@ export function dimensionAnnotations(sk, { z: Z = 0 } = {}) {
       dimensionLockDir(sk, c.kind, c.refs),
     );
     const segStart = segs.length; // tag every seg this constraint pushes with `ci` below
+    const arrowStart = arrows.length;
 
     if (c.kind === 'distance') {
       const a = P(c.refs[0]);
@@ -75,6 +96,7 @@ export function dimensionAnnotations(sk, { z: Z = 0 } = {}) {
       segs.push({ key: `s${k++}`, pts: [[a.x, a.y, Z], a2] }); // witness lines
       segs.push({ key: `s${k++}`, pts: [[b.x, b.y, Z], b2] });
       segs.push({ key: `s${k++}`, pts: [a2, b2] }); // dimension line
+      arrowsOn(a2, b2);
       labels.push({
         key: `b${k++}`, ci, text: fmtDim(c.value),
         pos: [(a2[0] + b2[0]) / 2, (a2[1] + b2[1]) / 2, Z],
@@ -88,13 +110,14 @@ export function dimensionAnnotations(sk, { z: Z = 0 } = {}) {
       // dimension line.
       for (const w of g.witness) segs.push({ key: `s${k++}`, pts: [onGeom(w[0]), moved(w[1])] });
       segs.push({ key: `s${k++}`, pts: g.line.map(moved) }); // dimension line, on-axis
+      arrowsOn(moved(g.line[0]), moved(g.line[1]));
       // The stored value is signed (planegcs `difference`); a dimension reads as
       // a magnitude.
       labels.push({ key: `b${k++}`, ci, pos: moved(g.label), text: fmtDim(Math.abs(c.value)) });
     } else if (c.kind === 'pointLineDistance') {
-      // The actual perpendicular: point → its foot on the line, with a witness
-      // along the line when the foot lands past the drawn segment (the common
-      // parallel-gap case).
+      // The actual perpendicular, point → its foot on the line, moved clear as a
+      // whole, with a witness at each end back to what it measures: the point, and
+      // the nearest part of the line, which is an end when the foot lands past it.
       const p = P(c.refs[0]);
       const l = P(c.refs[1]);
       const a = l && P(l.p1);
@@ -106,14 +129,14 @@ export function dimensionAnnotations(sk, { z: Z = 0 } = {}) {
       const t = ((p.x - a.x) * abx + (p.y - a.y) * aby) / len2;
       const fx = a.x + abx * t;
       const fy = a.y + aby * t;
-      segs.push({ key: `s${k++}`, pts: [[p.x + ox, p.y + oy, Z], [fx + ox, fy + oy, Z]] });
-      if (t < 0 || t > 1) {
-        const nearEnd = t < 0 ? a : b;
-        segs.push({ key: `s${k++}`, pts: [[nearEnd.x, nearEnd.y, Z], [fx + ox, fy + oy, Z]] });
+      const from = [p.x + ox, p.y + oy, Z];
+      const foot = [fx + ox, fy + oy, Z];
+      segs.push({ key: `s${k++}`, pts: [from, foot] });
+      arrowsOn(from, foot);
+      const anchor = t < 0 ? a : t > 1 ? b : { x: fx, y: fy };
+      for (const [end, tip] of [[p, from], [anchor, foot]]) {
+        if (Math.hypot(end.x - tip[0], end.y - tip[1]) > 1e-9) segs.push({ key: `s${k++}`, pts: [[end.x, end.y, Z], tip] });
       }
-      // A short tie from the measured point out to the moved line, so it still
-      // reads as a dimension *of that point* once it has been dragged clear.
-      if (ox || oy) segs.push({ key: `s${k++}`, pts: [[p.x, p.y, Z], [p.x + ox, p.y + oy, Z]] });
       labels.push({
         key: `b${k++}`, ci, text: fmtDim(c.value),
         pos: [(p.x + fx) / 2 + ox, (p.y + fy) / 2 + oy, Z],
@@ -122,9 +145,14 @@ export function dimensionAnnotations(sk, { z: Z = 0 } = {}) {
       const circ = P(c.refs[0]);
       const ctr = circ && P(circ.center);
       if (!ctr) return;
+      const u = Math.SQRT1_2;
+      const rim = [ctr.x + u * circ.r, ctr.y + u * circ.r, Z];
+      const at = [ctr.x + u * circ.r * 0.5 + ox, ctr.y + u * circ.r * 0.5 + oy, Z];
+      segs.push({ key: `s${k++}`, pts: [[ctr.x, ctr.y, Z], rim] });
+      if (ox || oy) segs.push({ key: `s${k++}`, pts: [rim, at] });
+      arrow(rim, [u, u]);
       labels.push({
-        key: `b${k++}`, ci, text: `R${fmtDim(c.value)}`,
-        pos: [ctr.x + circ.r * 0.7 + ox, ctr.y + circ.r * 0.7 + oy, Z],
+        key: `b${k++}`, ci, text: `R${fmtDim(c.value)}`, pos: at,
       });
     } else if (c.kind === 'diameter') {
       const circ = P(c.refs[0]);
@@ -137,11 +165,11 @@ export function dimensionAnnotations(sk, { z: Z = 0 } = {}) {
       // value (SolidWorks' diameter-with-leader), locked to the 45° direction.
       const u = Math.SQRT1_2;
       const rim = [ctr.x + u * circ.r, ctr.y + u * circ.r, Z];
-      segs.push({
-        key: `s${k++}`,
-        pts: [[ctr.x - u * circ.r, ctr.y - u * circ.r, Z], rim],
-      });
-      const at = [rim[0] + ox, rim[1] + oy, Z];
+      const farRim = [ctr.x - u * circ.r, ctr.y - u * circ.r, Z];
+      segs.push({ key: `s${k++}`, pts: [farRim, rim] });
+      arrowsOn(farRim, rim);
+      // At rest the value sits on the chord, clear of the arrow at the rim.
+      const at = [ctr.x + u * circ.r * 0.5 + ox, ctr.y + u * circ.r * 0.5 + oy, Z];
       if (ox || oy) segs.push({ key: `s${k++}`, pts: [rim, at] });
       labels.push({ key: `b${k++}`, ci, text: `Ø${fmtDim(c.value)}`, pos: at });
     } else if (c.kind === 'arcRadius') {
@@ -156,47 +184,43 @@ export function dimensionAnnotations(sk, { z: Z = 0 } = {}) {
       const mid = a0 + (normAngle(Math.atan2(en.y - ctr.y, en.x - ctr.x) - a0) || TWO_PI) / 2;
       const rx = ctr.x + arc.r * Math.cos(mid);
       const ry = ctr.y + arc.r * Math.sin(mid);
-      // The spoke stays rooted at the centre and stretches out to the moved rim.
-      segs.push({ key: `s${k++}`, pts: [[ctr.x, ctr.y, Z], [rx + ox, ry + oy, Z]] });
+      // The spoke runs centre to rim, where its arrow is; a leader goes on to the
+      // value once that has been moved along it.
+      segs.push({ key: `s${k++}`, pts: [[ctr.x, ctr.y, Z], [rx, ry, Z]] });
+      if (ox || oy) segs.push({ key: `s${k++}`, pts: [[rx, ry, Z], [rx + ox, ry + oy, Z]] });
+      arrow([rx, ry, Z], [Math.cos(mid), Math.sin(mid)]);
       labels.push({
         key: `b${k++}`, ci, text: `R${fmtDim(c.value)}`,
         pos: [(ctr.x + rx) / 2 + ox, (ctr.y + ry) / 2 + oy, Z],
       });
     } else if (c.kind === 'angle') {
-      // An arc swept between the two legs around their shared vertex, so a 2-line
-      // angle dimension reads like a real angle rather than a bare number.
-      const l1 = P(c.refs[0]);
-      const l2 = P(c.refs[1]);
-      if (!l1 || !l2) return;
-      const sharedId = [l1.p1, l1.p2].find((id) => id === l2.p1 || id === l2.p2);
-      const vId = sharedId != null ? sharedId : l1.p1;
-      const v = P(vId);
-      const f1 = P(l1.p1 === vId ? l1.p2 : l1.p1);
-      const f2 = P(l2.p1 === vId ? l2.p2 : l2.p1);
-      if (!v || !f1 || !f2) return;
-      const a1 = Math.atan2(f1.y - v.y, f1.x - v.x);
-      const a2 = Math.atan2(f2.y - v.y, f2.x - v.x);
-      const legMin = Math.min(
-        Math.hypot(f1.x - v.x, f1.y - v.y),
-        Math.hypot(f2.x - v.x, f2.y - v.y),
-      );
-      const r = Math.max(3, Math.min(legMin * 0.4, 14));
-      let d = a2 - a1; // sweep the shorter way between the legs
-      while (d > Math.PI) d -= TWO_PI;
-      while (d < -Math.PI) d += TWO_PI;
+      // An arc about the vertex from one line to the other. Dragging changes its
+      // radius; past where a line is drawn, a witness carries the line out to it.
+      const g = angleGeometry(sk, c.refs[0], c.refs[1]);
+      if (!g) return;
+      const { v, rays, sweep: d } = g;
+      const a1 = rays[0].angle;
+      const mid = a1 + d / 2;
+      const rest = Math.max(3, Math.min(Math.min(rays[0].far, rays[1].far) * 0.4, 14));
+      const r = Math.max(2, rest + ox * Math.cos(mid) + oy * Math.sin(mid));
+      const at = (a, rad) => [v.x + rad * Math.cos(a), v.y + rad * Math.sin(a), Z];
       const N = 24;
       const pts = [];
-      for (let i = 0; i <= N; i++) {
-        const a = a1 + (d * i) / N;
-        pts.push([v.x + r * Math.cos(a) + ox, v.y + r * Math.sin(a) + oy, Z]);
+      for (let i = 0; i <= N; i++) pts.push(at(a1 + (d * i) / N, r));
+      segs.push({ key: `s${k++}`, pts });
+      for (const ray of rays) {
+        if (r < ray.near) segs.push({ key: `s${k++}`, pts: [at(ray.angle, ray.near), at(ray.angle, r)] });
+        else if (r > ray.far) segs.push({ key: `s${k++}`, pts: [at(ray.angle, ray.far), at(ray.angle, r)] });
       }
-      segs.push({ key: `s${k++}`, pts }); // the whole arc slides out as one
-      const mid = a1 + d / 2;
-      // Label the *interior* corner angle actually swept, so a 60° corner reads
-      // 60° and not the 120° directed angle planegcs stores.
+      const turn = Math.sign(d) || 1;
+      const a2 = a1 + d;
+      const span = r * Math.abs(d);
+      arrow(at(a1, r), [turn * Math.sin(a1), -turn * Math.cos(a1)], span);
+      arrow(at(a2, r), [-turn * Math.sin(a2), turn * Math.cos(a2)], span);
+      // The interior corner angle actually swept, so a 60° corner reads 60° and
+      // not the 120° directed angle planegcs stores.
       labels.push({
-        key: `b${k++}`, ci, text: `${fmtDim((Math.abs(d) * 180) / Math.PI)}°`,
-        pos: [v.x + (r + 2) * Math.cos(mid) + ox, v.y + (r + 2) * Math.sin(mid) + oy, Z],
+        key: `b${k++}`, ci, text: `${fmtDim((Math.abs(d) * 180) / Math.PI)}°`, pos: at(mid, r + 2),
       });
     } else if (c.kind === 'lockX' || c.kind === 'lockY') {
       const p = P(c.refs[0]);
@@ -208,7 +232,8 @@ export function dimensionAnnotations(sk, { z: Z = 0 } = {}) {
       });
     }
     for (let s = segStart; s < segs.length; s += 1) segs[s].ci = ci;
+    for (let a = arrowStart; a < arrows.length; a += 1) arrows[a].ci = ci;
   });
 
-  return { segs, labels };
+  return { segs, labels, arrows };
 }

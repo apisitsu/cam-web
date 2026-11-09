@@ -106,11 +106,8 @@ export function holeSection(spec, depth, through) {
   return pts.flat();
 }
 
-/**
- * Where the holes go: the sketch's own points — the ones not part of a line,
- * circle or arc — or, when it has none, the centres of its circles.
- */
-export function holePositions(doc) {
+/** The places a hole could go: points on their own, and centres of circles. */
+function holeSites(doc) {
   const used = new Set();
   const centres = [];
   for (const e of doc.entities.values()) {
@@ -121,11 +118,44 @@ export function holePositions(doc) {
       if (!e.construction) centres.push(e.center);
     }
   }
-  const at = (id) => doc.entities.get(id);
   const own = [...doc.entities.values()]
-    .filter((e) => e.type === 'point' && !e.origin && !e.construction && !used.has(e.id));
-  const chosen = own.length ? own : centres.map(at).filter(Boolean);
-  return chosen.map((p) => [p.x, p.y]);
+    .filter((e) => e.type === 'point' && !e.origin && !e.construction && !used.has(e.id))
+    .map((e) => e.id);
+  return { own, centres };
+}
+
+/**
+ * The points holes go at. `picked` are the entities the operator clicked: a point
+ * is itself, a circle its centre, anything else nothing. A hole feature saved
+ * before holes were picked has none, and goes at all the sketch's own points or,
+ * when it has none, the centres of its circles.
+ */
+export function holePointIds(doc, picked) {
+  if (!picked) {
+    const { own, centres } = holeSites(doc);
+    return own.length ? own : centres;
+  }
+  const ids = picked.map((id) => {
+    const e = doc.entities.get(id);
+    if (e?.type === 'point') return id;
+    return e?.type === 'circle' ? e.center : null;
+  });
+  return [...new Set(ids.filter((id) => id != null))];
+}
+
+/** Where the holes go, as sketch (x, y). */
+export function holePositions(doc, picked) {
+  return holePointIds(doc, picked)
+    .map((id) => doc.entities.get(id))
+    .filter(Boolean)
+    .map((p) => [p.x, p.y]);
+}
+
+/** The sites of `doc` that none of `pickedSets`, one per hole feature, has used. */
+export function unusedHoleSites(doc, pickedSets) {
+  const taken = new Set(pickedSets.flatMap((picked) => holePointIds(doc, picked)));
+  const { own, centres } = holeSites(doc);
+  return [...own, ...centres].filter((id) => !taken.has(id));
 }
 
 /**

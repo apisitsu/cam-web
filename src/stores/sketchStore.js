@@ -22,7 +22,7 @@ import {
   deleteEntity, removeConstraint, chamfer as chamferEdit, fillet as filletEdit,
   filletLineArc as filletLineArcEdit, filletArcArc as filletArcArcEdit,
   filletCircleCircle as filletCircleCircleEdit, linesShareCorner,
-  trimLine, trimCircle, trimArc, mirror as mirrorEdit, offsetChain,
+  trimLine, trimCircle, trimArc, mirror as mirrorEdit, sketchAxisLine, offsetChain,
   distancePointToLine, farEndpointFromLine, nearestRimPoint, nearestTangent,
   nearestIntersection, nearestQuadrant, nearestMidpoint, entitiesInBox, angleGuide,
   measureConstraint, lineArcMeet, arcArcMeet, angleSpec, interiorAngleToModel,
@@ -178,6 +178,7 @@ export const useSketchStore = create((set, get) => ({
   facePick: false, // true while Sketch on Face waits for a face of the part to be clicked
   sketchOpen: false, // a sketch is being edited; false on the Sketch page means a plane or face is picked to start one
   mirrorPending: false, // true while the Mirror panel waits for the entities and the axis to be picked
+  mirrorAbout: null, // what the Mirror panel was told to mirror about: 'x', 'y', 'line', or null until it is
   partRefHover: null, // the part edge or corner a dimension click would take right now
   linearPatternPending: false, // true while the Linear Pattern rail button is waiting for count/spacing
   circularPatternPending: false, // true while the Circular Pattern rail button is waiting for count/angle
@@ -1649,20 +1650,21 @@ export const useSketchStore = create((set, get) => ({
   },
 
   /**
-   * Mirror the selected entities about an axis line (SW "Mirror Entities"). The
-   * axis is a construction line in the selection if present (the usual SW setup),
-   * else the single selected line; everything else in the selection is mirrored.
+   * Mirror the selected entities about the sketch's X or Y axis, or a line picked
+   * with them (SW "Mirror Entities"). Whatever is selected other than that line is
+   * mirrored.
    */
   mirror() {
     const { sk, selection } = get();
-    const axis = get().mirrorAxis();
-    if (axis == null) {
-      set({ error: 'Mirror needs a line to mirror about, plus entities to mirror' });
+    const about = get().mirrorAxis();
+    if (about == null) {
+      set({ error: 'Choose what to mirror about: the X axis, the Y axis, or a line' });
       return;
     }
-    const toMirror = selection.filter((id) => id !== axis);
+    const toMirror = selection.filter((id) => id !== about && !sk.entities.get(id)?.origin);
     if (!toMirror.length) { set({ error: 'Select entities to mirror (besides the axis line)' }); return; }
     get()._snapshot();
+    const axis = about === 'x' || about === 'y' ? sketchAxisLine(sk, about) : about;
     const created = mirrorEdit(sk, toMirror, axis);
     if (!created) { get()._undoSnapshot(); set({ error: 'Nothing could be mirrored' }); return; }
     set({ selection: [], error: null, mirrorPending: false });
@@ -1680,17 +1682,29 @@ export const useSketchStore = create((set, get) => ({
     set({ offsetPending: true });
   },
 
-  /** The line a mirror goes about: a construction line if one is picked, else the last line picked. */
+  /**
+   * What a mirror goes about: 'x' or 'y' when that was chosen; otherwise a
+   * construction line if one is picked, and, when Line was chosen, the last line
+   * picked. A box selection has no last line that means anything, so that is never
+   * guessed at.
+   */
   mirrorAxis() {
-    const { sk, selection } = get();
+    const { sk, selection, mirrorAbout } = get();
+    if (mirrorAbout === 'x' || mirrorAbout === 'y') return mirrorAbout;
     const lines = selection.filter((id) => sk.entities.get(id)?.type === 'line');
-    return lines.find((id) => sk.entities.get(id).construction) ?? lines[lines.length - 1] ?? null;
+    const centerline = lines.find((id) => sk.entities.get(id).construction);
+    if (centerline != null) return centerline;
+    return mirrorAbout === 'line' ? (lines[lines.length - 1] ?? null) : null;
   },
 
   /** Open the Mirror panel; what to mirror and the axis are picked with it open. */
   beginMirror() {
     get().setTool('select');
-    set({ mirrorPending: true });
+    set({ mirrorPending: true, mirrorAbout: null });
+  },
+
+  setMirrorAbout(mirrorAbout) {
+    set({ mirrorAbout });
   },
 
   cancelMirror() {

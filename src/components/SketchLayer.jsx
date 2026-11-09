@@ -143,6 +143,35 @@ const angleReadoutStyle = (locked) => ({
   transform: 'translate(12px, -18px)',
 });
 
+/** px — an arrowhead's length and half-width, the same at every zoom. */
+const ARROW_LENGTH = 10;
+const ARROW_HALF_WIDTH = 3;
+const ARROW_GEOMETRY = new THREE.BufferGeometry().setAttribute('position', new THREE.Float32BufferAttribute([
+  0, 0, 0, -ARROW_LENGTH, ARROW_HALF_WIDTH, 0, -ARROW_LENGTH, -ARROW_HALF_WIDTH, 0,
+], 3));
+
+/**
+ * An arrowhead with its tip on a dimension line's end. Where the line is too short
+ * on screen to hold both heads, each turns round and points in from outside.
+ */
+function DimArrow({
+  pos, dir, span, color,
+}) {
+  const ref = useRef();
+  const angle = Math.atan2(dir[1], dir[0]);
+  useFrame(({ camera }) => {
+    if (!ref.current) return;
+    const zoom = camera.zoom || 1;
+    ref.current.scale.setScalar(1 / zoom);
+    ref.current.rotation.z = angle + (span != null && span * zoom < 2.5 * ARROW_LENGTH ? Math.PI : 0);
+  });
+  return (
+    <mesh ref={ref} position={pos} geometry={ARROW_GEOMETRY} raycast={noRaycast}>
+      <meshBasicMaterial color={color} side={THREE.DoubleSide} />
+    </mesh>
+  );
+}
+
 /**
  * On-canvas annotations for every *dimensional* constraint (one carrying a value)
  * so it's visible which lines / distances are already sized:
@@ -168,7 +197,7 @@ function DimensionAnnotations({ sk, version }) {
   const selDim = new Set(selectedDims);
   // The geometry is built by a pure module (`engine/sketch/annotations.js`) so
   // it can be tested without a renderer; this component only maps it to drei.
-  const { segs, labels } = useMemo(
+  const { segs, labels, arrows } = useMemo(
     () => dimensionAnnotations(sk, { z: Z }),
     // eslint-disable-next-line react-hooks/exhaustive-deps
     [sk, version],
@@ -232,15 +261,15 @@ function DimensionAnnotations({ sk, version }) {
             points={s.pts}
             color={sel ? SELECTED : DIM_COLOR}
             lineWidth={sel ? 2 : 1}
-            dashed={!sel}
-            dashSize={0.6}
-            gapSize={0.4}
             transparent
             opacity={sel ? 1 : 0.85}
             raycast={noRaycast}
           />
         );
       })}
+      {arrows.map((a) => (
+        <DimArrow key={a.key} pos={a.pos} dir={a.dir} span={a.span} color={selDim.has(a.ci) ? SELECTED : DIM_COLOR} />
+      ))}
       {labels.map((b) => {
         // A driven (reference) dimension is shown in parentheses and a muted
         // purple, like SolidWorks reference dimensions.

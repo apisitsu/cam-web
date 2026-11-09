@@ -166,6 +166,7 @@ export function createFeature(kind, props = {}) {
       ...base,
       merge: 'cut',
       sketchId: Number.isFinite(props.sketchId) ? props.sketchId : null,
+      pointIds: Array.isArray(props.pointIds) ? props.pointIds : null,
       holeType: HOLE_TYPES[props.holeType] ? props.holeType : 'drill',
       diameter: positive(props.diameter, 6),
       thread: THREADS[props.thread] ? props.thread : 'M6',
@@ -277,7 +278,7 @@ function makeHoles(feature, doc, plane, partBounds) {
     if (!(reach > 1e-6)) throw new Error('the hole points away from the part — reverse it');
     depth = reach + THROUGH_PAST;
   }
-  return holeSolid(holePositions(doc), plane, feature, {
+  return holeSolid(holePositions(doc, feature.pointIds), plane, feature, {
     depth, through, reverse: feature.reverse, segments: feature.segments ?? undefined,
   });
 }

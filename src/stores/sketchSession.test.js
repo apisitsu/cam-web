@@ -424,6 +424,19 @@ describe('Hole Wizard at picked points', () => {
     expect(holes().map((f) => f.pointIds)).toEqual([[points[0]], [points[1], points[2]]]);
     expect(sketch().sketchOpen).toBe(false);
   });
+
+  it('leaves the tree up to date when closing drops an unused reference to the part', async () => {
+    const ref = addPoint(sketch().sk, 0, 0, true);
+    Object.assign(sketch().sk.entities.get(ref), { ref: true, construction: true });
+    sketch()._bump();
+    sketch().toggleSelect(points[0]);
+    sketch().toggleSelect(points[1]);
+    sketch().toggleSelect(points[2]);
+    await drill(6);
+    expect(sketch().sketchOpen).toBe(false);
+    expect(sketch().sk.entities.has(ref)).toBe(false);
+    expect(tree().dirty).toBe(false);
+  });
 });
 
 describe('dimensioning to the part', () => {

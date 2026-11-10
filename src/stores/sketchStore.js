@@ -198,8 +198,12 @@ export const useSketchStore = create((set, get) => ({
   dofState: null,
   error: null,
 
-  _bump() {
-    set({ version: get().version + 1, dofState: dof(get().sk) });
+  /**
+   * Mark the drawing changed. `reason` 'tidy' says the change cannot affect any
+   * solid built from it (unused part references dropped on close).
+   */
+  _bump(reason = null) {
+    set({ version: get().version + 1, dofState: dof(get().sk), bumpReason: reason });
   },
 
   /** `sketches` with the active entry re-pointed at `doc`. */
@@ -304,7 +308,7 @@ export const useSketchStore = create((set, get) => ({
     if (!get().sketchOpen) return false;
     get().setTool('select');
     set({ sketchOpen: false, selection: [] });
-    if (dropUnusedPartRefs(get().sk)) get()._bump();
+    if (dropUnusedPartRefs(get().sk)) get()._bump('tidy');
     return true;
   },
 

@@ -525,8 +525,16 @@ const initial = useSketchStore.getState();
 let _last = { version: initial.version, activeId: initial.activeId, planes: planesById(initial) };
 useSketchStore.subscribe((state) => {
   if (state.version === _last.version) return;
-  const { features } = useFeatureStore.getState();
+  const { features, building } = useFeatureStore.getState();
   const planes = planesById(state);
+  // A rebuild moves sketches itself — face-linked planes, dimensions taken to the
+  // part's edges — and replays for them; that is not an edit that leaves it stale.
+  // Closing a sketch tidies away unused references to the part's edges, which
+  // changes nothing a feature is built from (`bumpReason: 'tidy'`).
+  if (building || state.bumpReason === 'tidy') {
+    _last = { version: state.version, activeId: state.activeId, planes };
+    return;
+  }
   const used = new Set(features.map((f) => f.sketchId).filter((id) => id != null));
   const editedUsed = state.activeId === _last.activeId && used.has(state.activeId);
   const moved = [...used].some((id) => _last.planes.has(id) && planes.get(id) !== _last.planes.get(id));

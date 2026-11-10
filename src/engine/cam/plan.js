@@ -31,6 +31,7 @@ import { machineById } from './machines.js';
 import { fitWarnings, checkEnvelope } from './envelope.js';
 import { autoRecipe, buildPlan, reconcile } from './recipe.js';
 import * as mill from './toolpath/mill.js';
+import { PART_STOCK } from '../sim/billet.js';
 
 /**
  * Plan a job from a parsed STL.
@@ -254,7 +255,7 @@ export function indexContext(ctx, angle = 0) {
   if (hit) return hit;
 
   const rotated = rotateAboutX(ctx.welded, a, { center: ctx.rotaryCenter ?? [0, 0] });
-  const derived = millContext(rotated, analyzeMesh(rotated, rotated), { stockMargin: 2 });
+  const derived = millContext(rotated, analyzeMesh(rotated, rotated), {});
   derived.analysisSource = derived.analysis;
   derived.indexA = a;
   // The table's physical axis does not move when the operator flips through
@@ -295,10 +296,11 @@ function hasSteepProfile(profile) {
  * you would obviously rough with a Ø10 and detail with a Ø2.
  */
 function millContext(welded, analysis, opts) {
-  const { stockMargin = 2 } = opts;
+  // The same blank the simulation assumes (`PART_STOCK`): 1 mm each side, 1 mm on top.
+  const { stockMargin = PART_STOCK.side } = opts;
   const machine = resolveMachine(opts);
   const bounds = analysis.bounds;
-  const stock = mill.stockFor(bounds, { side: stockMargin, top: 1 });
+  const stock = mill.stockFor(bounds, { side: stockMargin, top: PART_STOCK.top });
   const part = { top: bounds.max[2], bottom: bounds.min[2] };
   const depth = part.top - part.bottom;
 

@@ -6,6 +6,7 @@
  * (optionally) drives progressive material removal.
  */
 import { useEffect, useMemo, useState, useCallback } from 'react';
+import { createPortal } from 'react-dom';
 import {
   Layout, Button, Statistic, Alert, Space, Typography, theme,
   InputNumber, Input, Segmented, Switch, Divider, Slider, Tag, Tooltip, Drawer,
@@ -55,7 +56,7 @@ import {
 } from './engine/gcode/path.js';
 import { effectiveTurnTool } from './engine/sim/turning.js';
 import {
-  billetBox, billetWarnings, billetExtents, previewSolid, suggestBillet,
+  billetBox, billetWarnings, billetExtents, previewSolid, suggestBillet, partBillet, effectiveBillet,
 } from './engine/sim/billet.js';
 import Viewport from './components/Viewport.jsx';
 import PositionReadout from './components/PositionReadout.jsx';
@@ -85,6 +86,9 @@ import { getBuf } from './engine/bufferCache.js';
 import { CAD } from './theme.js';
 
 const { Sider, Content, Header } = Layout;
+
+/** px the left column opens out to on the Setup pane, which was a 470 px drawer. */
+const SETUP_WIDTH = 470;
 const { Title, Text } = Typography;
 
 export default function App() {
@@ -126,6 +130,7 @@ export default function App() {
   const stockMargin = useCamStore((s) => s.stockMargin);
   const stockSize = useCamStore((s) => s.stockSize);
   const stockOrigin = useCamStore((s) => s.stockOrigin);
+  const partBox = useCamStore((s) => s.partBox);
   const stockEnabled = useCamStore((s) => s.stockEnabled);
   const showStock = useCamStore((s) => s.showStock);
   const showArbor = useCamStore((s) => s.showArbor);
@@ -195,11 +200,12 @@ export default function App() {
   // The docked Ribbon's mount point (below the title bar). A state, not a ref, so
   // the toolbar re-renders into it the moment it exists.
   const [ribbonSlot, setRibbonSlot] = useState(null);
-  // Which pane the left column shows, here because the tabs under the viewport set it too.
+  // Which pane the left column shows — model, program or setup — here because the
+  // tabs under the viewport and the Ribbon's Setup buttons set it too.
   const [leftTab, setLeftTab] = useState('model');
-  // The setup drawer, opened from the toolbar. Closed by default: it is a job
-  // you do once per part, not something to keep on screen while cutting.
-  const [settingsOpen, setSettingsOpen] = useState(false);
+  // Where the left column mounts the Setup pane; filled from here by a portal, so
+  // its controls keep the App state they read.
+  const [setupSlot, setSetupSlot] = useState(null);
   // Drives the feature-tree column's width; the tree itself owns the toggle.
   const treeOpen = useFeatureStore((s) => s.treeOpen);
   const treeWidth = useFeatureStore((s) => s.treeWidth);
@@ -235,39 +241,30 @@ export default function App() {
   const onExportGcode = useCallback(
     () => report(exportGcode, (n) => `Downloaded ${n}`), [report],
   );
-  // Whether the library is open in the sidebar. It is a place to work, not a
-  // menu, so it stays put until it is closed again.
+  // Whether the library drawer is open (File → Library). It is a place to work,
+  // not a menu, so it stays put until it is closed again.
   const [libraryOpen, setLibraryOpen] = useState(false);
 
-  // Setup is one drawer with several jobs in it, so the Simulation tab lights only
-  // when that is what it was opened for.
-  const [setupForSimulation, setSetupForSimulation] = useState(false);
-
-  /** Open Setup and bring one of its sections into view, once the drawer has slid in. */
-  const openSetupAt = (selector, forSimulation = false) => {
+  /** The left column on one of its panes, opened if it was collapsed. */
+  const showPane = (pane) => {
     setLibraryOpen(false);
-    setSettingsOpen(true);
-    setSetupForSimulation(forSimulation);
+    setTreeOpen(true);
+    setLeftTab(pane);
+  };
+
+  /** Open Setup in the left column and bring one of its sections into view. */
+  const openSetupAt = (selector) => {
+    showPane('setup');
     if (!selector) return;
     setTimeout(() => {
       document.querySelector(selector)?.scrollIntoView?.({ block: 'start' });
-    }, 350);
+    }, 150);
   };
 
-  // The strip under the viewport reads what is open rather than keeping its own
-  // state, so opening the library any other way moves it as well.
-  let workspaceTab = leftTab;
-  if (libraryOpen) workspaceTab = 'library';
-  else if (settingsOpen && setupForSimulation) workspaceTab = 'simulation';
-
-  const selectWorkspaceTab = (value) => {
-    if (value === 'simulation') { openSetupAt('[data-cam-removal]', true); return; }
-    if (value === 'library') { setSettingsOpen(false); setLibraryOpen(true); return; }
-    setSettingsOpen(false);
-    setLibraryOpen(false);
-    setTreeOpen(true);
-    setLeftTab(value);
-  };
+  // Setup holds whole panels of controls, so the column opens out for it.
+  const columnWidth = treeOpen
+    ? (leftTab === 'setup' ? Math.max(treeWidth, SETUP_WIDTH) : treeWidth)
+    : TREE_SIZE.TREE_STRIP + 8;
 
   useAutoSimulate({
     gcode, stockEnabled, stockSize, stockOrigin, partDatum, aIndex, mode,
@@ -369,28 +366,35 @@ export default function App() {
   // The billet, measured against the program. All of it comes from
   // `engine/sim/billet.js` — the same function the carver builds its block
   // with — so what the panel reports and what gets cut cannot disagree.
+  // With a part loaded, the blank to suggest is the part's own.
   const billetSuggestion = useMemo(
-    () => (bounds ? suggestBillet(bounds, { margin: stockMargin }) : null),
-    [bounds, stockMargin],
+    () => partBillet(partBox) ?? (bounds ? suggestBillet(bounds, { margin: stockMargin }) : null),
+    [bounds, stockMargin, partBox],
+  );
+  // What the simulation will actually start from: the billet typed in, or with
+  // nothing typed and a part loaded, the part's own (`effectiveBillet`).
+  const { stockSize: blankSize, stockOrigin: blankOrigin, fromPart: blankFromPart } = useMemo(
+    () => effectiveBillet({ stockSize, stockOrigin, partBox }),
+    [stockSize, stockOrigin, partBox],
   );
   // Deliberately NOT gated on a parsed program: the material is in the vice
   // before the .nc exists, and a blank you cannot describe until one is loaded
   // is a blank you cannot set up against. `previewSolid` owns the whole rule,
   // including when there is nothing worth drawing.
   const billetOpts = useMemo(
-    () => ({ margin: stockMargin, origin: stockOrigin }),
-    [stockMargin, stockOrigin],
+    () => ({ margin: stockMargin, origin: blankOrigin }),
+    [stockMargin, blankOrigin],
   );
   const billetNow = useMemo(
-    () => (turning || !stockEnabled ? null : billetBox(bounds, stockSize, billetOpts)),
-    [bounds, stockSize, billetOpts, turning, stockEnabled],
+    () => (turning || !stockEnabled ? null : billetBox(bounds, blankSize, billetOpts)),
+    [bounds, blankSize, billetOpts, turning, stockEnabled],
   );
   // The blank as a drawable box, straight to the viewport. No worker, no carve —
   // so it follows the number being typed rather than the last press of Simulate.
   // Yielded to the carved block the moment there is one to show.
   const stockSolid = useMemo(
-    () => (sim || turning || !stockEnabled ? null : previewSolid(bounds, stockSize, billetOpts)),
-    [bounds, stockSize, billetOpts, sim, turning, stockEnabled],
+    () => (sim || turning || !stockEnabled ? null : previewSolid(bounds, blankSize, billetOpts)),
+    [bounds, blankSize, billetOpts, sim, turning, stockEnabled],
   );
   // The readout describes what is actually on screen. With neither a program
   // nor a stated size there is no blank, and printing the ±margin box round the
@@ -707,12 +711,7 @@ export default function App() {
           <MenuBar
             onExportGcode={onExportGcode}
             libraryOpen={libraryOpen}
-            // Setup and Library are two separate drawers on the same edge —
-            // letting both be open at once is how two antd Drawers on one
-            // placement end up fighting over the same portal slot. One closes
-            // the other, the way `data-open-setup` below already did before
-            // Library had a drawer of its own to collide with.
-            onToggleLibrary={() => { setSettingsOpen(false); setLibraryOpen((v) => !v); }}
+            onToggleLibrary={() => setLibraryOpen((v) => !v)}
             onOpenSetup={() => openSetupAt()}
             brand={(
               <>
@@ -748,11 +747,10 @@ export default function App() {
               screen. It is a real `Sider`, not an overlay, so the viewport is
               genuinely narrower and the camera fit needs no knowledge of it.
 
-              What used to live here — files, machine, tooling, stock, removal —
-              is a *setup* job, not something you watch while you work, so it
-              moved into the drawer below and opens from the toolbar. */}
+              Setup — files, machine, tooling, stock, removal — is the third pane
+              of the same column, beside Model and Program. */}
           <Sider
-            width={treeOpen ? treeWidth : TREE_SIZE.TREE_STRIP + 8}
+            width={columnWidth}
             style={{
               background: CAD.panelBg,
               borderRight: `1px solid ${CAD.border}`,
@@ -760,7 +758,7 @@ export default function App() {
               position: 'relative',
             }}
           >
-            <LeftColumn activeLine={activeLine} tab={leftTab} onTab={setLeftTab} />
+            <LeftColumn activeLine={activeLine} tab={leftTab} onTab={setLeftTab} setSetupSlot={setSetupSlot} />
             {treeOpen && (
               // Drag the column edge to trade viewport for program/tree width.
               <div
@@ -778,40 +776,34 @@ export default function App() {
           </Sider>
 
           <Drawer
-            // Setup and Library are two different jobs — machine/tooling/stock
-            // vs. document management — so the title says plainly which one is
-            // open, and they share this one Drawer rather than sitting side by
-            // side as two. Separate Drawers were tried first and looked broken:
-            // switching from one to the other via a toolbar button went blank,
-            // because antd's default mask sits at z-index 1000 over the whole
-            // page — including the very button that was supposed to open the
-            // next one, which a click could never actually reach. `mask={false}`
-            // is the fix, not a stacking order between two Drawers (there's
-            // only one now) — the panel itself never needed the dimmed
-            // backdrop a modal does; it's a persistent side panel, not a dialog.
-            title={libraryOpen ? 'Library' : 'Setup'}
+            // The library (File → Library). `mask={false}`: it is a side panel
+            // to work in, not a dialog — antd's default mask would also cover
+            // the menu that closes it again.
+            title="Library"
             placement="left"
             width={470}
-            open={settingsOpen || libraryOpen}
-            onClose={() => { setSettingsOpen(false); setLibraryOpen(false); }}
+            open={libraryOpen}
+            onClose={() => setLibraryOpen(false)}
             destroyOnHidden={false}
             mask={false}
             styles={{ body: { background: CAD.panelBg, padding: 16 } }}
           >
-            {libraryOpen ? (
-              // The library works *in* this drawer rather than in a popover:
-              // saving, looking through what is there, opening one and
-              // deleting two is a session, and a layer that shuts when you
-              // click near its edge is the wrong container for one.
-              <Space direction="vertical" size="middle" style={{ width: '100%' }}>
-                <LibraryPanel inline open={libraryOpen} onDone={setSaveMsg} />
-                <Text style={{ color: CAD.dim, fontSize: 12 }}>
-                  …or drag &amp; drop a .nc / .gcode / .tap program, a .camweb.json project,
-                  or an .stl / .obj / .ply to machine
-                </Text>
-                {saveMsg && <Alert type="success" showIcon message={saveMsg} />}
-              </Space>
-            ) : (
+            {/* The library works *in* this drawer rather than in a popover:
+                saving, looking through what is there, opening one and deleting
+                two is a session, and a layer that shuts when you click near its
+                edge is the wrong container for one. */}
+            <Space direction="vertical" size="middle" style={{ width: '100%' }}>
+              <LibraryPanel inline open={libraryOpen} onDone={setSaveMsg} />
+              <Text style={{ color: CAD.dim, fontSize: 12 }}>
+                …or drag &amp; drop a .nc / .gcode / .tap program, a .camweb.json project,
+                or an .stl / .obj / .ply to machine
+              </Text>
+              {saveMsg && <Alert type="success" showIcon message={saveMsg} />}
+            </Space>
+          </Drawer>
+
+          {/* Setup, drawn into the left column's Setup pane. */}
+          {setupSlot && leftTab === 'setup' && createPortal(
             <Space direction="vertical" size="middle" style={{ width: '100%' }}>
               {/* CAM from a model. Sits above the program panel because it is
                   what *produces* a program — the G-code below is its output. */}
@@ -1162,6 +1154,7 @@ export default function App() {
                     onSize={setStockSize}
                     onOrigin={setStockOrigin}
                     onFit={() => setBillet(billetSuggestion)}
+                    fromPart={blankFromPart ? { size: blankSize, origin: blankOrigin } : null}
                     enabled={stockEnabled}
                     onToggle={toggleStockEnabled}
                     addonStyle={addonStyle}
@@ -1269,9 +1262,9 @@ export default function App() {
                 </>
               )}
               </>}
-            </Space>
-            )}
-          </Drawer>
+            </Space>,
+            setupSlot,
+          )}
 
           <Content style={{ position: 'relative' }}>
             {/* Sketcher controls float over the viewport — only on the Sketch page,
@@ -1549,9 +1542,9 @@ export default function App() {
         <WorkspaceTabs
           // Lined up under the viewport rather than the whole window, without
           // moving the viewport into a column of its own that its height depends on.
-          indent={treeOpen ? treeWidth : TREE_SIZE.TREE_STRIP + 8}
-          active={workspaceTab}
-          onSelect={selectWorkspaceTab}
+          indent={columnWidth}
+          active={leftTab}
+          onSelect={showPane}
         />
         <StatusBar />
       </Layout>

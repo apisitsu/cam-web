@@ -13,6 +13,7 @@ import {
 } from '../engine/gcode/path.js';
 import { setBuffers, clearBuffers, getBuf } from '../engine/bufferCache.js';
 import { removalDiagnosis } from '../engine/sim/removal.js';
+import { effectiveBillet } from '../engine/sim/billet.js';
 import { simMethodFor } from '../engine/sim/method.js';
 import { rotaryFrameFor } from '../engine/view/rotaryFrame.js';
 import {
@@ -307,8 +308,20 @@ export const useCamStore = create((set, get) => ({
    * operator's blank counts.
    */
   billetOpts() {
-    const { stockEnabled, stockSize, stockOrigin } = get();
-    return stockEnabled ? { stockSize, stockOrigin } : {};
+    if (!get().stockEnabled) return {};
+    const { stockSize, stockOrigin } = effectiveBillet(get());
+    return { stockSize, stockOrigin };
+  },
+
+  /**
+   * The loaded part's box in work coordinates, pushed by the CAM store (which
+   * this one cannot import back). With no billet stated, the blank is this grown
+   * by `PART_STOCK` — see `effectiveBillet`.
+   */
+  partBox: null,
+  setPartBox(partBox) {
+    set({ partBox });
+    if (effectiveBillet(get()).fromPart) get()._dropCarvedStock();
   },
 
   /** Fill both at once, from `suggestBillet`. */

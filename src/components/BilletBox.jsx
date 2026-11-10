@@ -20,8 +20,11 @@ const { Text } = Typography;
  */
 export default function BilletBox({
   size, origin, extents, suggestion, warnings, onSize, onOrigin, onFit,
-  enabled, onToggle, addonStyle,
+  enabled, onToggle, addonStyle, fromPart = null,
 }) {
+  // With nothing typed and a part loaded, the blank is the part's, and the empty
+  // fields show its numbers rather than "auto".
+  const hint = (values, k) => (fromPart ? String(values[k]) : 'auto');
   const field = (k, value, onChange, placeholder, allowNegative) => (
     <Space.Compact key={k}>
       <span className="ant-input-group-addon" style={addonStyle('left')}>{k.toUpperCase()}</span>
@@ -58,7 +61,7 @@ export default function BilletBox({
         <Tooltip title="The blank in the vice, in mm. Leave an axis blank to wrap the toolpath instead.">
           <span style={{ color: enabled ? CAD.label : CAD.dim }}>Stock</span>
         </Tooltip>
-        {['x', 'y', 'z'].map((k) => field(k, size, onSize, 'auto', false))}
+        {['x', 'y', 'z'].map((k) => field(k, size, onSize, hint(fromPart?.size ?? {}, k), false))}
         <span style={{ color: CAD.dim, fontSize: 12 }}>mm</span>
         {suggestion && enabled && (
           <CommandButton
@@ -75,9 +78,14 @@ export default function BilletBox({
         <Tooltip title="Where the blank's X−/Y−/Z− corner sits in work coordinates. Blank centres it on the cutting in X and Y, and puts the top face on Z0 — which is now only a default, not a rule.">
           <span style={{ color: enabled ? CAD.label : CAD.dim }}>Origin</span>
         </Tooltip>
-        {['x', 'y', 'z'].map((k) => field(k, origin, onOrigin, 'auto', true))}
+        {['x', 'y', 'z'].map((k) => field(k, origin, onOrigin, hint(fromPart?.origin ?? {}, k), true))}
         <span style={{ color: CAD.dim, fontSize: 12 }}>mm</span>
       </Space>
+      {enabled && fromPart && (
+        <Text style={{ color: CAD.dim, fontSize: 11 }} data-stock-from-part>
+          Auto from the part: 1 mm each side, 1 mm on top, bottom on the part. Type a size to override.
+        </Text>
+      )}
       {enabled && extents && (
         <Text style={{ color: CAD.dim, fontSize: 11, fontFamily: 'monospace' }}>
           X {range(extents.x)} · Y {range(extents.y)} · Z {range(extents.z)}

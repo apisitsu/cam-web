@@ -1,17 +1,15 @@
 /**
- * WorkspaceTabs — the strip under the viewport: Model, Program, Simulation, Library.
+ * WorkspaceTabs — the strip under the viewport: Model, Program, Setup.
  *
- * They are ways to reach panels that already exist, not new pages: Model and Program
- * choose what the left column shows, and Simulation and Library open the drawer. The
- * viewport stays as it is throughout, because all four are read beside the part.
+ * They choose what the left column shows. The viewport stays as it is throughout,
+ * because all three are read beside the part. The library is in File → Library.
  */
 import { CAD } from '../theme.js';
 
 const TABS = [
   { value: 'model', label: 'Model' },
   { value: 'program', label: 'Program' },
-  { value: 'simulation', label: 'Simulation' },
-  { value: 'library', label: 'Library' },
+  { value: 'setup', label: 'Setup' },
 ];
 
 export default function WorkspaceTabs({ active, onSelect, indent = 0 }) {

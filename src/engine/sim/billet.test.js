@@ -1,11 +1,48 @@
 import { describe, it, expect } from 'vitest';
 import {
   billetBox, billetWarnings, suggestBilletSize, suggestBillet, billetExtents,
-  billetSolid, anySized, previewSolid,
+  billetSolid, anySized, previewSolid, partBillet, effectiveBillet,
 } from './billet.js';
 
 /** A program cutting a 60 × 40 pocket 8 mm deep, tool retracting to Z5. */
 const BOUNDS = { min: [0, 0, -8], max: [60, 40, 5] };
+
+describe('the blank for a loaded part', () => {
+  // A 60 × 40 × 20 part with its top on Z0, as a work origin usually puts it.
+  const part = { min: [-30, -20, -20], max: [30, 20, 0] };
+
+  it('is 1 mm bigger each side and 1 mm above, its bottom on the part', () => {
+    expect(partBillet(part)).toEqual({
+      size: { x: 62, y: 42, z: 21 },
+      origin: { x: -31, y: -21, z: -20 },
+    });
+  });
+
+  it('places as the box it describes', () => {
+    const { size, origin } = partBillet(part);
+    const box = billetBox(BOUNDS, size, { origin });
+    expect([box.xMin, box.xMax, box.yMin, box.yMax, box.base, box.top]).toEqual([-31, 31, -21, 21, -20, 1]);
+  });
+
+  it('is what the simulation uses while nothing is typed in', () => {
+    const none = { x: null, y: null, z: null };
+    const used = effectiveBillet({ stockSize: none, stockOrigin: none, partBox: part });
+    expect(used.fromPart).toBe(true);
+    expect(used.stockSize).toEqual({ x: 62, y: 42, z: 21 });
+  });
+
+  it('gives way to a billet the operator typed', () => {
+    const typed = { x: 100, y: null, z: null };
+    const used = effectiveBillet({ stockSize: typed, stockOrigin: { x: null, y: null, z: null }, partBox: part });
+    expect(used.fromPart).toBe(false);
+    expect(used.stockSize).toBe(typed);
+  });
+
+  it('falls back to the old fit round the toolpath with no part', () => {
+    const none = { x: null, y: null, z: null };
+    expect(effectiveBillet({ stockSize: none, stockOrigin: none, partBox: null }).fromPart).toBe(false);
+  });
+});
 
 describe('Z0 on the top face is the default, not a rule', () => {
   it('puts the top face on zero and hangs the thickness below it', () => {

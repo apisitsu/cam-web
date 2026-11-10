@@ -15,7 +15,7 @@
 import { create } from 'zustand';
 import { weld } from '../engine/mesh/stl.js';
 import { parsePart } from '../engine/mesh/import.js';
-import { analyzeMesh } from '../engine/mesh/analyze.js';
+import { analyzeMesh, boundsOf } from '../engine/mesh/analyze.js';
 import { planJob, planContext, planSummary } from '../engine/cam/plan.js';
 import { post } from '../engine/cam/post/fanuc.js';
 import { DEFAULT_MATERIAL } from '../engine/cam/library.js';
@@ -351,6 +351,9 @@ export const useCamPlanStore = create((set, get) => ({
     const previousSoup = _mesh.soup;
     _mesh.soup = reoriented ? laid.soup : _raw.soup;
     _mesh.welded = reoriented ? laid.welded : _raw.welded;
+    // The part as the simulation sees it, so the blank can be sized from it. A
+    // lathe's bar is sized from the turning profile instead.
+    useCamStore.getState().setPartBox(_ctx.mode === 'mill' ? boundsOf(_mesh.welded) : null);
 
     set({
       analysis: _ctx.analysisOriented ?? get().analysis,
@@ -1050,6 +1053,7 @@ export const useCamPlanStore = create((set, get) => ({
   clear() {
     _raw.soup = _raw.welded = null;
     _mesh.soup = _mesh.welded = null;
+    useCamStore.getState().setPartBox(null);
     _ctx = null;
     set({
       stlName: null, partFormat: null, analysis: null, plan: null, nc: null, verification: null, recipe: [],

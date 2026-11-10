@@ -28,9 +28,11 @@ afterEach(async () => {
 });
 
 describe('WorkspaceTabs', () => {
-  it('names all four, and marks the active one', async () => {
+  it('names all three, and marks the active one', async () => {
     await render({ active: 'program' });
-    expect(['model', 'program', 'simulation', 'library'].every((t) => tab(t))).toBe(true);
+    expect(['model', 'program', 'setup'].every((t) => tab(t))).toBe(true);
+    expect(tab('simulation')).toBeNull();
+    expect(tab('library')).toBeNull();
     expect(tab('program').getAttribute('aria-selected')).toBe('true');
     expect(tab('model').getAttribute('aria-selected')).toBe('false');
   });
@@ -38,8 +40,8 @@ describe('WorkspaceTabs', () => {
   it('reports the tab clicked', async () => {
     const onSelect = vi.fn();
     await render({ onSelect });
-    await act(async () => { tab('library').click(); });
-    expect(onSelect).toHaveBeenCalledWith('library');
+    await act(async () => { tab('setup').click(); });
+    expect(onSelect).toHaveBeenCalledWith('setup');
   });
 
   it('lines up under the viewport', async () => {

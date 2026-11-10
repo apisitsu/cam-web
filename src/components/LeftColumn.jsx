@@ -1,5 +1,8 @@
 /**
- * LeftColumn — the part window's left pane: the model, or the program.
+ * LeftColumn — the part window's left pane: the model, the program, or the setup.
+ *
+ * Setup (machine, CAM, tooling, stock, removal) is the App's own panel; this only
+ * gives it a place, `setSetupSlot`, which the App draws into.
  *
  * Two things belong on screen while you work, and they are not the same thing:
  * the **model's structure** (the feature tree) while you are building it, and
@@ -23,7 +26,9 @@
  */
 import { useEffect } from 'react';
 import { Button, Tooltip, Alert } from 'antd';
-import { ApartmentOutlined, CodeOutlined, MenuOutlined } from '@ant-design/icons';
+import {
+  ApartmentOutlined, CodeOutlined, MenuOutlined, SettingOutlined,
+} from '@ant-design/icons';
 import FeatureTree, { TREE_SIZE } from './FeatureTree.jsx';
 import GcodePanel from './GcodePanel.jsx';
 import { useCamStore } from '../stores/camStore.js';
@@ -32,7 +37,15 @@ import { useSketchStore } from '../stores/sketchStore.js';
 import { describeFeature } from '../engine/solid/featureTree.js';
 import { CAD } from '../theme.js';
 
-export default function LeftColumn({ activeLine = 0, tab, onTab: setTab }) {
+const PANES = {
+  model: { label: 'Model', Icon: ApartmentOutlined },
+  program: { label: 'Program', Icon: CodeOutlined },
+  setup: { label: 'Setup', Icon: SettingOutlined },
+};
+
+export default function LeftColumn({
+  activeLine = 0, tab, onTab: setTab, setSetupSlot = () => {},
+}) {
   const open = useFeatureStore((s) => s.treeOpen);
   const setOpen = useFeatureStore((s) => s.setTreeOpen);
   const features = useFeatureStore((s) => s.features);
@@ -83,11 +96,12 @@ export default function LeftColumn({ activeLine = 0, tab, onTab: setTab }) {
       }}
       >
         {/* Says which pane this is; the tabs under the viewport are what switch it. */}
-        {tab === 'model'
-          ? <ApartmentOutlined style={{ color: CAD.icon }} />
-          : <CodeOutlined style={{ color: CAD.icon }} />}
+        {(() => {
+          const { Icon } = PANES[tab] ?? PANES.model;
+          return <Icon style={{ color: CAD.icon }} />;
+        })()}
         <span style={{ flex: 1, color: CAD.text, fontSize: 12, fontWeight: 600 }}>
-          {tab === 'model' ? 'Model' : 'Program'}
+          {(PANES[tab] ?? PANES.model).label}
         </span>
         <Tooltip title="Collapse">
           <Button
@@ -100,7 +114,14 @@ export default function LeftColumn({ activeLine = 0, tab, onTab: setTab }) {
         </Tooltip>
       </div>
 
-      {tab === 'model' ? (
+      {tab === 'setup' && (
+        <div
+          ref={setSetupSlot}
+          data-setup-pane
+          style={{ flex: 1, minHeight: 0, overflowY: 'auto', padding: 16 }}
+        />
+      )}
+      {tab === 'setup' ? null : tab === 'model' ? (
         <>
           <div style={{ flex: 1, minHeight: 0, display: 'flex', flexDirection: 'column' }}>
             <FeatureTree embedded />

@@ -265,6 +265,45 @@ export function previewSolid(bounds, size = {}, opts = {}) {
   return billetSolid(billetBox(bounds, size, opts));
 }
 
+/** How much bigger than the part the automatic blank is: each side, and the top. */
+export const PART_STOCK = { side: 1, top: 1 };
+
+/**
+ * The blank for a part: the part's box grown by `side` on X and Y each way and by
+ * `top` above, its bottom on the part's bottom — a part sits on the vice jaws or
+ * parallels, so nothing is left to cut under it.
+ *
+ * @param {{min:number[], max:number[]}} partBox  the part, in work coordinates
+ * @returns {{size:{x,y,z}, origin:{x,y,z}}|null}
+ */
+export function partBillet(partBox, { side = PART_STOCK.side, top = PART_STOCK.top } = {}) {
+  if (!partBox?.min || !partBox.min.every(Number.isFinite)) return null;
+  const [x0, y0, z0] = partBox.min;
+  const [x1, y1, z1] = partBox.max;
+  return {
+    size: {
+      x: round2(x1 - x0 + side * 2),
+      y: round2(y1 - y0 + side * 2),
+      z: round2(z1 - z0 + top),
+    },
+    origin: { x: round2(x0 - side), y: round2(y0 - side), z: round2(z0) },
+  };
+}
+
+const unset = (v) => v === null || v === undefined || v === '';
+
+/**
+ * The blank the simulation uses: the one the operator stated, or — when they have
+ * stated nothing and a part is loaded — the part's own (`partBillet`).
+ */
+export function effectiveBillet({ stockSize = {}, stockOrigin = {}, partBox = null }) {
+  const stated = ['x', 'y', 'z'].some((k) => !unset(stockSize[k]) || !unset(stockOrigin[k]));
+  const fromPart = stated ? null : partBillet(partBox);
+  return fromPart
+    ? { stockSize: fromPart.size, stockOrigin: fromPart.origin, fromPart: true }
+    : { stockSize, stockOrigin, fromPart: false };
+}
+
 /**
  * A complete blank the program fits inside: size *and* where to put it.
  *

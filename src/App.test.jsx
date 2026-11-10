@@ -67,11 +67,11 @@ async function setStore(patch) {
   await act(async () => { useCamStore.setState(patch); });
 }
 
-/**
- * The setup panel's body, or null when the drawer has never been opened.
- * Portalled to `document.body`, not inside `container`.
- */
-const sider = () => document.querySelector('.ant-drawer-body');
+/** The Setup pane of the left column, or null when another pane is showing. */
+const sider = () => document.querySelector('[data-setup-pane]');
+
+/** The library drawer's body (File → Library). */
+const drawerBody = () => document.querySelector('.ant-drawer-body');
 
 /**
  * Query the whole document, not just the render container.
@@ -260,53 +260,37 @@ describe('the tabs under the viewport', () => {
     expect(selected()).toEqual(['program']);
   });
 
-  it('does not light Simulation for Setup opened from the Ribbon', async () => {
+  it('has Model, Program and Setup only — Library is in File', async () => {
+    await mount({ setup: false });
+    expect([...document.querySelectorAll('[data-workspace-tab]')].map((b) => b.dataset.workspaceTab))
+      .toEqual(['model', 'program', 'setup']);
+  });
+
+  it('shows Setup in the left column, beside Model and Program', async () => {
+    await mount({ setup: false });
+    await press('setup');
+    expect(selected()).toEqual(['setup']);
+    expect(q('[data-column-pane]').getAttribute('data-column-pane')).toBe('setup');
+    expect(sider().textContent).toContain('Material removal');
+    expect(drawerBody()).toBeNull();
+    await press('model');
+    expect(sider()).toBeNull();
+  });
+
+  it('lights Setup when the Ribbon opens it', async () => {
     await mount();
     expect(sider()).not.toBeNull();
-    expect(selected()).toEqual(['model']);
-  });
-
-  it('opens the drawer from Library, and Model closes it again', async () => {
-    await mount({ setup: false });
-    await press('library');
-    expect(selected()).toEqual(['library']);
-    await press('model');
-    expect(selected()).toEqual(['model']);
-  });
-
-  it('opens Setup from Simulation', async () => {
-    await mount({ setup: false });
-    await press('simulation');
-    expect(selected()).toEqual(['simulation']);
-    expect(sider().textContent).toContain('Material removal');
+    expect(selected()).toEqual(['setup']);
   });
 });
 
 describe('pressing Play collapses the sidebar to the program', () => {
-  it('drops the material-removal controls', async () => {
+  it('moves the column off Setup and onto the program listing', async () => {
     await mount();
+    expect(sider()).not.toBeNull();
     await setStore({ playing: true });
-    expect(sider().textContent).not.toContain('Material removal');
-    expect(siderCommands()).not.toContain('simulate');
-  });
-
-  it('drops the machine settings', async () => {
-    await mount();
-    await setStore({ playing: true });
-    expect(sider().textContent).not.toContain('Rapid');
-  });
-
-  it('keeps the program listing — the whole point of the collapse', async () => {
-    await mount();
-    await setStore({ playing: true });
-    expect(sider().textContent).toContain('Program');
-  });
-
-  it('says why the rest went away', async () => {
-    // A panel that empties itself with no explanation reads as a crash.
-    await mount();
-    await setStore({ playing: true });
-    expect(sider().textContent).toMatch(/pause to edit/i);
+    expect(sider()).toBeNull();
+    expect(q('[data-column-pane]').getAttribute('data-column-pane')).toBe('program');
   });
 
   it('never hides a parse failure — and needs nothing opened to show it', async () => {
@@ -330,11 +314,14 @@ describe('pressing Play collapses the sidebar to the program', () => {
     expect(container.textContent).toContain('G1 X40 F400');
   });
 
-  it('brings the setup back on pause', async () => {
+  it('leaves the column where it is on pause, with Setup one tab away', async () => {
+    // The column is not moved back by the machine: that is how a panel loses
+    // your place (see `LeftColumn`).
     await mount();
     await setStore({ playing: true });
-    expect(sider().textContent).not.toContain('Material removal');
     await setStore({ playing: false });
+    expect(q('[data-column-pane]').getAttribute('data-column-pane')).toBe('program');
+    await openSetup();
     expect(sider().textContent).toContain('Material removal');
   });
 });
@@ -1395,7 +1382,7 @@ describe('the library and Setup share one drawer, titled for whichever is open',
     await openFileMenu();
     await act(async () => { fileMenuItem('Library').dispatchEvent(new MouseEvent('click', { bubbles: true })); });
     expect(drawerTitle()).toBe('Library');
-    const panel = sider()?.querySelector('[data-testid="library-panel"]');
+    const panel = drawerBody()?.querySelector('[data-testid="library-panel"]');
     expect(panel).not.toBeNull();
     // A real drawer, not a floating layer that shuts on an outside click.
     expect(document.body.contains(panel)).toBe(true);
@@ -1410,10 +1397,10 @@ describe('the library and Setup share one drawer, titled for whichever is open',
     await openFileMenu();
     await act(async () => { fileMenuItem('Library').dispatchEvent(new MouseEvent('click', { bubbles: true })); });
     expect(drawerTitle()).toBe('Library');
-    expect(sider()?.textContent).not.toContain('CAM from a model');
+    expect(drawerBody()?.textContent).not.toContain('CAM from a model');
   });
 
-  it('and the Setup button switch the same drawer back and forth', async () => {
+  it('and the Setup button take turns: Setup in the column, Library in the drawer', async () => {
     await mount({ setup: false });
     await openFileMenu();
     await act(async () => { fileMenuItem('Library').dispatchEvent(new MouseEvent('click', { bubbles: true })); });
@@ -1423,7 +1410,6 @@ describe('the library and Setup share one drawer, titled for whichever is open',
     // The toolbar's Setup button, clicked while Library is showing — this is
     // the exact click that landed on the mask before `mask={false}`.
     await openSetup();
-    expect(drawerTitle()).toBe('Setup');
     expect(sider()?.textContent).toContain('CAM from a model');
     expect(q('[data-testid="library-panel"]')).toBeNull();
 

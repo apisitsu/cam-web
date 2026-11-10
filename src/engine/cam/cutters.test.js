@@ -8,9 +8,9 @@ import {
 import { millingSpeeds } from './feeds.js';
 
 describe('the catalogue covers the tools a mill actually holds', () => {
-  it('has the seven types the shop asks for', () => {
+  it('has the eight types the shop asks for', () => {
     expect(CUTTERS.map((c) => c.id)).toEqual(
-      ['endmill', 'shoulder', 'face', 'slot', 'ball', 'chamfer', 'drill'],
+      ['endmill', 'shoulder', 'face', 'slot', 'ball', 'chamfer', 'drill', 'tap'],
     );
   });
 
@@ -277,10 +277,15 @@ describe('a twist drill leaves a point, not a flat floor', () => {
     expect(cutterFromType('drill')).toBe('drill');
   });
 
+  it('reads a tap as the Tap type, a flat at its own diameter', () => {
+    expect(cutterFromType('tap')).toBe('tap');
+    expect(cutterById('tap').profile).toBe('flat');
+  });
+
   it('still claims no shape for the tools that cut no bore of their own', () => {
-    // A reamer sizes a hole that is already there, a tap threads one, a boring
-    // bar opens one out. None of them leaves a drill point.
-    for (const type of ['reamer', 'tap', 'bore']) {
+    // A reamer sizes a hole that is already there, a boring bar opens one out.
+    // Neither leaves a drill point.
+    for (const type of ['reamer', 'bore']) {
       // eslint-disable-next-line jest/valid-expect
       expect(cutterFromType(type), type).toBe(null);
     }

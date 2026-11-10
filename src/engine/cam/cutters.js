@@ -132,6 +132,16 @@ export const CUTTERS = [
     angleAdjustable: true,
     bodyRatio: 5,
   },
+  {
+    id: 'tap',
+    label: 'Tap',
+    // A plain flat at its diameter, which is what it leaves: the thread is not drawn.
+    note: 'Machine tap, run with G84. Cuts the thread into a drilled hole at its own diameter.',
+    profile: 'flat',
+    flutes: 3,
+    fluteRange: [2, 5],
+    bodyRatio: 3,
+  },
 ];
 
 export const DEFAULT_CUTTER = 'endmill';
@@ -156,9 +166,9 @@ export function cutterById(id) {
  * looks drilled and one that looks bored square. A **centre drill** is spotting
  * a cone too, and the chamfer mill's is the same shape.
  *
- * Still `null` for the types that cut no new bore of their own — a reamer sizes
- * a hole that is already there, a tap cuts threads into one, a boring bar opens
- * one out. Those keep the plain flat/ball at their own diameter, which is what
+ * A **tap** is the Tap type, itself a plain flat at its diameter. Still `null`
+ * for the types that cut no new bore of their own — a reamer sizes a hole that
+ * is already there, a boring bar opens one out. Those keep the plain flat/ball at their own diameter, which is what
  * they leave behind. Callers treat `null` as "keep the plain flat/ball".
  */
 const CUTTER_FOR_TYPE = {
@@ -172,6 +182,8 @@ const CUTTER_FOR_TYPE = {
   ballmill: 'ball',
   chamfer: 'chamfer',
   drill: 'drill',
+  // Flat at its own diameter, as before; named so the Tool table shows it as a tap.
+  tap: 'tap',
 };
 
 export function cutterFromType(type) {

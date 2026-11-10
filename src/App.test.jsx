@@ -1209,10 +1209,10 @@ describe('the cutter type of a tool the program named', () => {
     expect(pressed(rowBtn(2, 'endmill'))).toBe(false);
   });
 
-  it('still leaves a tap on the plain stick — a tap cuts no bore of its own', async () => {
+  it('names a tap as a Tap, still a plain flat at its own diameter', async () => {
     await mount();
     await loadProgramWithTools('T4(TAP D8)\nM6\nG0 X0 Y0 Z5\nG1 Z-2 F200\nG1 X60 F400');
-    expect(marker()).toMatchObject({ cutter: '', type: 'flat', radius: 4 });
+    expect(marker()).toMatchObject({ cutter: 'tap', type: 'flat', radius: 4 });
   });
 });
 

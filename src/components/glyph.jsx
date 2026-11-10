@@ -253,8 +253,17 @@ export const DrillIcon = glyph(
   </>,
 );
 
+/** Machine tap: a straight shank, the thread as rungs across the cutting end, a square drive on top. */
+export const TapIcon = glyph(
+  <>
+    <path d="M10 2h4v4h-4zM9 6h6v15H9z" />
+    <path d="M9 11l6-1.5M9 14l6-1.5M9 17l6-1.5M9 20l6-1.5" opacity="0.55" />
+  </>,
+);
+
 /** Icon per cutter id, for the type picker. */
 export const CUTTER_ICONS = {
+  tap: TapIcon,
   endmill: EndmillIcon,
   shoulder: ShoulderMillIcon,
   face: FaceMillIcon,

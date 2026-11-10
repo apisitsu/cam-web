@@ -567,6 +567,8 @@ export const useCamPlanStore = create((set, get) => ({
         return each(c.cboreGroups, (g) => `${g.holes.length} × Ø${g.diameter} × ${g.depth}`);
       case 'csink':
         return each(c.cskGroups, (g) => `${g.holes.length} × Ø${g.diameter} ${g.angle}°`);
+      case 'cboreChamfer':
+        return each(c.cboreChamferGroups, (g) => `${g.holes.length} × Ø${g.diameter} · ${g.holeChamfer} mm`);
       default:
         return null;
     }

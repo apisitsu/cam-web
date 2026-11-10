@@ -463,6 +463,8 @@ const halfAngle = (tool) => ((tool.angle ?? 90) * Math.PI) / 360;
  * hole has one, otherwise a centre a little under the drill.
  */
 export function spotDiameter(hole, toolDiameter) {
+  // A counterbore's chamfer is on its own mouth, not the hole's.
+  if (hole.cad?.counterbore && hole.cad.chamfer > 0) return hole.cad.counterbore.diameter + hole.cad.chamfer * 2;
   if (hole.cad?.chamfer > 0) return hole.diameter + hole.cad.chamfer * 2;
   return Math.min(hole.diameter * 0.6, toolDiameter);
 }
@@ -492,6 +494,36 @@ export function spotOp(holes, opts) {
       'G81 to the depth that leaves the spot or chamfer diameter',
       ...(chamfered ? [`${chamfered} hole${chamfered > 1 ? 's' : ''} chamfered to the size drawn`] : []),
     ],
+  );
+}
+
+/** The diameter of a counterbored hole's chamfer, where it meets the counterbore floor. */
+export const holeChamferDiameter = (hole) => hole.diameter + hole.cad.holeChamfer * 2;
+
+/**
+ * Chamfer the hole's edge on the counterbore floor. After the counterbore, so the
+ * spot drill reaches the floor through air; its body has to fit the counterbore.
+ */
+export function counterboreChamferOp(holes, opts) {
+  const {
+    material, tool, machine, part,
+  } = opts;
+  const speeds = {
+    ...drillingSpeeds({
+      material, diameter: tool.diameter, depth: 0, machine,
+    }),
+    cycle: 'G81',
+    peck: null,
+  };
+  return cycleOp(
+    'cboreChamfer',
+    `Chamfer ${holes.length} hole${holes.length > 1 ? 's' : ''} in the counterbore`,
+    tool,
+    speeds,
+    holes,
+    (h) => mouthOf(h, part) - h.cad.counterbore.depth - holeChamferDiameter(h) / 2 / Math.tan(halfAngle(tool)),
+    part,
+    ['G81 from the counterbore floor, to the chamfer diameter drawn'],
   );
 }
 

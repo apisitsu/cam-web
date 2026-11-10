@@ -327,7 +327,11 @@ function millContext(welded, analysis, opts) {
 
   // What the Hole Wizard said each hole is. A hole found only in the mesh has no
   // `cad`, and is drilled as it always was.
-  const spotHoles = holes.filter((h) => h.cad?.holeType === 'drill' || h.cad?.holeType === 'tap');
+  const spotHoles = holes.filter((h) => h.cad?.holeType === 'drill' || h.cad?.holeType === 'tap'
+    || (h.cad?.holeType === 'cbore' && h.cad.chamfer > 0));
+  const cboreChamferGroups = groupHoles(holes, (h) => (h.cad?.holeChamfer > 0
+    ? `${h.cad.counterbore.diameter}x${h.cad.counterbore.depth}x${h.diameter}x${h.cad.holeChamfer}` : null))
+    .map((group) => ({ ...group[0].cad.counterbore, holeChamfer: group[0].cad.holeChamfer, holes: group }));
   const tapGroups = groupHoles(holes, (h) => h.cad?.thread?.name)
     .map((group) => ({ thread: group[0].cad.thread, holes: group }));
   const cboreGroups = groupHoles(holes, (h) => (h.cad?.counterbore
@@ -352,6 +356,7 @@ function millContext(welded, analysis, opts) {
     spotHoles,
     tapGroups,
     cboreGroups,
+    cboreChamferGroups,
     cskGroups,
     warnings: [
       ...fitWarnings(machine, bounds),

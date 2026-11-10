@@ -177,6 +177,8 @@ export function createFeature(kind, props = {}) {
       cskAngle: positive(props.cskAngle, 90),
       // A 45° mouth chamfer on a drilled or tapped hole; 0 is none.
       chamfer: Number.isFinite(props.chamfer) && props.chamfer > 0 ? props.chamfer : 0,
+      // A counterbore's second chamfer: on the hole's edge at the counterbore floor.
+      holeChamfer: Number.isFinite(props.holeChamfer) && props.holeChamfer > 0 ? props.holeChamfer : 0,
       depth: positive(props.depth, 15),
       end: props.end === 'through' ? 'through' : 'blind',
       reverse: !!props.reverse,

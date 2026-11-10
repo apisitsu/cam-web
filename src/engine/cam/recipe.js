@@ -121,6 +121,11 @@ export const OPERATION_KINDS = [
     hint: 'Mills the Hole Wizard counterbores in circles round each hole.',
   },
   {
+    kind: 'cboreChamfer', mode: 'mill', label: "C'bore hole chamfer", order: 39,
+    toolTypes: ['spot'], needs: 'cboreChamfer',
+    hint: 'Chamfers the hole\'s edge on the counterbore floor, after the counterbore.',
+  },
+  {
     kind: 'profile', mode: 'mill', label: 'Profile from sketch', order: 44,
     toolTypes: ['endmill'], needs: 'sketch',
     hint: 'Follows a sketch\'s outline, outside or inside it, to a depth.',
@@ -245,6 +250,15 @@ function toolMisfit(kind, tool, ctx, target = null) {
     if (!group) return null;
     if (tool.diameter >= group.diameter) return `Ø${tool.diameter} is not smaller than the Ø${group.diameter} counterbore.`;
     return tool.fluteLength < group.depth ? `${tool.fluteLength} mm of flute against a ${group.depth} mm counterbore.` : null;
+  }
+  if (kind === 'cboreChamfer') {
+    const group = ctx.cboreChamferGroups?.[index];
+    if (!group) return null;
+    const need = mill.holeChamferDiameter(group.holes[0]);
+    if (tool.diameter < need) return `Ø${tool.diameter} cannot make a Ø${need} chamfer.`;
+    return tool.diameter > group.diameter
+      ? `Ø${tool.diameter} will not go into the Ø${group.diameter} counterbore.`
+      : null;
   }
   if (kind === 'pocket' || kind === 'profile') {
     const depth = target?.depth ?? 0;
@@ -468,6 +482,7 @@ export function reconcile(recipe, ctx) {
     if (meta.needs === 'hole') return e.target.index < (ctx.holeGroups?.length ?? 0);
     if (meta.needs === 'tap') return e.target.index < (ctx.tapGroups?.length ?? 0);
     if (meta.needs === 'cbore') return e.target.index < (ctx.cboreGroups?.length ?? 0);
+    if (meta.needs === 'cboreChamfer') return e.target.index < (ctx.cboreChamferGroups?.length ?? 0);
     if (meta.needs === 'csk') return e.target.index < (ctx.cskGroups?.length ?? 0);
     // A picked face or edge is identified by id, not position: a new STL that
     // happens to have an F3 is not the F3 the operator clicked on.
@@ -511,7 +526,7 @@ export function defaultToolFor(kind, ctx, target = null) {
     return dia != null ? drillUnder(dia, exact ? 0.001 : undefined) : choices[0];
   }
   // A spot drill or countersink only needs to be big enough: the smallest that is.
-  if (kind === 'spot' || kind === 'csink') return choices[choices.length - 1];
+  if (kind === 'spot' || kind === 'csink' || kind === 'cboreChamfer') return choices[choices.length - 1];
   if (kind === 'cbore') {
     const group = at.cboreGroups?.[target?.index ?? 0];
     return choices.find((t) => group && t.diameter <= group.diameter * 0.8) ?? choices[0];
@@ -635,6 +650,11 @@ function autoMillRecipe(ctx) {
   (ctx.cboreGroups ?? []).forEach((group, index) => {
     const e = add('cbore', { index });
     if (!e.toolId) e.warning = `No endmill in the library fits the Ø${group.diameter} counterbore.`;
+  });
+
+  (ctx.cboreChamferGroups ?? []).forEach((group, index) => {
+    const e = add('cboreChamfer', { index });
+    if (!e.toolId) e.warning = `No spot drill in the library chamfers the hole in the Ø${group.diameter} counterbore.`;
   });
 
   const finish = add('finish');
@@ -856,6 +876,16 @@ function buildMillStep(parentCtx, e, tool, cut) {
         op: mill.counterboreOp(group.holes, common),
         title: `Counterbore ${group.holes.length} × Ø${group.diameter}${at}`,
         why: `C'bore holes from the Hole Wizard: Ø${group.diameter} × ${group.depth} mm, milled in circles with the ${tool.label}.`,
+        warnings,
+      };
+    }
+    case 'cboreChamfer': {
+      const group = ctx.cboreChamferGroups?.[e.target?.index ?? 0];
+      if (!group) return null;
+      return {
+        op: mill.counterboreChamferOp(group.holes, common),
+        title: `Chamfer ${group.holes.length} hole${group.holes.length > 1 ? 's' : ''} in the Ø${group.diameter} counterbore${at}`,
+        why: `${group.holeChamfer} mm × 45° on the hole's edge at the counterbore floor, after the counterbore so the ${tool.label} meets air on the way down.`,
         warnings,
       };
     }

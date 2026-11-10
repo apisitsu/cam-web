@@ -81,7 +81,18 @@ export function holeSection(spec, depth, through) {
     const R = spec.cbDiameter / 2;
     if (!(R > r)) throw new Error('the counterbore must be wider than the hole');
     if (!(spec.cbDepth > 0 && spec.cbDepth < depth)) throw new Error('the counterbore must be shallower than the hole');
-    pts.push([-ABOVE, R], [spec.cbDepth, R], [spec.cbDepth, r]);
+    // 45° chamfers: `chamfer` on the counterbore's mouth, `holeChamfer` on the hole's
+    // edge at the counterbore floor.
+    const c = spec.chamfer > 0 ? spec.chamfer : 0;
+    const h = spec.holeChamfer > 0 ? spec.holeChamfer : 0;
+    if (!(c < spec.cbDepth)) throw new Error('the counterbore chamfer is deeper than the counterbore');
+    if (!(r + h < R)) throw new Error('the hole chamfer is wider than the counterbore');
+    if (!(spec.cbDepth + h < depth)) throw new Error('the hole chamfer is deeper than the hole');
+    pts.push(c > 0 ? [-ABOVE, R + c + ABOVE] : [-ABOVE, R]);
+    if (c > 0) pts.push([c, R]);
+    pts.push([spec.cbDepth, R]);
+    pts.push(h > 0 ? [spec.cbDepth, r + h] : [spec.cbDepth, r]);
+    if (h > 0) pts.push([spec.cbDepth + h, r]);
   } else if (spec.holeType === 'csk') {
     const R = spec.cskDiameter / 2;
     if (!(R > r)) throw new Error('the countersink must be wider than the hole');
@@ -189,7 +200,8 @@ export function holeRecords(positions, plane, spec, { depth, through = false, re
     depth,
     through,
     tip: through ? 0 : drill / 2 / Math.tan(TIP_HALF),
-    chamfer: (spec.holeType === 'drill' || spec.holeType === 'tap') && spec.chamfer > 0 ? spec.chamfer : 0,
+    chamfer: spec.holeType !== 'csk' && spec.chamfer > 0 ? spec.chamfer : 0,
+    holeChamfer: spec.holeType === 'cbore' && spec.holeChamfer > 0 ? spec.holeChamfer : 0,
     thread,
     counterbore,
     countersink,

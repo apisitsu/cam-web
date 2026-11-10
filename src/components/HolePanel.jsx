@@ -61,6 +61,7 @@ export default function HolePanel({ trigger }) {
   const [cskDiameter, setCskDiameter] = useState(12);
   const [cskAngle, setCskAngle] = useState(90);
   const [chamfer, setChamfer] = useState(0);
+  const [holeChamfer, setHoleChamfer] = useState(0);
   const [end, setEnd] = useState('blind');
   const [depth, setDepth] = useState(15);
   const [reverseChoice, setReverse] = useState(null);
@@ -81,7 +82,8 @@ export default function HolePanel({ trigger }) {
     cbDepth,
     cskDiameter,
     cskAngle,
-    chamfer: holeType === 'drill' || holeType === 'tap' ? chamfer : 0,
+    chamfer: holeType === 'csk' ? 0 : chamfer,
+    holeChamfer: holeType === 'cbore' ? holeChamfer : 0,
   };
 
   const onBuild = async () => {
@@ -149,17 +151,30 @@ export default function HolePanel({ trigger }) {
           {mmInput('Angle', cskAngle, setCskAngle, { unit: '°' })}
         </>
       )}
-      {(holeType === 'drill' || holeType === 'tap') && (
+      {holeType !== 'csk' && (
         <InputNumber
           size="small"
           value={chamfer}
           min={0}
           step={0.1}
           onChange={(v) => setChamfer(Math.max(0, Number(v) || 0))}
-          addonBefore="Chamfer"
+          addonBefore={holeType === 'cbore' ? "C'bore chamfer" : 'Chamfer'}
           addonAfter="mm × 45°"
           style={{ width: '100%' }}
           data-hole-chamfer
+        />
+      )}
+      {holeType === 'cbore' && (
+        <InputNumber
+          size="small"
+          value={holeChamfer}
+          min={0}
+          step={0.1}
+          onChange={(v) => setHoleChamfer(Math.max(0, Number(v) || 0))}
+          addonBefore="Hole chamfer"
+          addonAfter="mm × 45°"
+          style={{ width: '100%' }}
+          data-hole-chamfer-inner
         />
       )}
 

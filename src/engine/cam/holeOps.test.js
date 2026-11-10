@@ -93,6 +93,56 @@ describe('Hole Wizard holes through to NC', () => {
   });
 });
 
+describe('a counterbore chamfered at its mouth and at the hole', () => {
+  const spec = {
+    holeType: 'cbore', diameter: 6.6, cbDiameter: 11, cbDepth: 6.5, chamfer: 0.5, holeChamfer: 0.5,
+  };
+  const shape = { depth: 21, through: true };
+  const at = [[0, 0]];
+  const soup = meshBoolean(
+    extrudeRegion({ outer: square(-30, -20, 30, 20) }, { depth: 20 }),
+    holeSolid(at, top, spec, shape),
+    'cut',
+  );
+  const holes = holeRecords(at, top, spec, shape);
+  const plan = planJob(soup, weld(soup), { material: 'aluminium', mode: 'mill', cad: { holes } });
+  const kinds = plan.steps.map((s) => s.kind);
+
+  it('draws both 45° chamfers in the section', () => {
+    const pts = holeSection(spec, 21, true);
+    const pairs = [];
+    for (let i = 0; i < pts.length; i += 2) pairs.push([pts[i], pts[i + 1]]);
+    expect(pairs).toContainEqual([0.5, 5.5]); // the counterbore mouth, 0.5 down
+    expect(pairs).toContainEqual([6.5, 3.8]); // the hole's edge on the floor, Ø7.6
+    expect(pairs).toContainEqual([7, 3.3]);
+  });
+
+  it('records both for CAM', () => {
+    expect(holes[0].chamfer).toBe(0.5);
+    expect(holes[0].holeChamfer).toBe(0.5);
+  });
+
+  it('spots the mouth chamfer before, and chamfers the hole after, the counterbore', () => {
+    expect(kinds).toContain('spot');
+    expect(kinds).toContain('cboreChamfer');
+    expect(kinds.indexOf('spot')).toBeLessThan(kinds.indexOf('cbore'));
+    expect(kinds.indexOf('cbore')).toBeLessThan(kinds.indexOf('cboreChamfer'));
+  });
+
+  it('cuts each chamfer to the size drawn, with a tool that fits', () => {
+    const spot = plan.operations.find((o) => o.kind === 'spot');
+    expect(spot.tool.diameter).toBeGreaterThanOrEqual(12);
+    expect(spot.moves[0].z).toBeCloseTo(20 - 6, 3); // Ø12 at the face, 90° point
+    const inner = plan.operations.find((o) => o.kind === 'cboreChamfer');
+    expect(inner.tool.diameter).toBeLessThanOrEqual(11);
+    expect(inner.moves[0].z).toBeCloseTo(20 - 6.5 - 3.8, 3);
+  });
+
+  it('cuts no part material', () => {
+    expect(verifyCut(plan, program(plan)).gouge.cells).toBe(0);
+  });
+});
+
 describe('pocket and profile from a sketch', () => {
   const pocket = { outer: square(-10, -6, 10, 6) };
   const base = () => extrudeRegion({ outer: square(-30, -20, 30, 20) }, { depth: 20 });

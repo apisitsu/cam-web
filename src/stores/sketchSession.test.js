@@ -3,7 +3,7 @@
  * from it closes it, and finishing an edit brings the part up to date.
  */
 import {
-  describe, it, expect, beforeEach,
+  describe, it, expect, beforeEach, vi,
 } from 'vitest';
 import { useSketchStore } from './sketchStore.js';
 import { getRawMesh, useCamPlanStore } from './camPlanStore.js';
@@ -393,6 +393,17 @@ describe('Hole Wizard at picked points', () => {
     expect(getRawMesh().cad.holes[0].drill).toBe(6.8);
     await useCamPlanStore.getState().loadSoup(getRawMesh().soup, 'imported');
     expect(getRawMesh().cad).toBeNull();
+  });
+
+  it('moves a hole when its point moves while the sketch is still open', async () => {
+    sketch().toggleSelect(points[0]);
+    await drill(6);
+    expect(getRawMesh().cad.holes[0].at).toEqual([10, 10, 10]);
+    sketch().sk.entities.get(points[0]).x = 15;
+    sketch()._bump();
+    expect(tree().dirty).toBe(true);
+    await vi.waitFor(() => expect(tree().dirty).toBe(false), { timeout: 5000 });
+    await vi.waitFor(() => expect(getRawMesh().cad.holes[0].at).toEqual([15, 10, 10]), { timeout: 5000 });
   });
 
   it('cuts only the points picked, and stays open for the next kind', async () => {

@@ -19,7 +19,9 @@
  * on every change sounds better and is not: dragging one point in a sketch emits
  * a solve per frame, and a tree with a solid boolean in it would fire a CSG
  * evaluation per frame with it. SolidWorks lights up a rebuild button for the
- * same reason. Auto-rebuild is a later option, debounced on solve completion —
+ * same reason. The one exception is a sketch the Hole Wizard has drilled and left
+ * open: its holes follow its points (`scheduleHoleRebuild`). Wider auto-rebuild is
+ * a later option, debounced on solve completion —
  * the plumbing for it is `dirty` plus `rebuild()`.
  *
  * The mesh boolean is `import()`ed on demand, and only when the tree actually
@@ -489,6 +491,7 @@ export const useFeatureStore = create((set, get) => ({
   /** Forget everything — a new project, not a rebuild. */
   clear() {
     _imports.clear();
+    cancelHoleRebuild();
     set({
       features: [], dirty: false, steps: [], errors: [], selectedId: null,
     });
@@ -529,7 +532,35 @@ useSketchStore.subscribe((state) => {
   const moved = [...used].some((id) => _last.planes.has(id) && planes.get(id) !== _last.planes.get(id));
   _last = { version: state.version, activeId: state.activeId, planes };
   if (features.length && (editedUsed || moved)) useFeatureStore.getState().markDirty();
+  // The Hole Wizard leaves its sketch open for more holes, so a point moved there
+  // would leave its hole behind until Rebuild. Those holes follow the point.
+  const drilled = features.some((f) => f.kind === 'hole' && f.sketchId === state.activeId);
+  if (editedUsed && state.sketchOpen && drilled) scheduleHoleRebuild();
 });
+
+/** Quiet time after the last edit before the holes are moved, so typing and dragging settle first. */
+const HOLE_REBUILD_MS = 600;
+let _holeRebuild = null;
+
+function cancelHoleRebuild() {
+  clearTimeout(_holeRebuild);
+  _holeRebuild = null;
+}
+
+function scheduleHoleRebuild() {
+  cancelHoleRebuild();
+  _holeRebuild = setTimeout(() => {
+    _holeRebuild = null;
+    const tree = useFeatureStore.getState();
+    if (!tree.dirty) return;
+    // Mid-drag or mid-rebuild: try again once that has finished.
+    if (tree.building || useSketchStore.getState().dragging) {
+      scheduleHoleRebuild();
+      return;
+    }
+    tree.rebuild();
+  }, HOLE_REBUILD_MS);
+}
 
 // Leaving the Sketch page by a tab finishes the sketch as the checkmark does, so
 // the part reaching the machine page includes the edit.

@@ -721,7 +721,7 @@ export default function App() {
                   color: CAD.text, fontWeight: 600, fontSize: 13, whiteSpace: 'nowrap', margin: '0 8px 0 4px',
                 }}
                 >
-                  Engineer CAM Lite
+                  Basic CAM Lite
                 </span>
               </>
             )}

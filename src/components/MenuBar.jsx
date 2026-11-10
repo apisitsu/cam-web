@@ -132,7 +132,7 @@ export function buildMenuItems(ctx) {
       key: 'help',
       label: 'Help',
       children: [
-        { key: 'about', label: 'About Engineer CAM Lite' },
+        { key: 'about', label: 'About Basic CAM Lite' },
       ],
     },
   ];
@@ -296,7 +296,7 @@ export default function MenuBar({
     if (key === 'tree') { setTreeOpen(!treeOpen); return; }
     if (key === 'about') {
       Modal.info({
-        title: 'Engineer CAM Lite',
+        title: 'Basic CAM Lite',
         icon: <ThunderboltOutlined style={{ color: CAD.accent }} />,
         content: 'A lightweight shop-floor tool in the browser: open and check G-code, backplot and simulate the cut, check standard cutting speeds, and sketch simple parts. It is not a full CAM system — no 3D fillets, assemblies or STEP.',
       });

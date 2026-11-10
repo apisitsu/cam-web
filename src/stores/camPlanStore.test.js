@@ -1357,10 +1357,16 @@ describe('camPlanStore — checking the cut, and steps from a sketch', () => {
     expect(reach()).toBeCloseTo(before + 4, 3);
   });
 
-  it('does not offer a sketch step in the add menu, which has no sketch to pick', async () => {
+  it('offers every milling operation to Manual Toolpath, sketch steps included', async () => {
     await store().loadStl(stlFile(box(30, 20, 10)));
     const kinds = store().addableKinds().map((k) => k.kind);
-    expect(kinds).not.toContain('pocket');
-    expect(kinds).toContain('tap');
+    expect(kinds).toEqual(expect.arrayContaining(['face', 'drill', 'tap', 'pocket', 'profile', 'region', 'trace']));
+  });
+
+  it('says what a hole operation can be aimed at, and when the part has none', async () => {
+    await store().loadStl(stlFile(box(30, 20, 10)));
+    expect(store().targetChoices('rough')).toBeNull();
+    expect(store().targetChoices('tap')).toEqual([]);
+    expect(store().targetChoices('drill')).toEqual([]);
   });
 });

@@ -46,7 +46,7 @@ describe('the catalogue is a usable index', () => {
   });
 
   it('looks a command up by id', () => {
-    expect(command('autoPlan').label).toBe('Auto-plan');
+    expect(command('autoPlan').label).toBe('Auto Toolpath');
     expect(command('autoPlan').group).toBe('cam');
   });
 
@@ -80,13 +80,14 @@ describe('keeping a label is the exception, and an argued one', () => {
   });
 
   it('leaves the ordinary toolbar commands icon-only', () => {
-    for (const id of ['parse', 'simulate', 'autoPlan', 'exportNc', 'verifyInViewport']) {
+    for (const id of ['parse', 'simulate', 'addOperation', 'exportNc', 'verifyInViewport']) {
       expect(command(id).keepsText).toBeUndefined();
     }
   });
 
-  it('keeps the dropdown trigger labelled — a bare glyph hides the menu', () => {
-    expect(command('addOperation').keepsText).toBeTruthy();
+  it('names the two ways a plan is started, Auto and Manual Toolpath', () => {
+    expect(command('autoPlan').keepsText).toBeTruthy();
+    expect(command('manualToolpath').keepsText).toBeTruthy();
   });
 });
 

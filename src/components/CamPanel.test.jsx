@@ -166,6 +166,46 @@ describe('the workflow starts at the part', () => {
     expect(auto).toBeTruthy();
     expect(auto.className).not.toMatch(/ant-btn-primary/);
   });
+
+  it('offers the two ways to start, Auto Toolpath and Manual Toolpath, by name', async () => {
+    await store().loadStl(stlFile(box(60, 40, 20)));
+    // eslint-disable-next-line testing-library/render-result-naming-convention
+    const el = await render();
+    expect(cmd(el, 'autoPlan').textContent).toBe('Auto Toolpath');
+    expect(cmd(el, 'manualToolpath').textContent).toBe('Manual Toolpath');
+    expect(el.querySelector('[data-manual-toolpath]')).toBeTruthy();
+  });
+
+  it('adds just the one operation chosen in Manual Toolpath', async () => {
+    await store().loadStl(stlFile(box(60, 40, 20)));
+    // eslint-disable-next-line testing-library/render-result-naming-convention
+    const el = await render();
+    await act(async () => { cmd(el, 'addOperation').click(); });
+    expect(store().recipe.map((e) => e.kind)).toEqual(['face']);
+  });
+
+  it('says so, and will not add, when the part has nothing for the chosen operation', async () => {
+    await store().loadStl(stlFile(box(60, 40, 20)));
+    // eslint-disable-next-line testing-library/render-result-naming-convention
+    const el = await render();
+    const kindSelect = el.querySelector('[data-manual-kind]');
+    expect(kindSelect).toBeTruthy();
+    // No Hole Wizard holes on an imported box: Tap has nothing to aim at.
+    await act(async () => { store().addStep('face'); });
+    expect(store().targetChoices('tap')).toEqual([]);
+  });
+
+  it('folds Manual Toolpath away, and opens it again when a face is clicked on the model', async () => {
+    await store().loadStl(stlFile(box(60, 40, 20)));
+    // eslint-disable-next-line testing-library/render-result-naming-convention
+    const el = await render();
+    await act(async () => { cmd(el, 'manualToolpath').click(); });
+    expect(el.querySelector('[data-manual-toolpath]')).toBeNull();
+    const top = store().features().faces.find((f) => f.facing === 'up');
+    await act(async () => { store().selectFeature(top); });
+    expect(el.querySelector('[data-manual-toolpath]')).toBeTruthy();
+    expect(cmd(el, 'addFaceOp')).toBeTruthy();
+  });
 });
 
 describe('choosing the machine', () => {
@@ -244,7 +284,8 @@ describe('the operation table', () => {
   it('offers to add an operation and to reset the plan', async () => {
     // eslint-disable-next-line testing-library/render-result-naming-convention
     const el = await planned(box(60, 40, 15));
-    expect(el.textContent).toMatch(/Add operation/);
+    expect(cmd(el, 'addOperation')).toBeTruthy();
+    expect(cmd(el, 'resetRecipe')).toBeTruthy();
     // "Edited" only appears once the operator has actually changed something.
     expect(el.textContent).not.toMatch(/edited/);
     await act(async () => { store().setStepTool('rough', 'em6'); });
@@ -320,7 +361,9 @@ describe('stroke and axes on screen', () => {
 describe('the machine list answers "which of ours can take it"', () => {
   /** Open the machine dropdown and read the option list. */
   async function machineOptions() {
-    const select = container.querySelector('.ant-select-selector');
+    // The machine is the select showing a make and model, "Generic · 3-axis VMC".
+    const select = [...container.querySelectorAll('.ant-select-selector')]
+      .find((s) => s.textContent.includes('·'));
     await act(async () => {
       select.dispatchEvent(new MouseEvent('mousedown', { bubbles: true }));
     });

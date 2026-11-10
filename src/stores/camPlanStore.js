@@ -532,11 +532,47 @@ export const useCamPlanStore = create((set, get) => ({
     return recipeOps.toolChoicesFor(e.kind, _ctx, e.target);
   },
 
+  /**
+   * What an operation of `kind` can be aimed at on this part, for Manual Toolpath:
+   * `null` when it needs no target, `[]` when the part has none, otherwise one
+   * `{value, label, target}` per group of holes, recess, and so on.
+   */
+  targetChoices(kind) {
+    if (!_ctx) return [];
+    const c = _ctx;
+    const each = (list, label, target = (i) => ({ index: i })) => (list ?? []).map((item, i) => ({
+      value: i, label: label(item), target: target(i, item),
+    }));
+    if (c.mode === 'turn') {
+      if (kind !== 'groove') return null;
+      return each(c.profile?.recesses, (r) => `Z${r.zStart.toFixed(1)} · ${r.width.toFixed(2)} wide`);
+    }
+    switch (kind) {
+      case 'spot':
+        return c.spotHoles?.length
+          ? [{ value: 0, label: `${c.spotHoles.length} Hole Wizard hole${c.spotHoles.length > 1 ? 's' : ''}`, target: null }]
+          : [];
+      case 'drill':
+        return each(
+          c.holeGroups,
+          (g) => `${g.holes.length} × Ø${g.diameter.toFixed(2)}`,
+          (i, g) => ({ index: i, diameter: g.diameter }),
+        );
+      case 'tap':
+        return each(c.tapGroups, (g) => `${g.holes.length} × ${g.thread.name}×${g.thread.pitch}`);
+      case 'cbore':
+        return each(c.cboreGroups, (g) => `${g.holes.length} × Ø${g.diameter} × ${g.depth}`);
+      case 'csink':
+        return each(c.cskGroups, (g) => `${g.holes.length} × Ø${g.diameter} ${g.angle}°`);
+      default:
+        return null;
+    }
+  },
+
   /** The operations that could be added to this part. */
   addableKinds() {
     if (!_ctx) return [];
-    // A sketch step needs a sketch, picked in its own part of the panel.
-    return recipeOps.operationKindsFor(_ctx.mode).filter((k) => k.needs !== 'sketch');
+    return recipeOps.operationKindsFor(_ctx.mode);
   },
 
   // ---- Picking geometry off the model ---------------------------------------

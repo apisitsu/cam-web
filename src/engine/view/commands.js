@@ -122,8 +122,15 @@ export const COMMANDS = [
     hint: 'Load an .stl / .obj / .ply model to plan a job from',
   },
   {
-    id: 'autoPlan', group: 'cam', label: 'Auto-plan',
+    id: 'autoPlan', group: 'cam', label: 'Auto Toolpath',
     hint: 'Replace everything with an automatic plan for the whole part',
+    // One of the two ways to start a plan; with words on them the choice reads.
+    keepsText: 'one of the two ways a plan is started',
+  },
+  {
+    id: 'manualToolpath', group: 'cam', label: 'Manual Toolpath',
+    hint: 'Add operations one at a time, each aimed at what you choose',
+    keepsText: 'the other of the two ways a plan is started',
   },
   {
     id: 'exportNc', group: 'cam', label: 'Export NC',
@@ -133,22 +140,11 @@ export const COMMANDS = [
     id: 'verifyInViewport', group: 'cam', label: 'Verify in viewport',
     hint: 'Load the generated program into the backplot and simulator',
   },
-  {
-    id: 'pocketFromSketch', group: 'cam', label: 'Pocket from sketch',
-    hint: 'Clear the inside of the chosen sketch to the depth given',
-  },
-  {
-    id: 'profileFromSketch', group: 'cam', label: 'Profile from sketch',
-    hint: 'Run the cutter round the chosen sketch, on the side given',
-  },
 
   // ---- Recipe: the ordered operations -------------------------------------
   {
     id: 'addOperation', group: 'recipe', label: 'Add operation',
-    hint: 'Append an operation to the end of the list',
-    // A menu, not a button: it drops open on a list of operation kinds, and a
-    // bare glyph gives no clue that anything is behind it.
-    keepsText: 'opens a dropdown of operation kinds',
+    hint: 'Add the operation chosen in Manual Toolpath to the plan',
   },
   {
     id: 'resetRecipe', group: 'recipe', label: 'Reset operations',

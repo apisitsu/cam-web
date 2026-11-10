@@ -7,11 +7,10 @@
  * file belongs downstairs instead.
  *
  * The workflow runs in the order the work does: **import, look, pick, cut.**
- * Importing measures the part and nothing more, so the faces and edges are
- * pickable immediately; choosing one is what creates an operation. The
- * automatic plan is still here as `Auto-plan`, but as a button rather than a
- * gate — it replaces the whole recipe, which is a fine starting point and a
- * bad thing to have happen to you.
+ * Importing measures the part and nothing more. A plan is then started one of
+ * two ways, side by side: **Auto Toolpath** plans the whole part (and replaces the
+ * whole recipe), **Manual Toolpath** adds one operation at a time — chosen from a
+ * list, or by clicking a face or edge on the model.
  *
  * Three things the planner cannot infer from geometry are chosen here:
  *
@@ -30,7 +29,7 @@
 import React from 'react';
 import {
   Upload, Button, Space, Select, Table, Alert, Tag, Typography, Descriptions,
-  Divider, Switch, Tooltip, Empty, Dropdown, InputNumber, Collapse, Modal, Segmented,
+  Divider, Switch, Tooltip, Empty, InputNumber, Collapse, Modal, Segmented,
 } from 'antd';
 import {
   DownloadOutlined, SendOutlined, CloseOutlined,
@@ -39,7 +38,7 @@ import {
 } from '@ant-design/icons';
 import CommandButton from './CommandButton.jsx';
 import {
-  PartIcon, AutoPlanIcon, ClearFaceIcon, ContourIcon, A0FaceIcon, RotaryCentreIcon, glyph,
+  PartIcon, AutoPlanIcon, ClearFaceIcon, ContourIcon, A0FaceIcon, RotaryCentreIcon,
 } from './glyph.jsx';
 import { useFeatureStore } from '../stores/featureStore.js';
 import { useSketchStore } from '../stores/sketchStore.js';
@@ -71,9 +70,6 @@ function downloadNc(text, name) {
   a.click();
   URL.revokeObjectURL(url);
 }
-
-const PocketIcon = glyph(<><rect x="3" y="5" width="18" height="14" rx="1" /><rect x="7.5" y="9" width="9" height="6" rx="2" fill="currentColor" opacity="0.35" /></>);
-const ProfileIcon = glyph(<><rect x="7" y="8" width="10" height="8" rx="1" /><rect x="4" y="5" width="16" height="14" rx="3" strokeDasharray="2.5 2" /></>);
 
 /** Where on the part a check result is, in the coordinates the program uses. */
 function whereAt(at) {
@@ -124,64 +120,134 @@ function CutCheck({ verification }) {
   );
 }
 
-/** Pocket or profile from one of the sketches. */
-function SketchSteps() {
+/** Operations aimed by picking on the model, below, rather than chosen from the list. */
+const PICKED_ON_MODEL = new Set(['face', 'edge']);
+
+/**
+ * Manual Toolpath: add operations one at a time, each aimed at what it asks for —
+ * a group of holes, a sketch and a depth, or a face or edge clicked on the model.
+ * The other way to start a plan is Auto Toolpath, which plans the whole part.
+ */
+function ManualToolpath({
+  detected, pickable, selectedFeature, onSelect, onPreview, onAddFace, onAddEdge,
+}) {
   // Re-read whenever a sketch changes.
   useSketchStore((s) => s.version);
+  const addableKinds = useCamPlanStore((s) => s.addableKinds);
+  const targetChoices = useCamPlanStore((s) => s.targetChoices);
+  const addStep = useCamPlanStore((s) => s.addStep);
   const sketchList = useCamPlanStore((s) => s.sketchList);
   const addSketchStep = useCamPlanStore((s) => s.addSketchStep);
-  const sketches = sketchList().filter((s) => s.closed);
-  const [picked, setPicked] = React.useState(null);
+  const [kind, setKind] = React.useState(null);
+  const [choice, setChoice] = React.useState(0);
+  const [sketchId, setSketchId] = React.useState(null);
   const [depth, setDepth] = React.useState(5);
   const [side, setSide] = React.useState('outside');
-  const chosen = sketches.find((s) => s.id === picked) ?? sketches[0];
 
-  if (sketches.length === 0) {
-    return (
-      <Text type="secondary" style={{ fontSize: 11 }}>
-        Draw a closed profile in a sketch to pocket or profile it.
-      </Text>
-    );
-  }
+  const kinds = addableKinds().filter((k) => !PICKED_ON_MODEL.has(k.needs));
+  const meta = kinds.find((k) => k.kind === kind) ?? kinds[0];
+  const choices = meta ? targetChoices(meta.kind) : null;
+  const chosen = choices?.find((c) => c.value === choice) ?? choices?.[0];
+  const sketchStep = meta?.needs === 'sketch';
+  const sketches = sketchList().filter((s) => s.closed);
+  const sketch = sketches.find((s) => s.id === sketchId) ?? sketches[0];
+
+  let blocked = null;
+  if (choices && !chosen) blocked = 'This part has none of these.';
+  if (sketchStep && !sketch) blocked = 'Draw a closed profile in a sketch first.';
+
+  const add = () => {
+    if (sketchStep) return addSketchStep(meta.kind, sketch.id, { depth, side });
+    return addStep(meta.kind, chosen?.target ?? undefined);
+  };
+
   return (
-    <div data-sketch-steps>
-      <Text style={{ color: CAD.label, fontSize: 11 }}>From a sketch — flat on top of the setup</Text>
-      <Space wrap size={6} style={{ marginTop: 4 }}>
+    <div
+      data-manual-toolpath
+      style={{ border: `1px solid ${CAD.border}`, borderRadius: 6, padding: '8px 10px' }}
+    >
+      <Text style={{ color: CAD.label, fontSize: 11 }}>Manual Toolpath — one operation at a time</Text>
+      <Space wrap size={6} style={{ marginTop: 6, display: 'flex' }}>
         <Select
           size="small"
-          style={{ width: 120 }}
-          value={chosen?.id}
-          onChange={setPicked}
-          options={sketches.map((s) => ({ value: s.id, label: s.name }))}
+          style={{ width: 170 }}
+          value={meta?.kind}
+          onChange={(v) => { setKind(v); setChoice(0); }}
+          options={kinds.map((k) => ({ value: k.kind, label: k.label }))}
+          data-manual-kind
         />
-        <InputNumber
-          size="small"
-          style={{ width: 110 }}
-          min={0.1}
-          step={0.5}
-          value={depth}
-          onChange={(v) => setDepth(Number(v) || depth)}
-          addonBefore="Depth"
-        />
+        {choices && chosen && (
+          <Select
+            size="small"
+            style={{ width: 150 }}
+            value={chosen.value}
+            onChange={setChoice}
+            options={choices.map((c) => ({ value: c.value, label: c.label }))}
+          />
+        )}
+        {sketchStep && sketch && (
+          <>
+            <Select
+              size="small"
+              style={{ width: 110 }}
+              value={sketch.id}
+              onChange={setSketchId}
+              options={sketches.map((s) => ({ value: s.id, label: s.name }))}
+            />
+            <InputNumber
+              size="small"
+              style={{ width: 110 }}
+              min={0.1}
+              step={0.5}
+              value={depth}
+              onChange={(v) => setDepth(Number(v) || depth)}
+              addonBefore="Depth"
+            />
+            {meta.kind === 'profile' && (
+              <Segmented
+                size="small"
+                value={side}
+                onChange={setSide}
+                options={[{ value: 'outside', label: 'Outside' }, { value: 'inside', label: 'Inside' }]}
+              />
+            )}
+          </>
+        )}
         <CommandButton
-          id="pocketFromSketch"
+          id="addOperation"
           size="small"
-          icon={<PocketIcon />}
-          onClick={() => addSketchStep('pocket', chosen.id, { depth })}
-        />
-        <Segmented
-          size="small"
-          value={side}
-          onChange={setSide}
-          options={[{ value: 'outside', label: 'Outside' }, { value: 'inside', label: 'Inside' }]}
-        />
-        <CommandButton
-          id="profileFromSketch"
-          size="small"
-          icon={<ProfileIcon />}
-          onClick={() => addSketchStep('profile', chosen.id, { depth, side })}
+          type="primary"
+          icon={<PlusOutlined />}
+          disabled={!meta || Boolean(blocked)}
+          onClick={add}
         />
       </Space>
+      <Text type="secondary" style={{ fontSize: 11, display: 'block', marginTop: 4 }}>
+        {blocked ?? (sketchStep ? `${meta.hint} The sketch must lie flat on top of the setup.` : meta?.hint)}
+      </Text>
+
+      {pickable && (
+        <>
+          <Divider style={{ margin: '8px 0' }} />
+          <Text style={{ color: CAD.label, fontSize: 11 }}>
+            Pick a face or edge — click the model, or a row below
+          </Text>
+          <div style={{ marginTop: 6 }}>
+            <SelectionActions
+              feature={selectedFeature}
+              onAddFace={onAddFace}
+              onAddEdge={onAddEdge}
+              onClear={() => onSelect(null)}
+            />
+          </div>
+          <FeaturePicker
+            features={detected}
+            selected={selectedFeature}
+            onSelect={onSelect}
+            onPreview={onPreview}
+          />
+        </>
+      )}
     </div>
   );
 }
@@ -414,11 +480,13 @@ export default function CamPanel() {
   const toggleStep = useCamPlanStore((s) => s.toggleStep);
   const moveStep = useCamPlanStore((s) => s.moveStep);
   const removeStep = useCamPlanStore((s) => s.removeStep);
-  const addStep = useCamPlanStore((s) => s.addStep);
   const resetRecipe = useCamPlanStore((s) => s.resetRecipe);
   const toolChoices = useCamPlanStore((s) => s.toolChoices);
-  const addableKinds = useCamPlanStore((s) => s.addableKinds);
   const selectedFeature = useCamPlanStore((s) => s.selectedFeature);
+  // Open from the start: with no operations yet, adding one is the next step.
+  const [manualOpen, setManualOpen] = React.useState(true);
+  // A face or edge clicked on the model is a Manual Toolpath pick.
+  React.useEffect(() => { if (selectedFeature) setManualOpen(true); }, [selectedFeature]);
   const selectFeature = useCamPlanStore((s) => s.selectFeature);
   const features = useCamPlanStore((s) => s.features);
   const addFaceStep = useCamPlanStore((s) => s.addFaceStep);
@@ -627,7 +695,27 @@ export default function CamPanel() {
           loading={status === 'planning'}
           onClick={() => makePlan()}
         />
+        <CommandButton
+          id="manualToolpath"
+          icon={<PlusOutlined />}
+          type={manualOpen && analysis ? 'primary' : 'default'}
+          ghost={manualOpen && Boolean(analysis)}
+          disabled={!analysis}
+          onClick={() => setManualOpen(!manualOpen)}
+        />
       </Space>
+
+      {analysis && manualOpen && (
+        <ManualToolpath
+          detected={detected}
+          pickable={pickable}
+          selectedFeature={selectedFeature}
+          onSelect={selectFeature}
+          onPreview={previewFeatureAt}
+          onAddFace={(id) => addFaceStep(id)}
+          onAddEdge={(id, opts) => addEdgeStep(id, opts)}
+        />
+      )}
 
       {stlName && (
         <Space size={4}>
@@ -943,31 +1031,10 @@ export default function CamPanel() {
         </>
       )}
 
-      {/* Picking comes before planning, because that is the order the work
-          happens in: look at the part, choose the face, cut it. Gated on the
-          measured geometry rather than on a plan existing — waiting for a plan
-          is exactly the gate this workflow removes. */}
+      {/* The rotary setup, on a milling job: picking faces lives in Manual Toolpath. */}
       {analysis && pickable && (
         <>
           <Divider style={{ margin: '4px 0' }} />
-          <Text style={{ color: CAD.label, fontSize: 11 }}>
-            Pick a face or edge — click the model, or a row below
-          </Text>
-
-          <SelectionActions
-            feature={selectedFeature}
-            onAddFace={(id) => addFaceStep(id)}
-            onAddEdge={(id, opts) => addEdgeStep(id, opts)}
-            onClear={() => selectFeature(null)}
-          />
-
-          <FeaturePicker
-            features={detected}
-            selected={selectedFeature}
-            onSelect={selectFeature}
-            onPreview={previewFeatureAt}
-          />
-
           {machine.rotary.length > 0 ? (
             <div>
               {/* A part is rarely modelled at the angle it will actually be
@@ -1065,8 +1132,6 @@ export default function CamPanel() {
         </>
       )}
 
-      {analysis && mode === 'mill' && <SketchSteps />}
-
       {plan && recipe.length > 0 && (
         <>
           <Divider style={{ margin: '4px 0' }} />
@@ -1079,25 +1144,6 @@ export default function CamPanel() {
               {edited && <Tag color="cyan">edited</Tag>}
             </Space>
             <Space size={4}>
-              <Dropdown
-                trigger={['click']}
-                menu={{
-                  items: addableKinds().map((k) => ({
-                    key: k.kind,
-                    label: (
-                      <div>
-                        <div>{k.label}</div>
-                        <Text type="secondary" style={{ fontSize: 11 }}>{k.hint}</Text>
-                      </div>
-                    ),
-                  })),
-                  onClick: ({ key }) => addStep(key),
-                }}
-              >
-                {/* The one button in the panel that keeps its words: it drops a
-                    menu open, and a bare glyph gives no clue there is one. */}
-                <CommandButton id="addOperation" size="small" icon={<PlusOutlined />} />
-              </Dropdown>
               <CommandButton
                 id="resetRecipe"
                 size="small"
@@ -1200,7 +1246,7 @@ export default function CamPanel() {
           image={Empty.PRESENTED_IMAGE_SIMPLE}
           description={(
             <Text type="secondary" style={{ fontSize: 12 }}>
-              No operations yet — pick a face or edge above, or Auto-plan the whole part
+              No operations yet — Auto Toolpath plans the whole part, Manual Toolpath adds one at a time
             </Text>
           )}
         />

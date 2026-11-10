@@ -31,7 +31,37 @@ import {
 } from '../engine/mesh/datum.js';
 import { circleAtPick } from '../engine/mesh/circlePick.js';
 import { encodeFloat32, decodeFloat32 } from '../engine/projectFile.js';
+import { verifyCut } from '../engine/cam/verify.js';
 import { useCamStore } from './camStore.js';
+
+/**
+ * The sketches, as `{id, name, plane, regions}`. Set by the sketch store, which
+ * imports this one and so cannot be imported back.
+ */
+let sketchSource = () => [];
+export function registerSketchSource(fn) {
+  sketchSource = fn;
+}
+
+/** A sketch step cuts the sketch as it is now, not as it was when it was added. */
+function refreshSketchTargets(recipe) {
+  if (!recipe.some((e) => e.target?.sketchId != null)) return recipe;
+  const sketches = sketchSource();
+  return recipe.map((e) => {
+    if (e.target?.sketchId == null) return e;
+    const s = sketches.find((x) => x.id === e.target.sketchId);
+    if (!s) return e;
+    return {
+      ...e,
+      target: {
+        ...e.target, name: s.name, plane: s.plane, regions: s.regions,
+      },
+    };
+  });
+}
+
+/** Bumped on every plan, so a check of a plan that has been replaced is dropped. */
+let verifyRun = 0;
 
 /** Large mesh arrays, out of React state. */
 const _mesh = { soup: null, welded: null };
@@ -83,6 +113,9 @@ export const useCamPlanStore = create((set, get) => ({
   analysis: null,      // bounds / shell / axis / recommendation
   plan: null,          // steps, operations, stock, warnings
   nc: null,            // the posted program text
+  // `verifyCut` of `nc` against the part, filled in just after each plan; null
+  // while it runs or when there is no plan.
+  verification: null,
   status: 'idle',      // idle | loading | analysing | planning | ready | error
   error: null,
 
@@ -177,7 +210,10 @@ export const useCamPlanStore = create((set, get) => ({
    * whole engine works on the triangle soup that comes out.
    */
   async loadPart(file) {
-    set({ status: 'loading', error: null, plan: null, nc: null });
+    verifyRun += 1;
+    set({
+      status: 'loading', error: null, plan: null, nc: null, verification: null,
+    });
     try {
       const buffer = await file.arrayBuffer();
       return await get().loadSoup(parsePart(buffer, file.name), file.name);
@@ -213,7 +249,10 @@ export const useCamPlanStore = create((set, get) => ({
    *   sketch they are editing.
    */
   async loadSoup(soup, name, { keepDatum = false, keepPage = false, cad = null } = {}) {
-    set({ status: 'loading', error: null, plan: null, nc: null });
+    verifyRun += 1;
+    set({
+      status: 'loading', error: null, plan: null, nc: null, verification: null,
+    });
     try {
       const welded = weld(soup);
       _raw.soup = soup;
@@ -361,7 +400,8 @@ export const useCamPlanStore = create((set, get) => ({
     if (!_ctx) return null;
     set({ status: 'planning', error: null });
     try {
-      const { material, machineId, recipe } = get();
+      const { material, machineId } = get();
+      const recipe = refreshSketchTargets(get().recipe);
       const machine = machineById(machineId);
       const plan = planJob(_mesh.soup, _mesh.welded, {
         ctx: _ctx, recipe, material, machineId,
@@ -381,12 +421,56 @@ export const useCamPlanStore = create((set, get) => ({
           controller: machine.controller,
         },
       );
-      set({ plan, nc, recipe: plan.recipe, status: 'ready' });
+      set({
+        plan, nc, recipe: plan.recipe, status: 'ready', verification: null,
+      });
+      get().scheduleVerify(plan, nc);
       return plan;
     } catch (err) {
       set({ status: 'error', error: err.message || String(err) });
       return null;
     }
+  },
+
+  /**
+   * Check the program against the part, just after the plan is on screen.
+   *
+   * Deferred so an edit shows its new plan at once; a newer plan made in the
+   * meantime makes this one's result stale, and it is dropped.
+   */
+  scheduleVerify(plan, nc) {
+    verifyRun += 1;
+    const run = verifyRun;
+    const { diameterMode } = get();
+    setTimeout(() => {
+      if (run !== verifyRun) return;
+      let verification;
+      try {
+        verification = verifyCut(plan, nc, { diameterMode });
+      } catch (err) {
+        verification = { ok: null, skipped: err.message || String(err) };
+      }
+      if (run === verifyRun) set({ verification });
+    }, 0);
+  },
+
+  /** The sketches a pocket or profile can be cut from. */
+  sketchList() {
+    return sketchSource().map((s) => ({ id: s.id, name: s.name, closed: s.regions.length > 0 }));
+  },
+
+  /**
+   * A pocket or profile from a sketch.
+   *
+   * @param {'pocket'|'profile'} kind
+   * @param {{depth:number, side?:'outside'|'inside'}} opts
+   */
+  addSketchStep(kind, sketchId, { depth, side = 'outside' } = {}) {
+    const s = sketchSource().find((x) => x.id === sketchId);
+    if (!s || !_ctx) return null;
+    return get().addStep(kind, {
+      sketchId, name: s.name, plane: s.plane, regions: s.regions, depth, side,
+    });
   },
 
   // ---- Recipe editing -------------------------------------------------------
@@ -451,7 +535,8 @@ export const useCamPlanStore = create((set, get) => ({
   /** The operations that could be added to this part. */
   addableKinds() {
     if (!_ctx) return [];
-    return recipeOps.operationKindsFor(_ctx.mode);
+    // A sketch step needs a sketch, picked in its own part of the panel.
+    return recipeOps.operationKindsFor(_ctx.mode).filter((k) => k.needs !== 'sketch');
   },
 
   // ---- Picking geometry off the model ---------------------------------------
@@ -931,7 +1016,7 @@ export const useCamPlanStore = create((set, get) => ({
     _mesh.soup = _mesh.welded = null;
     _ctx = null;
     set({
-      stlName: null, partFormat: null, analysis: null, plan: null, nc: null, recipe: [],
+      stlName: null, partFormat: null, analysis: null, plan: null, nc: null, verification: null, recipe: [],
       selectedFeature: null, previewFeature: null, indexAngle: 0,
       datum: NO_DATUM, datumPickMode: false,
       status: 'idle', error: null, meshVer: get().meshVer + 1,

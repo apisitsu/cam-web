@@ -133,6 +133,14 @@ export const COMMANDS = [
     id: 'verifyInViewport', group: 'cam', label: 'Verify in viewport',
     hint: 'Load the generated program into the backplot and simulator',
   },
+  {
+    id: 'pocketFromSketch', group: 'cam', label: 'Pocket from sketch',
+    hint: 'Clear the inside of the chosen sketch to the depth given',
+  },
+  {
+    id: 'profileFromSketch', group: 'cam', label: 'Profile from sketch',
+    hint: 'Run the cutter round the chosen sketch, on the side given',
+  },
 
   // ---- Recipe: the ordered operations -------------------------------------
   {

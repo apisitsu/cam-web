@@ -291,7 +291,8 @@ export function postMilling(program, opts = {}) {
 function cannedCycle(m, op) {
   const parts = [m.cycle, `X${num(m.x)}`, `Y${num(m.y)}`, `Z${num(m.z)}`, `R${num(m.r ?? 2)}`];
   if (m.cycle === 'G83' && m.peck) parts.push(`Q${num(m.peck)}`);
-  parts.push(`F${num(op.speeds.feed, 1)}`);
+  // A tap's feed is S × pitch and has to stay exact, or the tap strips the thread.
+  parts.push(`F${num(op.speeds.feed, m.cycle === 'G84' ? 4 : 1)}`);
   return parts.join(' ');
 }
 

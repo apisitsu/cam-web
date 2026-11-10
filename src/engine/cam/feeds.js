@@ -175,6 +175,33 @@ export function drillingSpeeds({ material, diameter, depth, machine = DEFAULT_MA
   };
 }
 
+/** Taps run far slower than drills, as HSS-E machine taps do. */
+const TAP_VC_FACTOR = 0.08;
+
+/**
+ * Tapping data. The feed is not chosen: it is the pitch on every turn, so it is
+ * computed from a whole-number spindle speed and kept exact.
+ */
+export function tappingSpeeds({
+  material, diameter, pitch, machine = DEFAULT_MACHINE,
+}) {
+  const m = materialById(material);
+  const vc = m.vcMill * TAP_VC_FACTOR;
+  const idealRpm = (1000 * vc) / (Math.PI * Math.max(diameter, 0.1));
+  const rpm = Math.round(Math.min(Math.max(idealRpm, machine.minRpm), machine.maxRpm));
+  let limitedBy = null;
+  if (idealRpm > machine.maxRpm) limitedBy = 'maxRpm';
+  else if (idealRpm < machine.minRpm) limitedBy = 'minRpm';
+  return {
+    rpm,
+    feed: Number((rpm * pitch).toFixed(4)),
+    idealRpm: Math.round(idealRpm),
+    cycle: 'G84',
+    peck: null,
+    limitedBy,
+  };
+}
+
 /**
  * Cutting time for a length of path, in minutes. The planner sums these into a
  * per-operation estimate, which is the number a quote actually depends on.

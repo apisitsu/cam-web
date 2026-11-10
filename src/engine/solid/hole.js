@@ -89,6 +89,10 @@ export function holeSection(spec, depth, through) {
     const sinkDepth = (R - r) / Math.tan(half);
     if (!(sinkDepth < depth)) throw new Error('the countersink is deeper than the hole');
     pts.push([-ABOVE, R], [0, R], [sinkDepth, r]);
+  } else if (spec.chamfer > 0) {
+    // A 45° chamfer on the mouth, carried on above the face like every mouth here.
+    if (!(spec.chamfer < depth)) throw new Error('the chamfer is deeper than the hole');
+    pts.push([-ABOVE, r + spec.chamfer + ABOVE], [spec.chamfer, r]);
   } else {
     pts.push([-ABOVE, r]);
   }
@@ -185,6 +189,7 @@ export function holeRecords(positions, plane, spec, { depth, through = false, re
     depth,
     through,
     tip: through ? 0 : drill / 2 / Math.tan(TIP_HALF),
+    chamfer: (spec.holeType === 'drill' || spec.holeType === 'tap') && spec.chamfer > 0 ? spec.chamfer : 0,
     thread,
     counterbore,
     countersink,

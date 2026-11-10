@@ -142,8 +142,12 @@ export function planContext(soup, welded, opts = {}) {
   const oriented = (laid.orientation.changed || datum?.point)
     ? analyzeMesh(laid.soup, laid.welded)
     : analysis;
-  const cadHoles = cadHolesInFrame(opts.cad?.holes, laid.orientation, datum);
+  const frame = setupFrame(laid.orientation, datum);
+  const cadHoles = (opts.cad?.holes ?? []).map((h) => ({
+    ...h, at: frame.point(h.at), axis: frame.direction(h.axis),
+  }));
   const ctx = millContext(laid.welded, oriented, { ...opts, cadHoles });
+  ctx.toFrame = frame.point;
   ctx.analysisSource = analysis;
   ctx.orientation = laid.orientation;
   ctx.orientedMesh = laid;
@@ -164,15 +168,28 @@ export function planContext(soup, welded, opts = {}) {
   return ctx;
 }
 
-/** CAD hole records moved into the frame the mesh was laid down and shifted to. */
-function cadHolesInFrame(holes, orientation, datum) {
-  if (!holes?.length) return [];
+/**
+ * World (raw import) coordinates to the setup frame the mesh was laid down and
+ * shifted to: what CAD data has to go through to meet the mesh.
+ */
+function setupFrame(orientation, datum) {
   const origin = datum?.point ? pointFromRawFrame(datum.point, orientation) : [0, 0, 0];
-  return holes.map((h) => ({
-    ...h,
-    at: pointFromRawFrame(h.at, orientation).map((v, i) => v - origin[i]),
-    axis: pointFromRawFrame(h.axis, orientation),
-  }));
+  return {
+    point: (p) => pointFromRawFrame(p, orientation).map((v, i) => v - origin[i]),
+    direction: (d) => pointFromRawFrame(d, orientation),
+  };
+}
+
+/** Holes sharing `keyOf`, as groups that each become one operation. */
+function groupHoles(holes, keyOf) {
+  const groups = new Map();
+  for (const h of holes) {
+    const key = keyOf(h);
+    if (key == null) continue;
+    if (!groups.has(key)) groups.set(key, []);
+    groups.get(key).push(h);
+  }
+  return [...groups.values()];
 }
 
 /**
@@ -306,6 +323,18 @@ function millContext(welded, analysis, opts) {
     holes: group,
   }));
 
+  // What the Hole Wizard said each hole is. A hole found only in the mesh has no
+  // `cad`, and is drilled as it always was.
+  const spotHoles = holes.filter((h) => h.cad?.holeType === 'drill' || h.cad?.holeType === 'tap');
+  const tapGroups = groupHoles(holes, (h) => h.cad?.thread?.name)
+    .map((group) => ({ thread: group[0].cad.thread, holes: group }));
+  const cboreGroups = groupHoles(holes, (h) => (h.cad?.counterbore
+    ? `${h.cad.counterbore.diameter}x${h.cad.counterbore.depth}` : null))
+    .map((group) => ({ ...group[0].cad.counterbore, holes: group }));
+  const cskGroups = groupHoles(holes, (h) => (h.cad?.countersink
+    ? `${h.cad.countersink.diameter}@${h.cad.countersink.angle}` : null))
+    .map((group) => ({ ...group[0].cad.countersink, holes: group }));
+
   const ctx = {
     mode: 'mill',
     analysis,
@@ -318,6 +347,10 @@ function millContext(welded, analysis, opts) {
     neck,
     holes,
     holeGroups,
+    spotHoles,
+    tapGroups,
+    cboreGroups,
+    cskGroups,
     warnings: [
       ...fitWarnings(machine, bounds),
       'Inside corner radii are not analysed yet — a sharp internal corner will keep the cutter radius.',

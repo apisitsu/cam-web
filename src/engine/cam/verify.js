@@ -84,6 +84,9 @@ function partHeights(mesh, stock) {
 
 function millCutter(tool) {
   if (tool.type === 'drill') return { radius: tool.diameter / 2, type: 'cone', angle: DRILL_POINT };
+  if (tool.type === 'spot' || tool.type === 'csink') return { radius: tool.diameter / 2, type: 'cone', angle: tool.angle };
+  // The part is modelled to the tap drill; the thread itself is not drawn.
+  if (tool.type === 'tap') return { radius: tool.drill / 2, type: 'flat' };
   return { radius: tool.diameter / 2, type: tool.simType === 'ball' ? 'ball' : 'flat' };
 }
 
@@ -129,7 +132,7 @@ function verifyMill(plan, nc, mesh, { tolerance, cellSize }) {
 
   // A round cutter cannot reach the corners of a rectangular blank; that is not
   // excess on the part.
-  const rim = Math.ceil(Math.max(...cutters.map((c) => c.radius)) / cs) + 1;
+  const rim = Math.ceil(Math.max(0, ...cutters.map((c) => c.radius)) / cs) + 1;
   const gouge = tally();
   const excess = tally();
   const cellVolume = cs * cs;
@@ -158,10 +161,10 @@ function radiusAt(points, z) {
   return 0;
 }
 
-function verifyTurn(plan, nc, { tolerance, cellSize }) {
+function verifyTurn(plan, nc, { tolerance, cellSize, diameterMode }) {
   const { stock, profile, operations } = plan;
   const cs = cellSize ?? TURN_CELL;
-  const { segments } = interpret(nc, { mode: 'turn', diameterMode: true });
+  const { segments } = interpret(nc, { mode: 'turn', diameterMode });
   const sim = createTurningStock(
     { min: [0, 0, stock.zMin], max: [stock.radius, 0, stock.zMax] },
     {
@@ -206,14 +209,20 @@ function verifyTurn(plan, nc, { tolerance, cellSize }) {
  *
  * @param {object} plan  from `planJob`
  * @param {string} nc  from `post`
- * @param {{tolerance?:number, cellSize?:number}} [opts]
+ * @param {{tolerance?:number, cellSize?:number, diameterMode?:boolean}} [opts]
+ *   `diameterMode` is how a turning program was posted (X on diameter by default).
  * @returns {{ok:boolean, cellSize:number, tolerance:number,
  *   gouge:{max:number,cells:number,volume:number,at:number[]|null},
  *   excess:{max:number,cells:number,volume:number,at:number[]|null}}
  *   |{ok:null, skipped:string}}
  */
 export function verifyCut(plan, nc, opts = {}) {
-  const options = { tolerance: opts.tolerance ?? DEFAULT_TOLERANCE, cellSize: opts.cellSize };
+  const options = {
+    tolerance: opts.tolerance ?? DEFAULT_TOLERANCE,
+    cellSize: opts.cellSize,
+    diameterMode: opts.diameterMode ?? true,
+  };
+  if (plan.operations.length === 0) return { ok: null, skipped: 'There are no operations to check yet.' };
   if (plan.mode === 'turn') return verifyTurn(plan, nc, options);
   if (plan.operations.some((op) => op.indexA)) {
     return { ok: null, skipped: 'A rotary index turns the part between cuts; a top-down height field cannot compare that.' };

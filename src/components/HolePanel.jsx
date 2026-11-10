@@ -60,6 +60,7 @@ export default function HolePanel({ trigger }) {
   const [cbDepth, setCbDepth] = useState(6.5);
   const [cskDiameter, setCskDiameter] = useState(12);
   const [cskAngle, setCskAngle] = useState(90);
+  const [chamfer, setChamfer] = useState(0);
   const [end, setEnd] = useState('blind');
   const [depth, setDepth] = useState(15);
   const [reverseChoice, setReverse] = useState(null);
@@ -72,7 +73,15 @@ export default function HolePanel({ trigger }) {
   // which is when a boss would (`defaultReverse` for a boss).
   const reverse = reverseChoice ?? defaultReverse(active?.plane, partBounds, false);
   const spec = {
-    holeType, diameter, thread, threadDepth, cbDiameter, cbDepth, cskDiameter, cskAngle,
+    holeType,
+    diameter,
+    thread,
+    threadDepth,
+    cbDiameter,
+    cbDepth,
+    cskDiameter,
+    cskAngle,
+    chamfer: holeType === 'drill' || holeType === 'tap' ? chamfer : 0,
   };
 
   const onBuild = async () => {
@@ -139,6 +148,19 @@ export default function HolePanel({ trigger }) {
           {mmInput("C'sink Ø", cskDiameter, setCskDiameter)}
           {mmInput('Angle', cskAngle, setCskAngle, { unit: '°' })}
         </>
+      )}
+      {(holeType === 'drill' || holeType === 'tap') && (
+        <InputNumber
+          size="small"
+          value={chamfer}
+          min={0}
+          step={0.1}
+          onChange={(v) => setChamfer(Math.max(0, Number(v) || 0))}
+          addonBefore="Chamfer"
+          addonAfter="mm × 45°"
+          style={{ width: '100%' }}
+          data-hole-chamfer
+        />
       )}
 
       <Segmented

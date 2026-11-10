@@ -35,13 +35,14 @@
  */
 
 import {
-  ALL_TOOLS, MILL_TOOLS, DRILL_TOOLS, TURN_TOOLS, toolById,
+  ALL_TOOLS, MILL_TOOLS, DRILL_TOOLS, TURN_TOOLS, toolById, drillForHole,
 } from './library.js';
 import { DEFAULT_MACHINE } from './feeds.js';
 import { normalizeAngle } from '../mesh/rotate.js';
 import * as turn from './toolpath/turn.js';
 import * as mill from './toolpath/mill.js';
 import { faceRegionOp, traceOp } from './toolpath/feature.js';
+import { sketchInFrame, pocketOp, profileOp } from './toolpath/sketchOps.js';
 
 /**
  * The operations the app can generate, and what each one may be cut with.
@@ -90,9 +91,39 @@ export const OPERATION_KINDS = [
     hint: 'Flattens the top of the stock and fixes Z0.',
   },
   {
+    kind: 'spot', mode: 'mill', label: 'Spot drill', order: 15,
+    toolTypes: ['spot'], needs: 'cadHole',
+    hint: 'Spots the Hole Wizard holes so the drill starts true, and cuts their mouth chamfers.',
+  },
+  {
     kind: 'drill', mode: 'mill', label: 'Drill', order: 20,
     toolTypes: ['drill'], needs: 'hole',
     hint: 'Canned cycle through a detected round hole.',
+  },
+  {
+    kind: 'csink', mode: 'mill', label: 'Countersink', order: 22,
+    toolTypes: ['csink'], needs: 'csk',
+    hint: 'Countersinks the Hole Wizard C\'sink holes to their drawn diameter.',
+  },
+  {
+    kind: 'tap', mode: 'mill', label: 'Tap', order: 24,
+    toolTypes: ['tap'], needs: 'tap',
+    hint: 'Taps the Hole Wizard tapped holes with G84.',
+  },
+  {
+    kind: 'pocket', mode: 'mill', label: 'Pocket from sketch', order: 36,
+    toolTypes: ['endmill'], needs: 'sketch',
+    hint: 'Clears the inside of a sketch\'s profiles to a depth.',
+  },
+  {
+    kind: 'cbore', mode: 'mill', label: 'Counterbore', order: 38,
+    toolTypes: ['endmill'], needs: 'cbore',
+    hint: 'Mills the Hole Wizard counterbores in circles round each hole.',
+  },
+  {
+    kind: 'profile', mode: 'mill', label: 'Profile from sketch', order: 44,
+    toolTypes: ['endmill'], needs: 'sketch',
+    hint: 'Follows a sketch\'s outline, outside or inside it, to a depth.',
   },
   {
     kind: 'rough', mode: 'mill', label: 'Z-level roughing', order: 30,
@@ -191,6 +222,37 @@ function toolMisfit(kind, tool, ctx, target = null) {
   }
 
   // Milling.
+  const index = target?.index ?? 0;
+  if (kind === 'spot') {
+    const need = Math.max(0, ...(ctx.spotHoles ?? [])
+      .filter((h) => h.cad?.chamfer > 0)
+      .map((h) => mill.spotDiameter(h, Infinity)));
+    return tool.diameter < need - 1e-6 ? `Ø${tool.diameter} cannot make a Ø${need} chamfer.` : null;
+  }
+  if (kind === 'csink') {
+    const group = ctx.cskGroups?.[index];
+    if (!group) return null;
+    if (tool.diameter < group.diameter) return `Ø${tool.diameter} is smaller than the Ø${group.diameter} countersink.`;
+    return tool.angle === group.angle ? null : `A ${tool.angle}° countersink for ${group.angle}° holes.`;
+  }
+  if (kind === 'tap') {
+    const group = ctx.tapGroups?.[index];
+    if (!group) return null;
+    return tool.thread === group.thread.name ? null : `Cuts ${tool.thread}; the holes are ${group.thread.name}.`;
+  }
+  if (kind === 'cbore') {
+    const group = ctx.cboreGroups?.[index];
+    if (!group) return null;
+    if (tool.diameter >= group.diameter) return `Ø${tool.diameter} is not smaller than the Ø${group.diameter} counterbore.`;
+    return tool.fluteLength < group.depth ? `${tool.fluteLength} mm of flute against a ${group.depth} mm counterbore.` : null;
+  }
+  if (kind === 'pocket' || kind === 'profile') {
+    const depth = target?.depth ?? 0;
+    if (tool.fluteLength < depth) return `${tool.fluteLength} mm of flute against ${depth} mm deep.`;
+    const span = sketchSpan(target);
+    const inside = kind === 'pocket' || target?.side === 'inside';
+    return inside && tool.diameter >= span ? `Ø${tool.diameter} does not fit inside the ${span.toFixed(1)} mm sketch.` : null;
+  }
   if (kind === 'drill') return null; // any drill can make some hole
   if (kind === 'trace') {
     // A tracing cutter is bounded by nothing but the part: it walks a line.
@@ -229,6 +291,17 @@ function toolMisfit(kind, tool, ctx, target = null) {
     return `${tool.fluteLength} mm of flute against a ${ctx.depth.toFixed(1)} mm deep part.`;
   }
   return null;
+}
+
+/** The narrower side of the smallest profile in a sketch step's target. */
+function sketchSpan(target) {
+  let span = Infinity;
+  for (const r of target?.regions ?? []) {
+    const xs = r.outer.filter((_, i) => i % 2 === 0);
+    const ys = r.outer.filter((_, i) => i % 2 === 1);
+    span = Math.min(span, Math.max(...xs) - Math.min(...xs), Math.max(...ys) - Math.min(...ys));
+  }
+  return span;
 }
 
 /**
@@ -393,6 +466,9 @@ export function reconcile(recipe, ctx) {
     if (!e.target) return true;
     if (meta.needs === 'recess') return e.target.index < (ctx.profile?.recesses.length ?? 0);
     if (meta.needs === 'hole') return e.target.index < (ctx.holeGroups?.length ?? 0);
+    if (meta.needs === 'tap') return e.target.index < (ctx.tapGroups?.length ?? 0);
+    if (meta.needs === 'cbore') return e.target.index < (ctx.cboreGroups?.length ?? 0);
+    if (meta.needs === 'csk') return e.target.index < (ctx.cskGroups?.length ?? 0);
     // A picked face or edge is identified by id, not position: a new STL that
     // happens to have an F3 is not the F3 the operator clicked on.
     if (meta.needs === 'face') return featureFace(ctx, e.target) != null;
@@ -428,19 +504,31 @@ export function defaultToolFor(kind, ctx, target = null) {
   }
 
   if (kind === 'drill') {
-    const dia = target?.diameter ?? at.holeGroups?.[target?.index ?? 0]?.diameter;
-    return dia != null ? drillUnder(dia) : choices[0];
+    const group = at.holeGroups?.[target?.index ?? 0];
+    const dia = target?.diameter ?? group?.diameter;
+    // A Hole Wizard size is exact; only a size read off a mesh is allowed a margin.
+    const exact = group?.holes.some((h) => h.cad);
+    return dia != null ? drillUnder(dia, exact ? 0.001 : undefined) : choices[0];
+  }
+  // A spot drill or countersink only needs to be big enough: the smallest that is.
+  if (kind === 'spot' || kind === 'csink') return choices[choices.length - 1];
+  if (kind === 'cbore') {
+    const group = at.cboreGroups?.[target?.index ?? 0];
+    return choices.find((t) => group && t.diameter <= group.diameter * 0.8) ?? choices[0];
+  }
+  if (kind === 'pocket' || kind === 'profile') {
+    // Room to step over inside the profile, and no bigger than a Ø10.
+    const limit = Math.min(10, sketchSpan(target) * 0.6);
+    return choices.find((t) => t.diameter <= limit) ?? choices[choices.length - 1];
   }
   // Milling: biggest that fits. Stiffer, faster, deflects less — the only
   // reason to go smaller is that the geometry says so, and `fits` said it does not.
   return choices[0];
 }
 
-/** An STL hole always reads undersized, so round *down* to the nearest drill. */
-function drillUnder(diameter, tol = 0.25) {
-  return [...DRILL_TOOLS]
-    .filter((d) => d.diameter <= diameter + tol)
-    .sort((a, b) => b.diameter - a.diameter)[0] ?? null;
+/** The nearest drill no more than `tol` over the hole — see `drillForHole`. */
+function drillUnder(diameter, tol) {
+  return drillForHole(diameter, tol);
 }
 
 function grooveWidthOf(ctx, target) {
@@ -507,9 +595,24 @@ function autoMillRecipe(ctx) {
     ?? defaultToolFor('face', ctx);
   if (faceTool) out.push(entry('face', faceTool.id));
 
+  if (ctx.spotHoles?.length) {
+    const e = add('spot');
+    if (!e.toolId) e.warning = 'No spot drill in the library is big enough for the chamfers drawn.';
+  }
+
   ctx.holeGroups.forEach((group, index) => {
     const e = add('drill', { index, diameter: group.diameter });
     if (!e.toolId) e.warning = `No drill in the library matches the Ø${group.diameter.toFixed(2)} hole(s).`;
+  });
+
+  (ctx.cskGroups ?? []).forEach((group, index) => {
+    const e = add('csink', { index });
+    if (!e.toolId) e.warning = `No countersink in the library makes Ø${group.diameter} at ${group.angle}°.`;
+  });
+
+  (ctx.tapGroups ?? []).forEach((group, index) => {
+    const e = add('tap', { index });
+    if (!e.toolId) e.warning = `No ${group.thread.name} tap in the library.`;
   });
 
   const rough = add('rough');
@@ -528,6 +631,11 @@ function autoMillRecipe(ctx) {
       rough.warning = `The part footprint is ${ctx.footprint.toFixed(1)} mm — smaller than the smallest endmill in the library.`;
     }
   }
+
+  (ctx.cboreGroups ?? []).forEach((group, index) => {
+    const e = add('cbore', { index });
+    if (!e.toolId) e.warning = `No endmill in the library fits the Ø${group.diameter} counterbore.`;
+  });
 
   const finish = add('finish');
   if (!finish.toolId && Number.isFinite(ctx.neck)) {
@@ -699,6 +807,80 @@ function buildMillStep(parentCtx, e, tool, cut) {
         op: mill.drillingOp(group.holes, { ...common, stock }),
         title: `Drill ${group.holes.length} × Ø${group.diameter.toFixed(2)}${at}`,
         why: `Round inner loops of Ø${group.diameter.toFixed(2)} were found in the section. Drilled before roughing so the drill starts on solid, flat material and cannot wander.`,
+        warnings,
+      };
+    }
+    case 'spot': {
+      const holes = ctx.spotHoles ?? [];
+      if (!holes.length) return null;
+      const chamfered = holes.filter((h) => h.cad?.chamfer > 0).length;
+      return {
+        op: mill.spotOp(holes, common),
+        title: `Spot ${holes.length} hole${holes.length > 1 ? 's' : ''}${at}`,
+        why: `The ${tool.label} gives each drill a true start${chamfered ? ` and cuts the ${chamfered} drawn mouth chamfer${chamfered > 1 ? 's' : ''}` : ''}.`,
+        warnings,
+      };
+    }
+    case 'csink': {
+      const group = ctx.cskGroups?.[e.target?.index ?? 0];
+      if (!group) return null;
+      if (tool.angle !== group.angle) warnings.push(`The ${tool.label} is ${tool.angle}°; the holes were drawn at ${group.angle}°.`);
+      return {
+        op: mill.countersinkOp(group.holes, common),
+        title: `Countersink ${group.holes.length} × Ø${group.diameter}${at}`,
+        why: `C'sink holes from the Hole Wizard: Ø${group.diameter} at ${group.angle}°, sunk to that diameter at the face.`,
+        warnings,
+      };
+    }
+    case 'tap': {
+      const group = ctx.tapGroups?.[e.target?.index ?? 0];
+      if (!group) return null;
+      if (tool.thread !== group.thread.name) {
+        warnings.push(`The ${tool.label} does not cut the ${group.thread.name} the holes were drawn with.`);
+      }
+      return {
+        op: mill.tapOp(group.holes, common),
+        title: `Tap ${group.holes.length} × ${group.thread.name}${at}`,
+        why: `Tapped holes from the Hole Wizard: ${group.thread.name}×${group.thread.pitch}, ${group.thread.depth} mm of thread in a Ø${group.holes[0].diameter} drilled hole.`,
+        warnings,
+      };
+    }
+    case 'cbore': {
+      const group = ctx.cboreGroups?.[e.target?.index ?? 0];
+      if (!group) return null;
+      if (tool.diameter >= group.diameter) {
+        warnings.push(`The Ø${tool.diameter} cannot mill a Ø${group.diameter} counterbore.`);
+        return { op: null, warnings };
+      }
+      return {
+        op: mill.counterboreOp(group.holes, common),
+        title: `Counterbore ${group.holes.length} × Ø${group.diameter}${at}`,
+        why: `C'bore holes from the Hole Wizard: Ø${group.diameter} × ${group.depth} mm, milled in circles with the ${tool.label}.`,
+        warnings,
+      };
+    }
+    case 'pocket':
+    case 'profile': {
+      const t = e.target ?? {};
+      if (angle || !parentCtx.toFrame) {
+        warnings.push(`A ${e.kind} from a sketch runs at A0 only.`);
+        return { op: null, warnings };
+      }
+      const shape = sketchInFrame(t, parentCtx.toFrame);
+      if (shape.error) {
+        warnings.push(`${t.name ?? 'Sketch'}: ${shape.error}`);
+        return { op: null, warnings };
+      }
+      const op = e.kind === 'pocket'
+        ? pocketOp(shape, { ...common, depth: t.depth })
+        : profileOp(shape, { ...common, depth: t.depth, side: t.side });
+      if (!op) warnings.push(`${t.name ?? 'Sketch'}: the Ø${tool.diameter} does not fit the profile.`);
+      return {
+        op,
+        title: e.kind === 'pocket'
+          ? `Pocket "${t.name}" ${t.depth} mm`
+          : `Profile "${t.name}" ${t.side} ${t.depth} mm`,
+        why: `From the sketch itself, so curves stay exact: ${t.depth} mm down from Z${shape.z.toFixed(2)} with the ${tool.label}.`,
         warnings,
       };
     }

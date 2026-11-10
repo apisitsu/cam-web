@@ -20,7 +20,9 @@ import {
 import {
   offsetLoops, clearingRings, differenceLoops, booleanLoops, rectLoop, perimeterOf, areaOf,
 } from '../offset.js';
-import { millingSpeeds, millingEngagement, drillingSpeeds } from '../feeds.js';
+import {
+  millingSpeeds, millingEngagement, drillingSpeeds, tappingSpeeds,
+} from '../feeds.js';
 
 /** Total length of the feed moves in a list. */
 export function cutLengthOf(moves) {
@@ -434,6 +436,164 @@ export function drillingOp(holes, opts) {
     `${data.cycle} at depth ratio ${data.depthRatio}×D`,
     ...(data.peck ? [`Pecking ${data.peck} mm — deeper than 3×D`] : []),
     ...(holes.some((h) => h.throughHole) ? ['Through holes are drilled past the far face'] : []),
+  ]);
+}
+
+/** Where a hole opens: its CAD mouth, or the top of the part for one found in the mesh. */
+const mouthOf = (h, part) => h.cad?.at[2] ?? part.top;
+
+/** A canned cycle at every hole, each to its own depth. */
+function cycleOp(kind, name, tool, speeds, holes, zOf, part, notes, retract = 2) {
+  if (holes.length === 0) return null;
+  const moves = holes.map((h) => ({
+    cycle: speeds.cycle,
+    x: h.x,
+    y: h.y,
+    z: zOf(h),
+    r: part.top + retract,
+    peck: speeds.peck,
+  }));
+  return makeOp(kind, name, tool, speeds, moves, notes);
+}
+
+const halfAngle = (tool) => ((tool.angle ?? 90) * Math.PI) / 360;
+
+/**
+ * The diameter a spot drill leaves at a hole's mouth: the drawn chamfer when the
+ * hole has one, otherwise a centre a little under the drill.
+ */
+export function spotDiameter(hole, toolDiameter) {
+  if (hole.cad?.chamfer > 0) return hole.diameter + hole.cad.chamfer * 2;
+  return Math.min(hole.diameter * 0.6, toolDiameter);
+}
+
+/** Spot every hole: a centre so the drill cannot wander, and any mouth chamfer. */
+export function spotOp(holes, opts) {
+  const {
+    material, tool, machine, part,
+  } = opts;
+  const speeds = {
+    ...drillingSpeeds({
+      material, diameter: tool.diameter, depth: 0, machine,
+    }),
+    cycle: 'G81',
+    peck: null,
+  };
+  const chamfered = holes.filter((h) => h.cad?.chamfer > 0).length;
+  return cycleOp(
+    'spot',
+    `Spot ${holes.length} hole${holes.length > 1 ? 's' : ''}`,
+    tool,
+    speeds,
+    holes,
+    (h) => mouthOf(h, part) - spotDiameter(h, tool.diameter) / 2 / Math.tan(halfAngle(tool)),
+    part,
+    [
+      'G81 to the depth that leaves the spot or chamfer diameter',
+      ...(chamfered ? [`${chamfered} hole${chamfered > 1 ? 's' : ''} chamfered to the size drawn`] : []),
+    ],
+  );
+}
+
+/** Countersink holes to the diameter the Hole Wizard was given. */
+export function countersinkOp(holes, opts) {
+  const {
+    material, tool, machine, part,
+  } = opts;
+  const speeds = {
+    ...drillingSpeeds({
+      material, diameter: tool.diameter, depth: 0, machine,
+    }),
+    cycle: 'G81',
+    peck: null,
+  };
+  return cycleOp(
+    'csink',
+    `Countersink ${holes.length} × Ø${holes[0]?.cad.countersink.diameter}`,
+    tool,
+    speeds,
+    holes,
+    (h) => mouthOf(h, part) - h.cad.countersink.diameter / 2 / Math.tan(halfAngle(tool)),
+    part,
+    ['G81 to the depth that leaves the countersink diameter at the face'],
+  );
+}
+
+/** Tap holes with a canned G84: the feed is the pitch on every turn. */
+export function tapOp(holes, opts) {
+  const {
+    material, tool, machine, part,
+  } = opts;
+  const speeds = tappingSpeeds({
+    material, diameter: tool.diameter, pitch: tool.pitch, machine,
+  });
+  return cycleOp(
+    'tap',
+    `Tap ${holes.length} × ${tool.thread}`,
+    tool,
+    speeds,
+    holes,
+    (h) => mouthOf(h, part) - h.cad.thread.depth,
+    part,
+    [
+      `G84 at F = S × ${tool.pitch} pitch`,
+      'Rigid tapping on many Fanuc controls needs M29 S before G84; add it if this machine asks',
+    ],
+  );
+}
+
+/** How many points a full circle of radius `r` is drawn with. */
+const circlePoints = (r) => Math.max(24, Math.min(144, Math.ceil((2 * Math.PI * r) / 0.5)));
+
+/**
+ * Counterbore: circular passes round each hole, level by level, out to the
+ * counterbore's wall. The drilled hole is already there, so the passes start
+ * at the smallest circle that still clears everything between it and the wall.
+ */
+export function counterboreOp(holes, opts) {
+  const {
+    material, tool, machine, part, safeZ = 10,
+  } = opts;
+  if (holes.length === 0) return null;
+  const { diameter, depth } = holes[0].cad.counterbore;
+  const rt = tool.diameter / 2;
+  const R = diameter / 2;
+  if (rt >= R) return null;
+  const speeds = millingSpeeds({
+    material, diameter: tool.diameter, flutes: tool.flutes, machine,
+  });
+  const { ap, ae } = millingEngagement({
+    material, diameter: tool.diameter, type: tool.type, machine,
+  });
+
+  const radii = [];
+  for (let rho = R - rt; rho > 0; rho -= ae) radii.push(rho);
+  const moves = [];
+  for (const h of holes) {
+    const top = mouthOf(h, part);
+    const inner = h.diameter / 2;
+    // Smallest first; stop once the cutter reaches the drilled hole.
+    const passes = radii.filter((rho, i) => i === 0 || radii[i - 1] - rt > inner).reverse();
+    for (const z of zLevels(top, top - depth, ap)) {
+      moves.push({ t: 'rapid', x: h.x, y: h.y, z: safeZ });
+      moves.push({ t: 'rapid', x: h.x, y: h.y, z: z + 1 });
+      moves.push({ t: 'feed', x: h.x, y: h.y, z });
+      for (const rho of passes) {
+        const n = circlePoints(rho);
+        for (let k = 0; k <= n; k++) {
+          const a = (2 * Math.PI * k) / n;
+          moves.push({
+            t: 'feed', x: h.x + rho * Math.cos(a), y: h.y + rho * Math.sin(a), z,
+          });
+        }
+      }
+      moves.push({ t: 'feed', x: h.x, y: h.y, z });
+      moves.push({ t: 'rapid', x: h.x, y: h.y, z: safeZ });
+    }
+  }
+  return makeOp('cbore', `Counterbore ${holes.length} × Ø${diameter}`, tool, speeds, moves, [
+    `${depth} mm deep in ${zLevels(0, -depth, ap).length} level(s)`,
+    'Plunges into the drilled hole; drill before counterboring',
   ]);
 }
 

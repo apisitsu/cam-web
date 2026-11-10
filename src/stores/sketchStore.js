@@ -38,7 +38,7 @@ import { combineRegions } from '../engine/solid/regionBoolean.js';
 import {
   partReferences, pickPartRef, placePartRef, dropUnusedPartRefs, followPartRefs,
 } from '../engine/sketch/partRefs.js';
-import { useCamPlanStore, getRawMesh } from './camPlanStore.js';
+import { useCamPlanStore, getRawMesh, registerSketchSource } from './camPlanStore.js';
 
 const DEG = Math.PI / 180;
 
@@ -2139,3 +2139,15 @@ export const useSketchStore = create((set, get) => ({
     return true;
   },
 }));
+
+// CAM cuts pockets and profiles from sketches. It cannot import this store back,
+// so it is handed a way to read them. The open sketch's drawing lives in `sk`.
+registerSketchSource(() => {
+  const { sketches, activeId, sk } = useSketchStore.getState();
+  return sketches.map((s) => ({
+    id: s.id,
+    name: s.name,
+    plane: s.plane,
+    regions: sketchRegions(s.id === activeId ? sk : s.doc).regions,
+  }));
+});

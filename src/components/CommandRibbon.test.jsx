@@ -50,16 +50,27 @@ afterEach(async () => {
 describe('CommandRibbon', () => {
   it('has a tab for each task, and marks the page on screen', async () => {
     await render();
-    expect(['features', 'sketch', 'mill', 'turn'].every((t) => tab(t))).toBe(true);
-    expect(tab('mill').getAttribute('aria-selected')).toBe('true');
+    expect(['features', 'sketch', 'cam'].every((t) => tab(t))).toBe(true);
+    expect(tab('mill')).toBeNull();
+    expect(tab('cam').getAttribute('aria-selected')).toBe('true');
     expect(tab('sketch').getAttribute('aria-selected')).toBe('false');
   });
 
-  it('changes the page from a page tab', async () => {
+  it('switches between Milling and Turning inside CAM', async () => {
     await render();
-    await press(tab('turn'));
+    const turning = [...q('[data-cam-process]').querySelectorAll('label')]
+      .find((l) => l.textContent === 'Turning');
+    await press(turning);
     expect(useCamStore.getState().setPage).toHaveBeenCalledWith('turn');
-    expect(tab('turn').getAttribute('aria-selected')).toBe('true');
+    expect(tab('cam').getAttribute('aria-selected')).toBe('true');
+  });
+
+  it('goes back from Sketch to the machine page CAM was last on', async () => {
+    useCamStore.setState({ page: 'turn' });
+    await render();
+    await act(async () => { useCamStore.setState({ page: 'sketch' }); });
+    await press(tab('cam'));
+    expect(useCamStore.getState().setPage).toHaveBeenCalledWith('turn');
   });
 
   it('swaps the buttons on Features without leaving the page', async () => {
@@ -74,7 +85,7 @@ describe('CommandRibbon', () => {
     await render();
     await press(tab('features'));
     await act(async () => { useCamStore.setState({ page: 'turn' }); });
-    expect(tab('turn').getAttribute('aria-selected')).toBe('true');
+    expect(tab('cam').getAttribute('aria-selected')).toBe('true');
   });
 
   it('keeps the sketch buttons mounted but hidden on another tab', async () => {
@@ -166,7 +177,7 @@ describe('CommandRibbon', () => {
 
   it('offers only commands that exist', async () => {
     await render();
-    for (const t of ['features', 'mill', 'turn']) {
+    for (const t of ['features', 'cam']) {
       // eslint-disable-next-line no-await-in-loop
       await press(tab(t));
       expect(container.textContent).not.toMatch(/soon|Fillet|Pattern|Section View/);

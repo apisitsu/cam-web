@@ -1,5 +1,7 @@
-import { describe, it, expect, beforeEach } from 'vitest';
-import { useCamPlanStore, getMesh } from './camPlanStore.js';
+import {
+  describe, it, expect, beforeEach, afterEach, vi,
+} from 'vitest';
+import { useCamPlanStore, getMesh, registerSketchSource } from './camPlanStore.js';
 import { useCamStore } from './camStore.js';
 import { turnedShaft, box, groovedShaft, tube } from '../engine/mesh/fixtures.js';
 import { translate } from '../engine/mesh/datum.js';
@@ -1310,5 +1312,55 @@ describe('camPlanStore — saving and restoring the whole setup', () => {
     // the contract.
     // eslint-disable-next-line jest/no-conditional-expect
     if (mode === null) expect(store().status).toBe('error');
+  });
+});
+
+describe('camPlanStore — checking the cut, and steps from a sketch', () => {
+  beforeEach(() => { store().clear(); });
+  afterEach(() => { registerSketchSource(() => []); });
+
+  const checked = () => vi.waitFor(() => expect(store().verification).not.toBeNull());
+
+  it('checks every plan against the part, just after it is made', async () => {
+    await store().loadStl(stlFile(box(30, 20, 10)));
+    await store().makePlan();
+    await checked();
+    expect(store().verification.ok).toBe(true);
+    expect(store().verification.gouge.cells).toBe(0);
+  });
+
+  it('pockets a sketch, and the check says the model has no such pocket', async () => {
+    // The box is centred: its top face is Z5.
+    registerSketchSource(() => [{
+      id: 5, name: 'Slot', plane: { preset: 'XY', offset: 5 }, regions: [{ outer: [-6, -4, 6, -4, 6, 4, -6, 4] }],
+    }]);
+    await store().loadStl(stlFile(box(30, 20, 10)));
+    expect(store().sketchList()).toEqual([{ id: 5, name: 'Slot', closed: true }]);
+    await store().addSketchStep('pocket', 5, { depth: 2 });
+    expect(store().plan.steps.map((s) => s.kind)).toEqual(['pocket']);
+    await checked();
+    expect(store().verification.ok).toBe(false);
+    expect(store().verification.gouge.max).toBeCloseTo(2, 1);
+  });
+
+  it('cuts the sketch as it is now when the plan is rebuilt', async () => {
+    let width = 6;
+    registerSketchSource(() => [{
+      id: 5, name: 'Slot', plane: { preset: 'XY', offset: 5 }, regions: [{ outer: [-width, -4, width, -4, width, 4, -width, 4] }],
+    }]);
+    await store().loadStl(stlFile(box(30, 20, 10)));
+    await store().addSketchStep('pocket', 5, { depth: 2 });
+    const reach = () => Math.max(...store().plan.operations[0].moves.map((m) => Math.abs(m.x)));
+    const before = reach();
+    width = 10;
+    store().rebuild();
+    expect(reach()).toBeCloseTo(before + 4, 3);
+  });
+
+  it('does not offer a sketch step in the add menu, which has no sketch to pick', async () => {
+    await store().loadStl(stlFile(box(30, 20, 10)));
+    const kinds = store().addableKinds().map((k) => k.kind);
+    expect(kinds).not.toContain('pocket');
+    expect(kinds).toContain('tap');
   });
 });

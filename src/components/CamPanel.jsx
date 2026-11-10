@@ -30,7 +30,7 @@
 import React from 'react';
 import {
   Upload, Button, Space, Select, Table, Alert, Tag, Typography, Descriptions,
-  Divider, Switch, Tooltip, Empty, Dropdown, InputNumber, Collapse,
+  Divider, Switch, Tooltip, Empty, Dropdown, InputNumber, Collapse, Modal, Segmented,
 } from 'antd';
 import {
   DownloadOutlined, SendOutlined, CloseOutlined,
@@ -39,9 +39,10 @@ import {
 } from '@ant-design/icons';
 import CommandButton from './CommandButton.jsx';
 import {
-  PartIcon, AutoPlanIcon, ClearFaceIcon, ContourIcon, A0FaceIcon, RotaryCentreIcon,
+  PartIcon, AutoPlanIcon, ClearFaceIcon, ContourIcon, A0FaceIcon, RotaryCentreIcon, glyph,
 } from './glyph.jsx';
 import { useFeatureStore } from '../stores/featureStore.js';
+import { useSketchStore } from '../stores/sketchStore.js';
 import { useCamPlanStore } from '../stores/camPlanStore.js';
 import { MATERIALS } from '../engine/cam/library.js';
 import {
@@ -69,6 +70,120 @@ function downloadNc(text, name) {
   a.download = name;
   a.click();
   URL.revokeObjectURL(url);
+}
+
+const PocketIcon = glyph(<><rect x="3" y="5" width="18" height="14" rx="1" /><rect x="7.5" y="9" width="9" height="6" rx="2" fill="currentColor" opacity="0.35" /></>);
+const ProfileIcon = glyph(<><rect x="7" y="8" width="10" height="8" rx="1" /><rect x="4" y="5" width="16" height="14" rx="3" strokeDasharray="2.5 2" /></>);
+
+/** Where on the part a check result is, in the coordinates the program uses. */
+function whereAt(at) {
+  if (!at) return '';
+  return at.length === 1
+    ? ` near Z${at[0].toFixed(1)}`
+    : ` near X${at[0].toFixed(1)} Y${at[1].toFixed(1)}`;
+}
+
+/**
+ * The result of checking the program against the part (`verifyCut`).
+ *
+ * Shown under every plan, so a program that cuts into the part says so before
+ * anyone exports it.
+ */
+function CutCheck({ verification }) {
+  if (!verification) {
+    return <Text type="secondary" style={{ fontSize: 11 }} data-cut-check="pending">Checking the cut against the part…</Text>;
+  }
+  if (verification.ok === null) {
+    return (
+      <Alert type="info" showIcon data-cut-check="skipped" message="Cut not checked" description={verification.skipped} />
+    );
+  }
+  const { gouge, excess, cellSize } = verification;
+  const grid = `Checked on a ${cellSize} mm grid.`;
+  if (!verification.ok) {
+    return (
+      <Alert
+        type="error"
+        showIcon
+        data-cut-check="gouge"
+        message={`Cuts into the part: up to ${gouge.max} mm${whereAt(gouge.at)}`}
+        description={`${gouge.volume} mm³ of the part is removed. Find the step that does it before cutting. ${grid}`}
+      />
+    );
+  }
+  return (
+    <Alert
+      type="success"
+      showIcon
+      data-cut-check="ok"
+      message="No cut into the part"
+      description={excess.max > 0
+        ? `Up to ${excess.max} mm is left on${whereAt(excess.at)}: finishing allowance, or what a round cutter cannot reach. ${grid}`
+        : `Nothing is left on. ${grid}`}
+    />
+  );
+}
+
+/** Pocket or profile from one of the sketches. */
+function SketchSteps() {
+  // Re-read whenever a sketch changes.
+  useSketchStore((s) => s.version);
+  const sketchList = useCamPlanStore((s) => s.sketchList);
+  const addSketchStep = useCamPlanStore((s) => s.addSketchStep);
+  const sketches = sketchList().filter((s) => s.closed);
+  const [picked, setPicked] = React.useState(null);
+  const [depth, setDepth] = React.useState(5);
+  const [side, setSide] = React.useState('outside');
+  const chosen = sketches.find((s) => s.id === picked) ?? sketches[0];
+
+  if (sketches.length === 0) {
+    return (
+      <Text type="secondary" style={{ fontSize: 11 }}>
+        Draw a closed profile in a sketch to pocket or profile it.
+      </Text>
+    );
+  }
+  return (
+    <div data-sketch-steps>
+      <Text style={{ color: CAD.label, fontSize: 11 }}>From a sketch — flat on top of the setup</Text>
+      <Space wrap size={6} style={{ marginTop: 4 }}>
+        <Select
+          size="small"
+          style={{ width: 120 }}
+          value={chosen?.id}
+          onChange={setPicked}
+          options={sketches.map((s) => ({ value: s.id, label: s.name }))}
+        />
+        <InputNumber
+          size="small"
+          style={{ width: 110 }}
+          min={0.1}
+          step={0.5}
+          value={depth}
+          onChange={(v) => setDepth(Number(v) || depth)}
+          addonBefore="Depth"
+        />
+        <CommandButton
+          id="pocketFromSketch"
+          size="small"
+          icon={<PocketIcon />}
+          onClick={() => addSketchStep('pocket', chosen.id, { depth })}
+        />
+        <Segmented
+          size="small"
+          value={side}
+          onChange={setSide}
+          options={[{ value: 'outside', label: 'Outside' }, { value: 'inside', label: 'Inside' }]}
+        />
+        <CommandButton
+          id="profileFromSketch"
+          size="small"
+          icon={<ProfileIcon />}
+          onClick={() => addSketchStep('profile', chosen.id, { depth, side })}
+        />
+      </Space>
+    </div>
+  );
 }
 
 /** A skipped row has no built step to take a title from, so name it by kind. */
@@ -276,6 +391,7 @@ export default function CamPanel() {
   const analysis = useCamPlanStore((s) => s.analysis);
   const plan = useCamPlanStore((s) => s.plan);
   const nc = useCamPlanStore((s) => s.nc);
+  const verification = useCamPlanStore((s) => s.verification);
   const status = useCamPlanStore((s) => s.status);
   const error = useCamPlanStore((s) => s.error);
   const material = useCamPlanStore((s) => s.material);
@@ -331,6 +447,22 @@ export default function CamPanel() {
   const displayedDatumOffset = useCamPlanStore((s) => s.displayedDatumOffset);
 
   const busy = status === 'loading' || status === 'planning';
+
+  const exportNc = () => {
+    const save = () => downloadNc(nc, `${(stlName || 'part').replace(/\.[^.]+$/, '')}.nc`);
+    if (verification?.ok !== false) {
+      save();
+      return;
+    }
+    Modal.confirm({
+      title: 'This program cuts into the part',
+      content: `Up to ${verification.gouge.max} mm of the part is removed${whereAt(verification.gouge.at)}. Export it anyway?`,
+      okText: 'Export anyway',
+      okButtonProps: { danger: true },
+      cancelText: 'Cancel',
+      onOk: save,
+    });
+  };
   const machine = machineById(machineId);
   // Read once per render: `features()` is memoised on the context, but calling
   // it three times in the tree still reads better as one named value.
@@ -933,6 +1065,8 @@ export default function CamPanel() {
         </>
       )}
 
+      {analysis && mode === 'mill' && <SketchSteps />}
+
       {plan && recipe.length > 0 && (
         <>
           <Divider style={{ margin: '4px 0' }} />
@@ -1031,6 +1165,8 @@ export default function CamPanel() {
             />
           )}
 
+          <CutCheck verification={verification} />
+
           <Alert
             type="info"
             showIcon
@@ -1044,7 +1180,7 @@ export default function CamPanel() {
               type="primary"
               icon={<DownloadOutlined />}
               disabled={!nc}
-              onClick={() => downloadNc(nc, `${(stlName || 'part').replace(/\.[^.]+$/, '')}.nc`)}
+              onClick={exportNc}
             />
             <CommandButton
               id="verifyInViewport"

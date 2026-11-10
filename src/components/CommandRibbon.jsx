@@ -2,9 +2,10 @@
  * CommandRibbon — the tabs by task and the labelled buttons under them, the layout
  * agreed in `docs/cadcam_layout_mockup.html`.
  *
- * Sketch, Mill and Turn are the app's three pages. Features is not a page: it swaps
- * the buttons and leaves the viewport as it is, because a part is built from a sketch
- * and looked at on a machine page, and either may be what is on screen.
+ * Sketch and CAM show the app's pages: CAM holds both machine pages, Milling and
+ * Turning, picked by the switch at the head of its buttons. Features is not a page:
+ * it swaps the buttons and leaves the viewport as it is, because a part is built
+ * from a sketch and looked at on a machine page, and either may be what is on screen.
  *
  * The Sketch tab's buttons belong to `SketchToolbar`, which stays mounted and portals
  * them into the slot here. Hiding the slot, rather than unmounting the toolbar, is
@@ -17,8 +18,8 @@
  * The four feature buttons open `BuildPanel` already set to what they name. The Sketch
  * tab's Build keeps the full panel, for New and Common, which have no button here.
  */
-import { useEffect, useState } from 'react';
-import { Tooltip } from 'antd';
+import { useEffect, useRef, useState } from 'react';
+import { Segmented, Tooltip } from 'antd';
 import { SettingOutlined, ThunderboltOutlined } from '@ant-design/icons';
 import RibbonButton from './RibbonButton.jsx';
 import BuildPanel, { useHasBuiltPart } from './BuildPanel.jsx';
@@ -35,9 +36,14 @@ import { CAD } from '../theme.js';
 const TABS = [
   { value: 'features', label: 'Features' },
   { value: 'sketch', label: 'Sketch' },
-  { value: 'mill', label: 'Mill' },
-  { value: 'turn', label: 'Turn' },
+  { value: 'cam', label: 'CAM' },
 ];
+
+const MACHINE_PAGES = [
+  { value: 'mill', label: 'Milling' },
+  { value: 'turn', label: 'Turning' },
+];
+const isMachinePage = (page) => page === 'mill' || page === 'turn';
 
 const ExtrudedBossIcon = glyph(<><path d="M4 15l8 4 8-4v-5l-8 4-8-4z" /><path d="M4 10l8-4 8 4M12 14v5" /><path d="M12 2v5M9.5 4.5L12 2l2.5 2.5" /></>);
 const ExtrudedCutIcon = glyph(<><path d="M4 15l8 4 8-4v-5l-8-4-8 4z" /><path d="M4 10l8 4 8-4M12 14v5" /><path d="M9 9l3 1.5L15 9l-3-1.5z" /></>);
@@ -212,14 +218,22 @@ export default function CommandRibbon({
   const setPage = useCamStore((s) => s.setPage);
   const parsing = useCamStore((s) => s.status === 'parsing');
   const [onFeatures, setOnFeatures] = useState(false);
+  // CAM comes back to the machine page it was last on.
+  const lastMachine = useRef(isMachinePage(page) ? page : 'mill');
+  if (isMachinePage(page)) lastMachine.current = page;
 
   // A page change from anywhere else, such as opening a project, moves the tabs too.
   useEffect(() => { setOnFeatures(false); }, [page]);
 
-  const tab = onFeatures ? 'features' : page;
+  const pageTab = isMachinePage(page) ? 'cam' : page;
+  const tab = onFeatures ? 'features' : pageTab;
   const choose = (value) => {
     if (value === 'features') { setOnFeatures(true); return; }
     setOnFeatures(false);
+    if (value === 'cam') {
+      if (!isMachinePage(page)) setPage(lastMachine.current);
+      return;
+    }
     if (value !== page) setPage(value);
   };
 
@@ -272,7 +286,23 @@ export default function CommandRibbon({
       }}
       >
         {tab === 'features' && <FeatureCommands />}
-        {(tab === 'mill' || tab === 'turn') && (
+        {tab === 'cam' && (
+          <>
+            <div style={{ display: 'flex', alignItems: 'center', alignSelf: 'stretch', paddingRight: 4 }}>
+              <Segmented
+                size="small"
+                vertical
+                options={MACHINE_PAGES}
+                value={page}
+                disabled={parsing}
+                onChange={(value) => setPage(value)}
+                data-cam-process
+              />
+            </div>
+            <Sep />
+          </>
+        )}
+        {tab === 'cam' && (
           <MachineCommands
             onSetup={onSetup}
             onWorkOrigin={onWorkOrigin}

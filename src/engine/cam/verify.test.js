@@ -22,6 +22,11 @@ const withExtraCut = (nc, blocks) => {
 };
 
 describe('verifyCut — milling', () => {
+  it('says there is nothing to check in a plan with no operations', () => {
+    const { plan, nc } = planned(box(40, 30, 10), { mode: 'mill', recipe: [] });
+    expect(verifyCut(plan, nc)).toEqual({ ok: null, skipped: expect.stringMatching(/no operations/) });
+  });
+
   it('finds no gouge in a planned box', () => {
     const { plan, nc } = planned(box(40, 30, 10), { mode: 'mill' });
     const result = verifyCut(plan, nc);

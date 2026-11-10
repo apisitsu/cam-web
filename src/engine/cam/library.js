@@ -13,6 +13,7 @@
  *
  * Pure data + pure lookups: no React, no store, no DOM.
  */
+import { THREADS } from '../solid/hole.js';
 
 /**
  * Work materials.
@@ -82,8 +83,8 @@ export const MILL_TOOLS = [
 
 /** Twist drills, in the sizes a shop actually keeps on the shelf. */
 export const DRILL_TOOLS = [
-  1, 1.5, 2, 2.5, 3, 3.3, 4, 4.2, 5, 5.5, 6, 6.8, 7, 8, 8.5, 9, 10, 10.5,
-  11, 12, 13, 14, 15, 16, 18, 20,
+  1, 1.5, 2, 2.5, 3, 3.3, 3.4, 4, 4.2, 4.5, 5, 5.5, 6, 6.6, 6.8, 7, 8, 8.5, 9, 10, 10.2, 10.5,
+  11, 12, 13, 13.5, 14, 15, 16, 17.5, 18, 20,
 ].map((d) => ({
   id: `dr${String(d).replace('.', '_')}`,
   type: 'drill',
@@ -91,6 +92,44 @@ export const DRILL_TOOLS = [
   diameter: d,
   flutes: 2,
   fluteLength: d * 5,
+  simType: 'flat',
+}));
+
+/** 90° spot drills: a centre for the drill, and the chamfer on the hole's mouth. */
+export const SPOT_TOOLS = [6, 10, 16].map((d) => ({
+  id: `spot${d}`,
+  type: 'spot',
+  label: `Spot drill Ø${d} 90°`,
+  diameter: d,
+  angle: 90,
+  flutes: 2,
+  fluteLength: d,
+  simType: 'flat',
+}));
+
+/** 90° countersinks, for flat-head screws. */
+export const COUNTERSINK_TOOLS = [12, 20, 25].map((d) => ({
+  id: `csk${d}`,
+  type: 'csink',
+  label: `Countersink Ø${d} 90°`,
+  diameter: d,
+  angle: 90,
+  flutes: 3,
+  fluteLength: d / 2,
+  simType: 'flat',
+}));
+
+/** Machine taps, one per metric coarse thread the Hole Wizard offers. */
+export const TAP_TOOLS = Object.entries(THREADS).map(([name, t]) => ({
+  id: `tap${name}`,
+  type: 'tap',
+  label: `Tap ${name}×${t.pitch}`,
+  thread: name,
+  diameter: Number(name.slice(1)),
+  pitch: t.pitch,
+  drill: t.drill,
+  flutes: 3,
+  fluteLength: Number(name.slice(1)) * 3,
   simType: 'flat',
 }));
 
@@ -114,7 +153,9 @@ export const TURN_TOOLS = [
   { id: 'thread-ext', type: 'turn-thread', label: 'Threading insert 60° · external', holder: 'parting', noseRadius: 0.1, angle: 60 },
 ];
 
-export const ALL_TOOLS = [...MILL_TOOLS, ...DRILL_TOOLS, ...TURN_TOOLS];
+export const ALL_TOOLS = [
+  ...MILL_TOOLS, ...DRILL_TOOLS, ...SPOT_TOOLS, ...COUNTERSINK_TOOLS, ...TAP_TOOLS, ...TURN_TOOLS,
+];
 
 /** Look up any tool by id. Returns undefined for an unknown id. */
 export function toolById(id) {
@@ -153,7 +194,9 @@ export function largestToolFitting(type, limits = {}) {
  * material left can be bored out, material gone cannot be put back.
  */
 export function drillForHole(diameter, tol = 0.25) {
-  const under = DRILL_TOOLS.filter((d) => d.diameter <= diameter + tol)
-    .sort((a, b) => b.diameter - a.diameter);
-  return under[0] || null;
+  // The nearest size, not the largest allowed: with Ø10 and Ø10.2 both on the
+  // shelf, a Ø10 reading must not take the Ø10.2 just because the margin allows it.
+  const near = DRILL_TOOLS.filter((d) => d.diameter <= diameter + tol)
+    .sort((a, b) => Math.abs(a.diameter - diameter) - Math.abs(b.diameter - diameter));
+  return near[0] || null;
 }

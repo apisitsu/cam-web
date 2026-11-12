@@ -88,9 +88,9 @@ describe('SketchToolbar — docked as the Ribbon', () => {
     // Saving, opening, DXF and the library all live in the File menu.
     expect(labels).not.toContain('Library');
     expect(labels).not.toContain('More');
-    // The English name, with the Thai one under it; the accessible name stays English.
+    // The visible text is the name, so the accessible name is too.
     const line = slot.querySelector('[data-ribbon-button="Line"]');
-    expect(line.textContent).toBe('Lineเส้นตรง');
+    expect(line.textContent).toBe('Line');
     expect(line.getAttribute('aria-label')).toBe('Line');
   });
 

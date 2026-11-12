@@ -17,12 +17,10 @@
 import { forwardRef } from 'react';
 import { Button } from 'antd';
 import { CAD } from '../theme.js';
-import { TH_LABELS } from './thLabels.js';
 
 const RibbonButton = forwardRef(function RibbonButton({
   icon, label, active = false, accent = false, danger = false, disabled = false, style, ...rest
 }, ref) {
-  const th = TH_LABELS[label];
   let color;
   if (!disabled && !active) color = accent ? CAD.accent : CAD.icon;
   return (
@@ -61,9 +59,6 @@ const RibbonButton = forwardRef(function RibbonButton({
         {icon}
       </span>
       <span style={{ fontSize: 11, textAlign: 'center', whiteSpace: 'normal' }}>{label}</span>
-      {th && (
-        <span data-ribbon-th style={{ fontSize: 10, textAlign: 'center', whiteSpace: 'normal', opacity: 0.75 }}>{th}</span>
-      )}
     </Button>
   );
 });

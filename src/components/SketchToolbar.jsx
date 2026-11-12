@@ -25,7 +25,7 @@ import RibbonButton from './RibbonButton.jsx';
 import SketchesPanel from './SketchesPanel.jsx';
 import BuildPanel from './BuildPanel.jsx';
 // The helper this rail introduced now serves the whole app — see `glyph.jsx`.
-import { glyph } from './glyph.jsx';
+import { glyph, skGlyph, INK } from './glyph.jsx';
 import { CAD } from '../theme.js';
 
 const { Text } = Typography;
@@ -39,36 +39,36 @@ const FLOAT_SHADOW = '0 2px 10px rgba(23,42,66,0.18)';
 
 // Symbolic glyphs for each drawing tool.
 const SelectIcon = glyph(<path d="M5 3l6 15 2.2-6.2L19.5 9.6z" fill="currentColor" stroke="none" />);
-const PointIcon = glyph(<><circle cx="12" cy="12" r="3.2" fill="currentColor" stroke="none" /><path d="M12 3v3M12 18v3M3 12h3M18 12h3" /></>);
-const LineIcon = glyph(<><line x1="5" y1="19" x2="19" y2="5" /><circle cx="5" cy="19" r="1.8" fill="currentColor" /><circle cx="19" cy="5" r="1.8" fill="currentColor" /></>);
-const RectIcon = glyph(<rect x="4.5" y="6.5" width="15" height="11" />);
-const SlotIcon = glyph(<path d="M8.5 7.5h7a4.5 4.5 0 0 1 0 9h-7a4.5 4.5 0 0 1 0-9z" />);
-const PolygonIcon = glyph(<path d="M12 4l7 4.2v7.6L12 20l-7-4.2V8.2z" />);
-const CircleIcon = glyph(<circle cx="12" cy="12" r="7.5" />);
-const ArcIcon = glyph(<><path d="M4 18A14 14 0 0 1 18 4" /><circle cx="4" cy="18" r="1.8" fill="currentColor" /><circle cx="18" cy="4" r="1.8" fill="currentColor" /></>);
+const PointIcon = skGlyph(<><circle cx="12" cy="12" r="3.2" fill="currentColor" stroke="none" /><path d="M12 3v3M12 18v3M3 12h3M18 12h3" /></>);
+const LineIcon = skGlyph(<><line x1="5" y1="19" x2="19" y2="5" /><circle cx="5" cy="19" r="1.8" fill="currentColor" /><circle cx="19" cy="5" r="1.8" fill="currentColor" /></>);
+const RectIcon = skGlyph(<rect x="4.5" y="6.5" width="15" height="11" />);
+const SlotIcon = skGlyph(<path d="M8.5 7.5h7a4.5 4.5 0 0 1 0 9h-7a4.5 4.5 0 0 1 0-9z" />);
+const PolygonIcon = skGlyph(<path d="M12 4l7 4.2v7.6L12 20l-7-4.2V8.2z" />);
+const CircleIcon = skGlyph(<circle cx="12" cy="12" r="7.5" />);
+const ArcIcon = skGlyph(<><path d="M4 18A14 14 0 0 1 18 4" /><circle cx="4" cy="18" r="1.8" fill="currentColor" /><circle cx="18" cy="4" r="1.8" fill="currentColor" /></>);
 const DimIcon = glyph(<><path d="M4 7v10M20 7v10M4 12h16" /><path d="M7 9l-3 3 3 3M17 9l3 3-3 3" /></>);
-const TrimIcon = glyph(<><circle cx="6" cy="7" r="2.4" /><circle cx="6" cy="17" r="2.4" /><path d="M8 8.4L20 16M8 15.6L20 8" /></>);
-const ChamferIcon = glyph(<path d="M5 20V10L11 4H20" />);
+const TrimIcon = glyph(<><circle cx="6" cy="7" r="2.4" stroke={INK.cut} /><circle cx="6" cy="17" r="2.4" stroke={INK.cut} /><path d="M8 8.4L20 16M8 15.6L20 8" /></>);
+const ChamferIcon = glyph(<><path d="M5 20V10M11 4H20" stroke={INK.sketch} /><path d="M5 10L11 4" stroke={INK.cut} strokeWidth="2.6" /></>);
 // Sketch-modify tools (SolidWorks keeps these on the Sketch tab, not with relations).
-const ConstructionIcon = glyph(<path d="M4 18L20 6" strokeDasharray="3 2.5" />);
-const MirrorIcon = glyph(<><path d="M12 3v18" strokeDasharray="3 2" /><path d="M9 7L4 12l5 5z" /><path d="M15 7l5 5-5 5z" /></>);
-const OffsetIcon = glyph(<><path d="M4 16c4-8 12-8 16 0" /><path d="M4 20c4-8 12-8 16 0" opacity="0.55" /></>);
+const ConstructionIcon = skGlyph(<path d="M4 18L20 6" strokeDasharray="3 2.5" />);
+const MirrorIcon = glyph(<><path d="M12 3v18" strokeDasharray="3 2" /><path d="M9 7L4 12l5 5z" stroke={INK.sketch} fill={INK.sketchSoft} /><path d="M15 7l5 5-5 5z" stroke={INK.sketch} strokeDasharray="2.5 1.5" /></>);
+const OffsetIcon = skGlyph(<><path d="M4 16c4-8 12-8 16 0" /><path d="M4 20c4-8 12-8 16 0" opacity="0.55" /></>);
 // Linear Pattern: a shape repeating along a line, fading out — the repeats,
 // not the direction, are the point, so no arrow is drawn.
-const LinearPatternIcon = glyph(<><rect x="3.5" y="9" width="5" height="6" /><rect x="10" y="9" width="5" height="6" opacity="0.6" /><rect x="16.5" y="9" width="4" height="6" opacity="0.3" /></>);
+const LinearPatternIcon = glyph(<g stroke={INK.sketch}><rect x="3.5" y="9" width="5" height="6" fill={INK.sketchSoft} /><rect x="10" y="9" width="5" height="6" opacity="0.6" /><rect x="16.5" y="9" width="4" height="6" opacity="0.3" /></g>);
 // Circular Pattern: the same repeats, arranged around a centre.
-const CircularPatternIcon = glyph(<><rect x="10" y="3.3" width="4" height="4" /><rect x="16.7" y="7.3" width="4" height="4" opacity="0.6" /><rect x="16.7" y="14.7" width="4" height="4" opacity="0.3" /><rect x="10" y="18.7" width="4" height="4" opacity="0.3" /><rect x="3.3" y="14.7" width="4" height="4" opacity="0.3" /><rect x="3.3" y="7.3" width="4" height="4" opacity="0.6" /></>);
+const CircularPatternIcon = glyph(<g stroke={INK.sketch}><rect x="10" y="3.3" width="4" height="4" fill={INK.sketchSoft} /><rect x="16.7" y="7.3" width="4" height="4" opacity="0.6" /><rect x="16.7" y="14.7" width="4" height="4" opacity="0.3" /><rect x="10" y="18.7" width="4" height="4" opacity="0.3" /><rect x="3.3" y="14.7" width="4" height="4" opacity="0.3" /><rect x="3.3" y="7.3" width="4" height="4" opacity="0.6" /></g>);
 // Copy / Paste: the familiar stacked-rectangle and clipboard glyphs.
 const CopyIcon = glyph(<><rect x="8.5" y="8.5" width="11" height="11" rx="1" /><path d="M5.5 15.5V5.5a1 1 0 0 1 1-1h10" opacity="0.55" /></>);
 const PasteIcon = glyph(<><rect x="6" y="5" width="12" height="15" rx="1" /><path d="M9.5 5V3.8a.8.8 0 0 1 .8-.8h3.4a.8.8 0 0 1 .8.8V5" /></>);
 // 2D→3D. Planes: two sheets at an angle, the way a CAD tree draws its reference
 // planes. Extrude: a profile with the solid pushed off it.
-const PlanesIcon = glyph(<><path d="M3 8.5l8-3.5 10 3-8 3.5z" /><path d="M3 8.5v7l8 3.5v-7" /><path d="M21 8v7l-10 4" opacity="0.55" /></>);
-const ExtrudeIcon = glyph(<><rect x="3.5" y="9.5" width="10" height="8" /><path d="M3.5 9.5l6-5h10l-6 5" /><path d="M19.5 4.5v8l-6 5" /></>);
+const PlanesIcon = glyph(<><path d="M3 8.5l8-3.5 10 3-8 3.5z" fill={INK.sketchSoft} stroke={INK.sketch} /><path d="M3 8.5v7l8 3.5v-7" stroke={INK.sketch} /><path d="M21 8v7l-10 4" stroke={INK.sketch} opacity="0.55" /></>);
+const ExtrudeIcon = glyph(<><path d="M4 12l8 4 8-4v5l-8 4-8-4z" fill={INK.body} /><path d="M4 12l8-4 8 4-8 4z" fill={INK.bodyTop} /><path d="M12 16v5" /><path d="M12 1.5v8M8.8 4.7L12 1.5l3.2 3.2" stroke={INK.go} strokeWidth="2.4" /></>);
 // Sketch on Face: a block with its top face picked. Normal To: a plane seen square,
 // with the line of sight running into it.
-const SketchOnFaceIcon = glyph(<><path d="M4 9l8-4 8 4-8 4z" fill="currentColor" fillOpacity="0.3" /><path d="M4 9v7l8 4 8-4V9M12 13v7" /></>);
-const NormalToIcon = glyph(<><rect x="5" y="5" width="14" height="14" /><path d="M12 12v-9M9.5 5.5L12 3l2.5 2.5" /><circle cx="12" cy="12" r="1.6" fill="currentColor" /></>);
+const SketchOnFaceIcon = glyph(<><path d="M4 9l8-4 8 4-8 4z" fill={INK.sketchSoft} stroke={INK.sketch} strokeWidth="2.2" /><path d="M4 9v7l8 4 8-4V9z" fill={INK.body} /><path d="M4 9l8 4 8-4M12 13v7" /></>);
+const NormalToIcon = glyph(<><rect x="5" y="5" width="14" height="14" fill={INK.sketchSoft} stroke={INK.sketch} /><path d="M12 12v-9M9.5 5.5L12 3l2.5 2.5" stroke={INK.go} strokeWidth="2.2" /><circle cx="12" cy="12" r="1.8" fill="currentColor" /></>);
 
 const TOOLS = [
   { value: 'select', label: 'Select', Icon: SelectIcon, hint: 'Click to select · drag empty space for a box (left→right encloses, right→left also grabs what it touches) · drag a point to move it · double-click a dimension to edit it' },
@@ -770,6 +770,19 @@ export default function SketchToolbar({ ribbonSlot = null }) {
   const hasPart = useCamPlanStore((s) => Boolean(s.analysis));
   const normalTo = useCamStore((s) => s.normalTo);
   const setPolygonSides = useSketchStore((s) => s.setPolygonSides);
+
+  // Ctrl+8: Normal To the sketch, SolidWorks' key for it.
+  useEffect(() => {
+    if (!sketchOpen || !activePlane) return undefined;
+    const onKey = (e) => {
+      if (!(e.ctrlKey || e.metaKey) || e.code !== 'Digit8') return;
+      e.preventDefault();
+      const { n, v } = planeBasis(activePlane);
+      normalTo(n, v);
+    };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [sketchOpen, activePlane, normalTo]);
 
   const activeHint = TOOLS.find((t) => t.value === tool)?.hint;
   // Enablement for the sketch-modify tools, from the current selection.

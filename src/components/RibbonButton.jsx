@@ -17,10 +17,12 @@
 import { forwardRef } from 'react';
 import { Button } from 'antd';
 import { CAD } from '../theme.js';
+import { TH_LABELS } from './thLabels.js';
 
 const RibbonButton = forwardRef(function RibbonButton({
   icon, label, active = false, accent = false, danger = false, disabled = false, style, ...rest
 }, ref) {
+  const th = TH_LABELS[label];
   let color;
   if (!disabled && !active) color = accent ? CAD.accent : CAD.icon;
   return (
@@ -30,6 +32,7 @@ const RibbonButton = forwardRef(function RibbonButton({
       danger={danger}
       disabled={disabled}
       data-ribbon-button={label}
+      aria-label={typeof label === 'string' ? label : undefined}
       {...rest}
       style={{
         height: 'auto',
@@ -49,8 +52,18 @@ const RibbonButton = forwardRef(function RibbonButton({
         ...style,
       }}
     >
-      <span style={{ fontSize: 20, display: 'inline-flex', alignItems: 'center', height: 22 }}>{icon}</span>
+      {/* Colour icons go grey when off, so a coloured one never looks ready to use. */}
+      <span style={{
+        fontSize: 26, display: 'inline-flex', alignItems: 'center', height: 28,
+        filter: disabled ? 'grayscale(1)' : undefined, opacity: disabled ? 0.45 : 1,
+      }}
+      >
+        {icon}
+      </span>
       <span style={{ fontSize: 11, textAlign: 'center', whiteSpace: 'normal' }}>{label}</span>
+      {th && (
+        <span data-ribbon-th style={{ fontSize: 10, textAlign: 'center', whiteSpace: 'normal', opacity: 0.75 }}>{th}</span>
+      )}
     </Button>
   );
 });

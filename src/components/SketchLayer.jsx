@@ -18,6 +18,7 @@ import { dimensionAnnotations } from '../engine/sketch/annotations.js';
 import { polygonPreview, slotPreview, axisDistance } from '../engine/sketch/shapes.js';
 import { tessellateArc, CHORD_TOL } from '../engine/sketch/loops.js';
 import { planeMatrix } from '../engine/sketch/plane.js';
+import { keyIs } from '../engine/view/viewKeys.js';
 import { CAD } from '../theme.js';
 
 /**
@@ -522,16 +523,16 @@ export default function SketchLayer() {
         closeContextMenu();
       } else if (e.key === 'Delete' || e.key === 'Backspace') {
         deleteSelected();
-      } else if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'z') {
+      } else if ((e.ctrlKey || e.metaKey) && keyIs(e, 'z')) {
         e.preventDefault();
         if (e.shiftKey) redo(); else undo();
-      } else if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'y') {
+      } else if ((e.ctrlKey || e.metaKey) && keyIs(e, 'y')) {
         e.preventDefault();
         redo();
-      } else if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'c') {
+      } else if ((e.ctrlKey || e.metaKey) && keyIs(e, 'c')) {
         e.preventDefault();
         copySelection();
-      } else if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'v') {
+      } else if ((e.ctrlKey || e.metaKey) && keyIs(e, 'v')) {
         e.preventDefault();
         paste();
       }
@@ -651,8 +652,8 @@ export default function SketchLayer() {
           moves for the rubber-band. In pick mode a tap routes through `clickAt`'s
           tolerant hit-tests (point → line → circle within SNAP) instead of the
           razor-thin line ray; in the Select tool a *drag* on empty space is a
-          marquee (`Viewport` turns OrbitControls' left-drag rotate off while
-          Select is active so the drag is ours). */}
+          marquee (the left button never rotates the view — `Viewport` puts rotate on
+          the middle button, as SolidWorks does — so the drag is ours). */}
       {(drawing || picking) && (
         <mesh
           ref={planeMeshRef}

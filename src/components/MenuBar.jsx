@@ -36,6 +36,7 @@ import {
   saveProject, saveProjectAs, canPickSaveLocation, currentProjectFileName, openProjectFile, openProgramFile,
   exportSketchDxf,
 } from '../lib/projectIO.js';
+import { keyIs } from '../engine/view/viewKeys.js';
 import { CAD } from '../theme.js';
 
 const PROGRAM_ACCEPT = '.nc,.gcode,.gc,.tap,.cnc,.ngc,.txt,.mpf';
@@ -47,7 +48,52 @@ const VIEW_ITEMS = [
   { value: 'back', label: 'Back' },
   { value: 'left', label: 'Left' },
   { value: 'right', label: 'Right' },
+  { value: 'bottom', label: 'Bottom' },
 ];
+
+/** SolidWorks' keys for the menu's commands, written beside each one. */
+export const SHORTCUTS = {
+  'open-project': 'Ctrl+O',
+  'save-project': 'Ctrl+S',
+  undo: 'Ctrl+Z',
+  redo: 'Ctrl+Y',
+  rebuild: 'Ctrl+B',
+  delete: 'Delete',
+  fit: 'F',
+  'view:front': 'Ctrl+1',
+  'view:back': 'Ctrl+2',
+  'view:left': 'Ctrl+3',
+  'view:right': 'Ctrl+4',
+  'view:top': 'Ctrl+5',
+  'view:bottom': 'Ctrl+6',
+  'view:iso': 'Ctrl+7',
+};
+
+/** The mouse and keys, for Help, in Thai and English. */
+export const CONTROLS_HELP = [
+  ['เมาส์ซ้าย', 'Left click', 'เลือก / Select'],
+  ['กดล้อกลางค้างแล้วลาก', 'Middle drag', 'หมุนมุมมอง / Rotate'],
+  ['Ctrl + ล้อกลางลาก', 'Ctrl + middle drag', 'เลื่อนภาพ / Pan'],
+  ['Shift + ล้อกลางลาก', 'Shift + middle drag', 'ซูม / Zoom'],
+  ['หมุนล้อเมาส์', 'Wheel', 'ซูมเข้า-ออกตรงตำแหน่งเมาส์ / Zoom at cursor'],
+  ['เมาส์ขวาลาก', 'Right drag', 'เลื่อนภาพ (โน้ตบุ๊ก) / Pan'],
+  ['ลูกศร', 'Arrow keys', 'หมุน 15° / Rotate 15°'],
+  ['Shift + ลูกศร', 'Shift + arrows', 'หมุน 90° / Rotate 90°'],
+  ['Ctrl + ลูกศร', 'Ctrl + arrows', 'เลื่อนภาพ / Pan'],
+  ['F', 'F', 'ดูพอดีจอ / Zoom to fit'],
+  ['Z / Shift+Z', 'Z / Shift+Z', 'ซูมออก / ซูมเข้า'],
+  ['Ctrl+1 … Ctrl+7', 'Ctrl+1 … Ctrl+7', 'หน้า หลัง ซ้าย ขวา บน ล่าง ไอโซ'],
+  ['Ctrl+8', 'Ctrl+8', 'มองตั้งฉากกับสเก็ตช์ / Normal To'],
+  ['Ctrl+S / Ctrl+O', 'Ctrl+S / Ctrl+O', 'บันทึก / เปิดโปรเจกต์'],
+  ['Ctrl+B / Ctrl+Q', 'Ctrl+B / Ctrl+Q', 'สร้างชิ้นงานใหม่ / Rebuild'],
+  ['Ctrl+Z / Ctrl+Y', 'Ctrl+Z / Ctrl+Y', 'ย้อนกลับ / ทำซ้ำ (สเก็ตช์)'],
+  ['Delete / Esc', 'Delete / Esc', 'ลบ / ยกเลิก'],
+];
+
+const withShortcuts = (items) => items.map((top) => ({
+  ...top,
+  children: top.children?.map((c) => (SHORTCUTS[c.key] ? { ...c, extra: SHORTCUTS[c.key] } : c)),
+}));
 
 /**
  * The menu, as antd `items`. Pure: everything it needs arrives in `ctx`.
@@ -60,7 +106,7 @@ export function buildMenuItems(ctx) {
   const {
     libraryOpen, hasProgram, sketching, hasSelection, view, treeOpen, canRestore, hasFace, hasFeatures,
   } = ctx;
-  return [
+  return withShortcuts([
     {
       key: 'file',
       label: 'File',
@@ -132,10 +178,11 @@ export function buildMenuItems(ctx) {
       key: 'help',
       label: 'Help',
       children: [
+        { key: 'controls', label: 'Mouse & keyboard (เมาส์และคีย์ลัด)' },
         { key: 'about', label: 'About Basic CAM Lite' },
       ],
     },
-  ];
+  ]);
 }
 
 /** The menu as a flat list of commands, for search. Dividers are dropped; the group is the menu's name. */
@@ -294,6 +341,25 @@ export default function MenuBar({
     if (key === 'std-edit') { openStdEditor(); return; }
     if (key === 'setup') { onOpenSetup(); return; }
     if (key === 'tree') { setTreeOpen(!treeOpen); return; }
+    if (key === 'controls') {
+      Modal.info({
+        title: 'เมาส์และคีย์ลัด (แบบ SolidWorks)',
+        width: 560,
+        content: (
+          <table data-controls-help style={{ width: '100%', fontSize: 13, borderCollapse: 'collapse' }}>
+            <tbody>
+              {CONTROLS_HELP.map(([th, , what]) => (
+                <tr key={th} style={{ borderBottom: `1px solid ${CAD.borderSoft}` }}>
+                  <td style={{ padding: '4px 8px', fontWeight: 600, whiteSpace: 'nowrap' }}>{th}</td>
+                  <td style={{ padding: '4px 8px' }}>{what}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        ),
+      });
+      return;
+    }
     if (key === 'about') {
       Modal.info({
         title: 'Basic CAM Lite',
@@ -303,15 +369,19 @@ export default function MenuBar({
     }
   };
 
-  // Ctrl/Cmd+K jumps to the search box. SketchLayer's own key handler ignores
-  // keystrokes that originate in an INPUT, so typing a command does not also
-  // pick a drawing tool.
+  // Ctrl/Cmd+K jumps to the search box; Ctrl+S, Ctrl+O and Ctrl+B/Q are
+  // SolidWorks' save, open and rebuild. Read from `code` so the Thai layout works too.
+  const runRef = useRef(run);
+  runRef.current = run;
+  const hasFeaturesRef = useRef(false);
+  hasFeaturesRef.current = features.length > 0;
   useEffect(() => {
     const onKey = (e) => {
-      if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'k') {
-        e.preventDefault();
-        searchRef.current?.focus();
-      }
+      if (!(e.ctrlKey || e.metaKey) || e.altKey || e.shiftKey) return;
+      const go = (key) => { e.preventDefault(); runRef.current({ key }); };
+      if (keyIs(e, 'k')) { e.preventDefault(); searchRef.current?.focus(); } else if (keyIs(e, 's')) go('save-project');
+      else if (keyIs(e, 'o')) go('open-project');
+      else if ((keyIs(e, 'b') || keyIs(e, 'q')) && hasFeaturesRef.current) go('rebuild');
     };
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);

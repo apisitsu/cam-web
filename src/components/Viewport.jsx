@@ -21,6 +21,8 @@ import SketchStage from './SketchStage.jsx';
 import { getBuf, setView } from '../engine/bufferCache.js';
 import { sliceUpTo } from '../engine/gcode/path.js';
 import { useSketchStore } from '../stores/sketchStore.js';
+import { useCamStore } from '../stores/camStore.js';
+import { viewKey, typing } from '../engine/view/viewKeys.js';
 import { framing, unionBounds } from '../engine/view/camera.js';
 import { endMillGeometry } from '../engine/view/millTool.js';
 import {
@@ -127,6 +129,67 @@ function CameraRig({ bounds, sketchFit, view, viewNonce, controlsRef, mode }) {
     invalidate();
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [fitKey]);
+  return null;
+}
+
+/**
+ * The mouse and keys work as they do in SolidWorks: left button picks, the middle
+ * button rotates, Ctrl+middle pans, Shift+middle zooms, the wheel zooms about the
+ * cursor. The right button still pans, for a laptop with no middle button.
+ * The view keys are in `engine/view/viewKeys.js`.
+ */
+export const MOUSE_BUTTONS = { LEFT: -1, MIDDLE: THREE.MOUSE.ROTATE, RIGHT: THREE.MOUSE.PAN };
+
+function ViewControls({ controlsRef }) {
+  const { camera, gl } = useThree();
+  useEffect(() => {
+    const el = gl.domElement;
+    // OrbitControls reads its buttons on pointerdown, so Shift is looked at first.
+    const onDown = (e) => {
+      const c = controlsRef.current;
+      if (!c || e.button !== 1) return;
+      c.mouseButtons = { ...MOUSE_BUTTONS, MIDDLE: e.shiftKey ? THREE.MOUSE.DOLLY : THREE.MOUSE.ROTATE };
+    };
+    // Windows' middle-button autoscroll would otherwise take the drag.
+    const noAutoscroll = (e) => { if (e.button === 1) e.preventDefault(); };
+    const onKey = (e) => {
+      if (typing(e) || e.defaultPrevented) return;
+      const act = viewKey(e);
+      const c = controlsRef.current;
+      if (!act || !c) return;
+      e.preventDefault();
+      const cam = useCamStore.getState();
+      if (act.type === 'view') cam.setViewPreset(act.view);
+      else if (act.type === 'fit') cam.setViewPreset(cam.view);
+      else if (act.type === 'orbit') {
+        // drei's controls (three-stdlib) offer the angles, not rotateLeft/rotateUp.
+        if (act.left) c.setAzimuthalAngle(c.getAzimuthalAngle() - act.left);
+        if (act.up) c.setPolarAngle(c.getPolarAngle() - act.up);
+      } else if (act.type === 'pan') {
+        // Move the model by act.x/act.y pixels on screen, as a drag would.
+        const perPx = (camera.right - camera.left) / camera.zoom / el.clientWidth;
+        const right = new THREE.Vector3().setFromMatrixColumn(camera.matrix, 0);
+        const up = new THREE.Vector3().setFromMatrixColumn(camera.matrix, 1);
+        const shift = right.multiplyScalar(-act.x * perPx).add(up.multiplyScalar(act.y * perPx));
+        camera.position.add(shift);
+        c.target.add(shift);
+        c.update();
+      } else if (act.type === 'zoom') {
+        camera.zoom = Math.min(c.maxZoom, Math.max(c.minZoom, camera.zoom * act.factor));
+        camera.updateProjectionMatrix();
+        c.update();
+      }
+      invalidate();
+    };
+    el.addEventListener('pointerdown', onDown, true);
+    el.addEventListener('mousedown', noAutoscroll);
+    window.addEventListener('keydown', onKey);
+    return () => {
+      el.removeEventListener('pointerdown', onDown, true);
+      el.removeEventListener('mousedown', noAutoscroll);
+      window.removeEventListener('keydown', onKey);
+    };
+  }, [camera, gl, controlsRef]);
   return null;
 }
 
@@ -725,12 +788,6 @@ export default function Viewport({
   // Disable orbit while dragging a sketch point so the drag moves the point,
   // not the camera (SolidWorks drags geometry, not the view).
   const sketchDragging = useSketchStore((s) => s.dragging);
-  // And turn off left-drag *rotate* whenever the sketch Select tool is active, so
-  // a drag on empty space is free for a marquee (SketchLayer) rather than
-  // tumbling the view. Pan (right-drag) and zoom (wheel) are untouched; other
-  // sketch tools get orbit back.
-  const sketchTool = useSketchStore((s) => s.tool);
-  const sketchOpen = useSketchStore((s) => s.sketchOpen);
 
   // Resolve which rapids/feeds to draw (full backplot, or the sliced sub-path
   // during playback) and stash them in the module view-cache. Children read
@@ -810,11 +867,13 @@ export default function Viewport({
         controlsRef={controlsRef}
         mode={mode}
       />
+      <ViewControls controlsRef={controlsRef} />
       <OrbitControls
         ref={controlsRef}
         makeDefault
         enabled={!(sketching && sketchDragging)}
-        enableRotate={!(sketching && sketchOpen && sketchTool === 'select')}
+        mouseButtons={MOUSE_BUTTONS}
+        zoomToCursor
         minZoom={0.05}
         maxZoom={2000}
       />

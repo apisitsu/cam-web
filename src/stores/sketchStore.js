@@ -709,8 +709,8 @@ export const useSketchStore = create((set, get) => ({
   // Only the Select tool, and only from empty space (a point pointer-down starts
   // a drag-to-modify, which stops the event before it reaches the pick plane).
   // Left→right encloses; right→left also grabs anything the box touches —
-  // SolidWorks' window / crossing rule. `Viewport` turns OrbitControls' left-drag
-  // rotate off while the Select tool is active so the drag is ours to use.
+  // SolidWorks' window / crossing rule. The left button never rotates the view (`Viewport`
+  // rotates on the middle one), so the drag is ours to use.
 
   /** Arm a marquee at (x, y). Nothing shows until it grows past the click slop. */
   beginBoxSelect(x, y) {

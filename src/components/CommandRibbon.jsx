@@ -20,11 +20,10 @@
  */
 import { useEffect, useRef, useState } from 'react';
 import { Segmented, Tooltip } from 'antd';
-import { SettingOutlined, ThunderboltOutlined } from '@ant-design/icons';
 import RibbonButton from './RibbonButton.jsx';
 import BuildPanel, { useHasBuiltPart } from './BuildPanel.jsx';
 import HolePanel from './HolePanel.jsx';
-import { glyph } from './glyph.jsx';
+import { glyph, INK } from './glyph.jsx';
 import { useCamStore } from '../stores/camStore.js';
 import { useCamPlanStore } from '../stores/camPlanStore.js';
 import { useFeatureStore } from '../stores/featureStore.js';
@@ -45,20 +44,85 @@ const MACHINE_PAGES = [
 ];
 const isMachinePage = (page) => page === 'mill' || page === 'turn';
 
-const ExtrudedBossIcon = glyph(<><path d="M4 15l8 4 8-4v-5l-8 4-8-4z" /><path d="M4 10l8-4 8 4M12 14v5" /><path d="M12 2v5M9.5 4.5L12 2l2.5 2.5" /></>);
-const ExtrudedCutIcon = glyph(<><path d="M4 15l8 4 8-4v-5l-8-4-8 4z" /><path d="M4 10l8 4 8-4M12 14v5" /><path d="M9 9l3 1.5L15 9l-3-1.5z" /></>);
-const RevolvedBossIcon = glyph(<><path d="M6 3v18" strokeDasharray="3 2" /><path d="M6 6h6c3.5 0 5 2.5 5 6s-1.5 6-5 6H6" /><path d="M16 3l3 2.5-3.5 1" /></>);
-const RevolvedCutIcon = glyph(<><path d="M6 3v18" strokeDasharray="3 2" /><path d="M6 6h6c3.5 0 5 2.5 5 6s-1.5 6-5 6H6" /><circle cx="13" cy="12" r="2.5" /></>);
-const ToolTableIcon = glyph(<><path d="M9 3h6v9l-3 4-3-4z" /><path d="M12 16v5" /></>);
-const RebuildIcon = glyph(<><path d="M19 9a8 8 0 10.5 5" /><path d="M19.5 4v5h-5" /></>);
-const SuppressIcon = glyph(<><path d="M2.5 12S6 6 12 6s9.5 6 9.5 6-3.5 6-9.5 6-9.5-6-9.5-6z" /><path d="M4 20L20 4" /></>);
-const WorkOriginIcon = glyph(<><path d="M6 19V5M6 19h14" /><circle cx="6" cy="19" r="2.2" /></>);
-const SimulateIcon = glyph(<path d="M7 5l12 7-12 7z" />);
-const PostIcon = glyph(<><path d="M4 7h16M4 12h10M4 17h13" /><path d="M17 11l3 3-3 3" /></>);
-const StandardVcIcon = glyph(<><path d="M4 18a8 8 0 0116 0" /><path d="M12 18l4-6.5" /></>);
+// Yellow is a solid, red what a cut takes away, green the way it goes (`INK`).
+const ExtrudedBossIcon = glyph(<>
+  <path d="M4 12l8 4 8-4v5l-8 4-8-4z" fill={INK.body} />
+  <path d="M4 12l8-4 8 4-8 4z" fill={INK.bodyTop} />
+  <path d="M12 16v5" />
+  <path d="M12 1.5v8M8.8 4.7L12 1.5l3.2 3.2" stroke={INK.go} strokeWidth="2.4" />
+</>);
+const ExtrudedCutIcon = glyph(<>
+  <path d="M4 12l8 4 8-4v5l-8 4-8-4z" fill={INK.steel} />
+  <path d="M4 12l8-4 8 4-8 4z" fill={INK.steelTop} />
+  <path d="M8 12l4-2 4 2-4 2z" fill={INK.cut} stroke={INK.cut} />
+  <path d="M12 16v5" />
+  <path d="M12 1v8M8.8 5.8L12 9l3.2-3.2" stroke={INK.cut} strokeWidth="2.4" />
+</>);
+const RevolvedBossIcon = glyph(<>
+  <path d="M6 4h5c4 0 6 3 6 7.5S15 19 11 19H6z" fill={INK.body} />
+  <path d="M6 2v20" strokeDasharray="3 2" />
+  <path d="M15.5 2.5a6 2.2 0 0 1 5 3.5" stroke={INK.go} strokeWidth="2.2" />
+  <path d="M18 6.4l2.6-.4.2-2.6" stroke={INK.go} strokeWidth="2.2" />
+</>);
+const RevolvedCutIcon = glyph(<>
+  <path d="M6 4h11v15H6z" fill={INK.steel} />
+  <path d="M17 8.5a3 3 0 0 0 0 6z" fill={INK.cut} stroke={INK.cut} />
+  <path d="M6 2v20" strokeDasharray="3 2" />
+  <path d="M15.5 2.5a6 2.2 0 0 1 5 3.5" stroke={INK.cut} strokeWidth="2.2" />
+</>);
+const ToolTableIcon = glyph(<>
+  <rect x="2.5" y="4" width="11" height="16" rx="1" fill={INK.paper} />
+  <path d="M5 8.5h6M5 12h6M5 15.5h6" stroke={INK.sketch} />
+  <path d="M16 2h4v7h-4z" fill={INK.steel} />
+  <path d="M16 9h4v8l-2 3-2-3z" fill={INK.sketchSoft} />
+  <path d="M16 12l4-1.5M16 15l4-1.5" />
+</>);
+const RebuildIcon = glyph(<>
+  <path d="M19 9a8 8 0 10.5 5" stroke={INK.go} strokeWidth="2.4" />
+  <path d="M19.5 3.5v5.5H14" stroke={INK.go} strokeWidth="2.4" />
+</>);
+const SuppressIcon = glyph(<>
+  <path d="M2.5 12S6 6 12 6s9.5 6 9.5 6-3.5 6-9.5 6-9.5-6-9.5-6z" fill={INK.paper} />
+  <circle cx="12" cy="12" r="2.6" fill="currentColor" />
+  <path d="M4 20L20 4" stroke={INK.cut} strokeWidth="2.4" />
+</>);
+const WorkOriginIcon = glyph(<>
+  <path d="M6 18h14M17.5 15.6L20 18l-2.5 2.4" stroke={INK.x} strokeWidth="2.2" />
+  <path d="M6 18V3M3.6 5.5L6 3l2.4 2.5" stroke={INK.z} strokeWidth="2.2" />
+  <path d="M6 18l7-7M9.8 11h3.2v3.2" stroke={INK.y} strokeWidth="2.2" />
+  <circle cx="6" cy="18" r="2.2" fill="currentColor" />
+</>);
+const SimulateIcon = glyph(<path d="M7 4.5l13 7.5-13 7.5z" fill={INK.go} stroke={INK.go} />);
+const PostIcon = glyph(<>
+  <path d="M4 2.5h10l4 4V21.5H4z" fill={INK.paper} />
+  <path d="M7 9h7M7 12.5h5M7 16h6" stroke={INK.sketch} />
+  <path d="M15 15.5h7M19 12.5l3 3-3 3" stroke={INK.go} strokeWidth="2.2" />
+</>);
+const StandardVcIcon = glyph(<>
+  <path d="M4 18a8 8 0 0 1 2.3-5.7" stroke={INK.go} strokeWidth="3" />
+  <path d="M6.3 12.3A8 8 0 0 1 17.7 12.3" stroke={INK.warn} strokeWidth="3" />
+  <path d="M17.7 12.3A8 8 0 0 1 20 18" stroke={INK.cut} strokeWidth="3" />
+  <path d="M12 18l3.5-6" strokeWidth="2.2" />
+  <circle cx="12" cy="18" r="1.6" fill="currentColor" />
+</>);
 
-const HoleIcon = glyph(<><path d="M4 9l8-4 8 4-8 4z" /><path d="M4 9v7l8 4 8-4V9" /><ellipse cx="12" cy="9" rx="3" ry="1.5" fill="currentColor" /><path d="M9 9v6M15 9v6" opacity="0.6" /></>);
-const MeasureIcon = glyph(<><path d="M3 15l12-12 6 6-12 12z" /><path d="M7 11l2 2M10 8l2 2M13 5l2 2" /></>);
+const HoleIcon = glyph(<>
+  <path d="M3 9.5l9-4.5 9 4.5v7L12 21l-9-4.5z" fill={INK.steel} />
+  <path d="M3 9.5L12 14l9-4.5-9-4.5z" fill={INK.steelTop} />
+  <ellipse cx="12" cy="9.5" rx="3.6" ry="1.8" fill={INK.cut} stroke={INK.cut} />
+  <path d="M8.4 9.5v6.5M15.6 9.5v6.5" stroke={INK.cut} strokeDasharray="2 1.6" />
+</>);
+const MeasureIcon = glyph(<>
+  <path d="M3 15l12-12 6 6-12 12z" fill={INK.body} />
+  <path d="M7 11l2 2M10 8l2 2M13 5l2 2" />
+</>);
+const ParseIcon = glyph(<path d="M13.5 2L5 13.5h6L9.5 22 19 9.5h-6.2z" fill={INK.warn} stroke={INK.warn} />);
+const SetupIcon = glyph(<>
+  <path d="M4 10l8-4 8 4-8 4z" fill={INK.steelTop} />
+  <path d="M4 10v6l8 4 8-4v-6" fill={INK.steel} />
+  <path d="M4 10l8 4 8-4" />
+  <path d="M12 1.5v5M9.5 4L12 1.5 14.5 4" stroke={INK.z} strokeWidth="2" />
+</>);
 
 const Sep = () => <div style={{ width: 1, alignSelf: 'stretch', margin: '4px 5px', background: CAD.border }} />;
 
@@ -99,7 +163,7 @@ function MachineCommands({
   return (
     <>
       <Command
-        icon={<SettingOutlined />} label="Setup" onClick={onSetup} data-open-setup
+        icon={<SetupIcon />} label="Setup" onClick={onSetup} data-open-setup
         tip="Files, machine, tooling, stock and the removal simulation"
       />
       <Command
@@ -113,7 +177,7 @@ function MachineCommands({
       />
       <Sep />
       <Command
-        icon={<ThunderboltOutlined />} label={command('parse').label} data-cmd="parse"
+        icon={<ParseIcon />} label={command('parse').label} data-cmd="parse"
         aria-label={command('parse').label} onClick={() => parse()} loading={status === 'parsing'} tip={command('parse').hint}
       />
       <Command

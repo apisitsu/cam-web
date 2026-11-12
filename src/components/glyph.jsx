@@ -33,6 +33,23 @@ export const glyph = (node) => function Glyph() {
   );
 };
 
+/**
+ * The colours the glyphs paint with, SolidWorks' own: a solid is yellow, what a
+ * cut removes is red, a direction to go is green, sketch geometry is blue, and the
+ * X/Y/Z axes are red/green/blue. A colour says what kind of command it is before
+ * the name is read.
+ */
+export const INK = {
+  body: '#f2c230', bodyTop: '#fbe08a',
+  cut: '#e0483c', go: '#2e9e4f', warn: '#f29d1f',
+  sketch: '#1f6fd6', sketchSoft: '#b5d0f4',
+  steel: '#aeb8c3', steelTop: '#dde2e7', paper: '#ffffff',
+  x: '#e0483c', y: '#2e9e4f', z: '#1f6fd6',
+};
+
+/** A glyph drawn in sketch blue; filled dots (end points) stay dark. */
+export const skGlyph = (node) => glyph(<g stroke={INK.sketch}>{node}</g>);
+
 // ---- Parts and stock -------------------------------------------------------
 
 /** An isometric solid — SolidWorks' part. Used for the model and for importing one. */
@@ -55,7 +72,8 @@ export const StockIcon = glyph(
 /** A block with a step cut out of it — material removed, the height-field sim. */
 export const StockCutIcon = glyph(
   <>
-    <path d="M4 20V8h6V4h10v16z" />
+    <path d="M4 20V8h6V4h10v16z" fill={INK.steel} />
+    <path d="M4 8h6V4" stroke={INK.cut} strokeWidth="2.2" />
     <path d="M10 8h10" opacity="0.55" />
   </>,
 );
@@ -63,10 +81,10 @@ export const StockCutIcon = glyph(
 /** A cube built of cells — the voxel model, undercuts and all. */
 export const VoxelIcon = glyph(
   <>
-    <rect x="4" y="4" width="7.5" height="7.5" />
-    <rect x="12.5" y="4" width="7.5" height="7.5" opacity="0.55" />
-    <rect x="4" y="12.5" width="7.5" height="7.5" opacity="0.55" />
-    <rect x="12.5" y="12.5" width="7.5" height="7.5" />
+    <rect x="4" y="4" width="7.5" height="7.5" fill={INK.steel} />
+    <rect x="12.5" y="4" width="7.5" height="7.5" fill={INK.cut} opacity="0.75" />
+    <rect x="4" y="12.5" width="7.5" height="7.5" fill={INK.steel} />
+    <rect x="12.5" y="12.5" width="7.5" height="7.5" fill={INK.steel} />
   </>,
 );
 
@@ -74,8 +92,8 @@ export const VoxelIcon = glyph(
 export const TurningIcon = glyph(
   <>
     <path d="M3 12h18" strokeDasharray="4 3" opacity="0.6" />
-    <path d="M5 7.5h11v9H5z" />
-    <path d="M20 4l-3.5 3.5" />
+    <path d="M5 7.5h11v9H5z" fill={INK.steel} />
+    <path d="M20 4l-3.5 3.5" stroke={INK.cut} strokeWidth="2.4" />
   </>,
 );
 

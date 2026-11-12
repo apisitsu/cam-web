@@ -67,6 +67,7 @@ import SketchConfirmCorner from './components/SketchConfirmCorner.jsx';
 import MenuBar from './components/MenuBar.jsx';
 import CommandRibbon from './components/CommandRibbon.jsx';
 import MeasurePanel from './components/MeasurePanel.jsx';
+import EdgeTreatPanel from './components/EdgeTreatPanel.jsx';
 import WorkspaceTabs from './components/WorkspaceTabs.jsx';
 import StdVcDialog from './components/StdVcDialog.jsx';
 import MachineDialog from './components/MachineDialog.jsx';
@@ -1449,6 +1450,7 @@ export default function App() {
             </div>
 
             <MeasurePanel sketching={sketching} />
+            <EdgeTreatPanel sketching={sketching} />
 
             {/* Bottom toolbar: playing the program back. A sketch has nothing to play. */}
             {!sketching && (

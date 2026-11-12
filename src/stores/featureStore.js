@@ -37,6 +37,8 @@ import { linkFaceToSolids, planeBasis } from '../engine/sketch/plane.js';
 import { useSketchStore } from './sketchStore.js';
 import { useCamPlanStore, getMesh, getRawMesh } from './camPlanStore.js';
 import { useCamStore } from './camStore.js';
+import { useEdgeTreatStore } from './edgeTreatStore.js';
+import { useMeasureStore } from './measureStore.js';
 
 const MAX_FOLLOW_PASSES = 3; // two is the normal case; the limit is for sketches that chase each other
 
@@ -314,6 +316,55 @@ export const useFeatureStore = create((set, get) => ({
     useSketchStore.setState({ selection: [] });
     const holes = get().features.filter((f) => f.kind === 'hole' && f.sketchId === entry.id);
     if (!unusedHoleSites(entry.doc, holes.map((f) => f.pointIds)).length) closeOpenSketch();
+    return analysis;
+  },
+
+  /**
+   * Begin picking edges for a Chamfer or Fillet (or for `feature` again). Edges
+   * are picked on the part as built, so the Sketch page is shown, with any open
+   * sketch closed first — its clicks would otherwise land on the sketch.
+   */
+  async startEdgeTreatment(kind, feature = null) {
+    if (useSketchStore.getState().sketchOpen) await get().finishSketch();
+    useMeasureStore.getState().stop();
+    useCamStore.getState().setPage('sketch');
+    useEdgeTreatStore.getState().start(kind, feature);
+  },
+
+  /**
+   * Chamfer / Fillet: the edges picked in `useEdgeTreatStore`, as a new feature
+   * or onto the one being edited. One that cannot be made is left out of the
+   * tree (or put back as it was) and the reason shown in the panel.
+   */
+  async buildEdgeTreatment() {
+    const pick = useEdgeTreatStore.getState();
+    const { active: kind, size, edges, editingId } = pick;
+    if (!kind) return null;
+    if (!edges.length) {
+      pick.setError('Click the edges to treat first.');
+      return null;
+    }
+    const before = editingId != null ? get().features.find((f) => f.id === editingId) : null;
+    let feature;
+    if (before) {
+      get().updateFeature(editingId, { size, edges });
+      feature = before;
+    } else {
+      const n = get().features.filter((f) => f.kind === kind).length + 1;
+      feature = get().addFeature(kind, {
+        size, edges, name: `${kind === 'fillet' ? 'Fillet' : 'Chamfer'}${n}`,
+      });
+    }
+    const analysis = await get().rebuild();
+    const failed = get().errors.find((e) => e.id === feature.id);
+    if (failed) {
+      if (before) get().updateFeature(editingId, { size: before.size, edges: before.edges });
+      else get().removeFeature(feature.id);
+      await get().rebuild();
+      useEdgeTreatStore.getState().setError(`Could not make the ${kind}: ${failed.message}`);
+      return null;
+    }
+    useEdgeTreatStore.getState().stop();
     return analysis;
   },
 

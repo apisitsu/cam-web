@@ -52,6 +52,7 @@ import {
   HOLE_TYPES, THREADS, holeSolid, holePositions, holeRecords,
 } from './hole.js';
 import { boundsOf } from '../mesh/analyze.js';
+import { applyEdgeTreatment, parseEdgeRef } from './edgeTreat.js';
 
 /**
  * How far an extrude runs. Blind is the depth typed; Through All is past the far
@@ -123,7 +124,12 @@ export const FEATURE_KINDS = {
   extrude: { label: 'Extrude', needsSketch: true },
   revolve: { label: 'Revolve', needsSketch: true },
   hole: { label: 'Hole', needsSketch: true },
+  chamfer: { label: 'Chamfer', needsSketch: false },
+  fillet: { label: 'Fillet', needsSketch: false },
 };
+
+/** Chamfer and fillet work on edges of the part, not on a sketch. */
+export const isEdgeTreatment = (f) => f?.kind === 'chamfer' || f?.kind === 'fillet';
 
 /** Numbers that come back as themselves when sane, else the default given. */
 const positive = (v, fallback) => (Number.isFinite(v) && v > 0 ? v : fallback);
@@ -160,6 +166,15 @@ export function createFeature(kind, props = {}) {
     merge: MERGE_MODES[props.merge] ? props.merge : 'new',
   };
   if (kind === 'import') return base;
+  if (kind === 'chamfer' || kind === 'fillet') {
+    // Cuts an outside edge, fills an inside one — decided per edge on replay.
+    return {
+      ...base,
+      merge: 'cut',
+      size: positive(props.size, 1),
+      edges: (Array.isArray(props.edges) ? props.edges : []).map(parseEdgeRef).filter(Boolean),
+    };
+  }
   if (kind === 'hole') {
     // A hole only ever takes material away.
     return {
@@ -362,6 +377,21 @@ export function rebuildFeatures(features, ctx = {}, { keepIntermediates = false 
       continue;
     }
 
+    if (isEdgeTreatment(f)) {
+      if (!current) { fail(f, `a ${f.kind} needs a part to work on`); continue; }
+      try {
+        current = applyEdgeTreatment(current, f, meshBoolean);
+      } catch (e) {
+        fail(f, e?.message || String(e));
+        continue;
+      }
+      steps.push({
+        id: f.id, name: f.name, kind: f.kind, ok: true, merge: f.merge, triangleCount: current.triangleCount,
+        ...(keepIntermediates ? { soup: current } : {}),
+      });
+      continue;
+    }
+
     let made;
     try {
       // What Through All has to get through: the part as it stands before this.
@@ -433,6 +463,11 @@ export function needsMeshBoolean(features) {
 /** A one-line description for the tree panel. */
 export function describeFeature(f, sketchName) {
   if (f.kind === 'import') return 'Imported mesh';
+  if (isEdgeTreatment(f)) {
+    const n = f.edges.length;
+    const size = f.kind === 'fillet' ? `R${f.size}` : `${f.size} mm`;
+    return `${f.kind === 'fillet' ? 'Fillet' : 'Chamfer'} ${size} · ${n} edge${n === 1 ? '' : 's'}`;
+  }
   if (f.kind === 'hole') {
     const size = f.holeType === 'tap' ? f.thread : `Ø${f.diameter}`;
     const kind = { drill: 'Drill', tap: 'Tapped', cbore: "C'bore", csk: "C'sink" }[f.holeType];

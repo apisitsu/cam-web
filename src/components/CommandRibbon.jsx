@@ -29,6 +29,7 @@ import { useCamPlanStore } from '../stores/camPlanStore.js';
 import { useFeatureStore } from '../stores/featureStore.js';
 import { useStdStore } from '../stores/stdStore.js';
 import { useMeasureStore } from '../stores/measureStore.js';
+import { useEdgeTreatStore } from '../stores/edgeTreatStore.js';
 import { command } from '../engine/view/commands.js';
 import { CAD } from '../theme.js';
 
@@ -111,6 +112,15 @@ const HoleIcon = glyph(<>
   <path d="M3 9.5L12 14l9-4.5-9-4.5z" fill={INK.steelTop} />
   <ellipse cx="12" cy="9.5" rx="3.6" ry="1.8" fill={INK.cut} stroke={INK.cut} />
   <path d="M8.4 9.5v6.5M15.6 9.5v6.5" stroke={INK.cut} strokeDasharray="2 1.6" />
+</>);
+// A block's corner seen end-on: cut off flat, and rounded — the treated face lit.
+const ChamferIcon = glyph(<>
+  <path d="M3 21V10l7-7h11v18z" fill={INK.steel} />
+  <path d="M3 10l7-7" stroke={INK.cut} strokeWidth="2.6" />
+</>);
+const FilletIcon = glyph(<>
+  <path d="M3 21V12a9 9 0 0 1 9-9h9v18z" fill={INK.steel} />
+  <path d="M3 12a9 9 0 0 1 9-9" stroke={INK.cut} strokeWidth="2.6" />
 </>);
 const MeasureIcon = glyph(<>
   <path d="M3 15l12-12 6 6-12 12z" fill={INK.body} />
@@ -203,6 +213,8 @@ function FeatureCommands() {
   const dirty = useFeatureStore((s) => s.dirty);
   const rebuild = useFeatureStore((s) => s.rebuild);
   const toggleSuppress = useFeatureStore((s) => s.toggleSuppress);
+  const startEdgeTreatment = useFeatureStore((s) => s.startEdgeTreatment);
+  const treating = useEdgeTreatStore((s) => s.active);
   const selected = features.find((f) => f.id === selectedId);
   const hasPart = useHasBuiltPart();
 
@@ -257,6 +269,16 @@ function FeatureCommands() {
             <RibbonButton icon={<HoleIcon />} label="Hole Wizard" disabled={!hasPart} />
           </Tooltip>
         )}
+      />
+      <Command
+        icon={<FilletIcon />} label="Fillet" disabled={!hasPart} accent={treating === 'fillet'}
+        onClick={() => startEdgeTreatment('fillet')}
+        tip={hasPart ? 'Round the edges you click on the part' : 'Build a part first: a fillet needs edges'}
+      />
+      <Command
+        icon={<ChamferIcon />} label="Chamfer" disabled={!hasPart} accent={treating === 'chamfer'}
+        onClick={() => startEdgeTreatment('chamfer')}
+        tip={hasPart ? 'Bevel the edges you click on the part' : 'Build a part first: a chamfer needs edges'}
       />
       <Sep />
       <Command

@@ -510,3 +510,38 @@ describe('extrude end conditions', () => {
     expect(describeFeature(createFeature('extrude', { end: 'mid', depth: 8 }))).toMatch(/8 mm mid plane/);
   });
 });
+
+describe('chamfer and fillet features', () => {
+  const block = () => ({ 1: { doc: rectSketch(0, 0, 40, 20), plane: XY } });
+  const topFront = { type: 'line', a: [0, 0, 10], b: [40, 0, 10] };
+
+  it('keep only well-formed edges and a positive size', () => {
+    const f = createFeature('chamfer', { size: -1, edges: [topFront, { type: 'line' }] });
+    expect(f.size).toBe(1);
+    expect(f.edges).toHaveLength(1);
+    expect(f.merge).toBe('cut');
+    expect(parseFeatures([JSON.parse(JSON.stringify(f))])[0].edges).toEqual([topFront]);
+    expect(describeFeature(f)).toBe('Chamfer 1 mm · 1 edge');
+    expect(describeFeature(createFeature('fillet', { size: 2, edges: [topFront, topFront] }))).toBe('Fillet R2 · 2 edges');
+  });
+
+  it('chamfers the edge of the block the tree built, and follows it when the block grows', () => {
+    const extrude = createFeature('extrude', { sketchId: 1, depth: 10 });
+    const chamfer = createFeature('chamfer', { size: 2, edges: [{ ...topFront, b: [20, 0, 10] }] });
+    let out = rebuildFeatures([extrude, chamfer], ctx(block()));
+    expect(out.errors).toEqual([]);
+    // The stored edge was half the block's; the whole 40 mm edge is chamfered.
+    nearVolume(volume(out.soup), 8000 - 2 * 40);
+    const longer = { 1: { doc: rectSketch(0, 0, 60, 20), plane: XY } };
+    out = rebuildFeatures([extrude, chamfer], ctx(longer));
+    nearVolume(volume(out.soup), 12000 - 2 * 60);
+  });
+
+  it('fails on its own when its edge is gone, and the part is kept', () => {
+    const extrude = createFeature('extrude', { sketchId: 1, depth: 10 });
+    const fillet = createFeature('fillet', { size: 2, edges: [{ type: 'line', a: [0, 0, 30], b: [40, 0, 30] }] });
+    const out = rebuildFeatures([extrude, fillet], ctx(block()));
+    expect(out.errors.map((e) => e.id)).toEqual([fillet.id]);
+    expect(volume(out.soup)).toBeCloseTo(8000, 2);
+  });
+});

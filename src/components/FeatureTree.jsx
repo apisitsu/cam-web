@@ -32,7 +32,7 @@ import {
   SketchIcon, FeatureIcon, LinkIcon,
 } from './TreeIcons.jsx';
 import { useSketchStore } from '../stores/sketchStore.js';
-import { describeFeature, END_CONDITIONS } from '../engine/solid/featureTree.js';
+import { describeFeature, END_CONDITIONS, isEdgeTreatment } from '../engine/solid/featureTree.js';
 import { THREADS } from '../engine/solid/hole.js';
 import { planeLabel } from '../engine/sketch/plane.js';
 import RevolveAxis, { axisValueOf, axisFromValue } from './RevolveAxis.jsx';
@@ -84,6 +84,29 @@ function FeatureEditor({ feature }) {
         The mesh this job was imported from. Its geometry cannot be edited here —
         it is the base everything else is cut from.
       </Text>
+    );
+  }
+  if (isEdgeTreatment(feature)) {
+    const n = feature.edges.length;
+    return (
+      <Space size={4} style={{ width: '100%' }}>
+        <InputNumber
+          size="small"
+          value={feature.size}
+          min={0.01}
+          onChange={(v) => { if (Number(v) > 0) update(feature.id, { size: Number(v) }); }}
+          addonBefore={feature.kind === 'fillet' ? 'R' : 'C'}
+          style={{ width: 100 }}
+          data-feature-size
+        />
+        <Button
+          size="small"
+          onClick={() => useFeatureStore.getState().startEdgeTreatment(feature.kind, feature)}
+          data-feature-edges
+        >
+          {`${n} edge${n === 1 ? '' : 's'}…`}
+        </Button>
+      </Space>
     );
   }
   if (feature.kind === 'hole') {

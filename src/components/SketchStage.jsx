@@ -13,6 +13,7 @@ import * as THREE from 'three';
 import SketchLayer from './SketchLayer.jsx';
 import { useSketchStore } from '../stores/sketchStore.js';
 import { useFeatureStore } from '../stores/featureStore.js';
+import { useEdgeTreatStore } from '../stores/edgeTreatStore.js';
 import { useMeasureStore } from '../stores/measureStore.js';
 import { planeClickPick } from '../engine/mesh/measure.js';
 import { getRawMesh } from '../stores/camPlanStore.js';
@@ -71,6 +72,8 @@ function ReferencePlane({ preset, label, half }) {
 export default function SketchStage({ meshVer }) {
   const sketchOpen = useSketchStore((s) => s.sketchOpen);
   const measuring = useMeasureStore((s) => s.active);
+  // Picking edges for a Chamfer or Fillet: a click on empty space must not start a sketch.
+  const treating = useEdgeTreatStore((s) => Boolean(s.active));
   const activeId = useSketchStore((s) => s.activeId);
   const built = useFeatureStore((s) => s.features.some((f) => f.sketchId === activeId));
   const half = useMemo(() => {
@@ -83,7 +86,7 @@ export default function SketchStage({ meshVer }) {
   return (
     <>
       {(sketchOpen || !built) && <SketchLayer />}
-      {(!sketchOpen || measuring) && Object.entries(PLANE_PRESETS).map(([preset, p]) => (
+      {(!sketchOpen || measuring) && !treating && Object.entries(PLANE_PRESETS).map(([preset, p]) => (
         <ReferencePlane key={preset} preset={preset} label={p.label} half={half} />
       ))}
     </>

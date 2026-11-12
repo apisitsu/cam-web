@@ -29,6 +29,8 @@ import { planeBasis } from '../engine/sketch/plane.js';
 import { detectFeatures, faceOfTriangle } from '../engine/mesh/features.js';
 import { measurePick } from '../engine/mesh/measure.js';
 import { useMeasureStore } from '../stores/measureStore.js';
+import { useEdgeTreatStore } from '../stores/edgeTreatStore.js';
+import { pickTreatEdge } from '../engine/solid/edgeTreat.js';
 import { featureAtPoint } from '../engine/mesh/pickEdge.js';
 import { circlesAt, nearestCircle } from '../engine/mesh/circlePick.js';
 import { originMarkerSize, rotaryAxisLength } from '../engine/view/originMarker.js';
@@ -357,8 +359,9 @@ export function SketchPart({ meshVer, visible = true }) {
   const armed = useSketchStore((s) => s.facePick);
   const sketchOpen = useSketchStore((s) => s.sketchOpen);
   const measuring = useMeasureStore((s) => s.active);
+  const treating = useEdgeTreatStore((s) => Boolean(s.active));
   // With no sketch open, a click on a face starts one, as a click on a plane does.
-  const facePick = armed || (!sketchOpen && !measuring);
+  const facePick = !treating && (armed || (!sketchOpen && !measuring));
   const addMeasure = useMeasureStore((s) => s.add);
   const [hover, setHover] = useState(null);
   // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -388,7 +391,31 @@ export function SketchPart({ meshVer, visible = true }) {
 
   // Measure takes clicks here as on the machining pages, in the frame the part
   // was built in; Sketch on Face, armed on purpose, comes first.
-  const measure = measuring && !facePick ? {
+  // Chamfer / Fillet picking: the edge under the cursor is lit, a click picks it
+  // (or drops it again). Worked out only when the cursor reaches another edge.
+  const edgeUnder = (event) => {
+    const { welded } = getRawMesh();
+    if (!welded) return null;
+    const point = event.point.toArray();
+    const tol = event.camera?.zoom ? 8 / event.camera.zoom : undefined;
+    return pickTreatEdge(welded, point, tol, detectFeatures(welded).edges);
+  };
+  const treat = treating ? {
+    onPointerMove: (event) => {
+      event.stopPropagation();
+      const ref = edgeUnder(event);
+      const { hover: was, setHover: show } = useEdgeTreatStore.getState();
+      if (JSON.stringify(ref) !== JSON.stringify(was)) show(ref);
+    },
+    onPointerOut: () => useEdgeTreatStore.getState().setHover(null),
+    onClick: (event) => {
+      if (event.delta > CLICK_SLOP) return;
+      event.stopPropagation();
+      const ref = edgeUnder(event);
+      if (ref) useEdgeTreatStore.getState().toggleEdge(ref);
+    },
+  } : {};
+  const measure = measuring && !facePick && !treating ? {
     onClick: (event) => {
       event.stopPropagation();
       addMeasure(pickFor(getRawMesh().welded, event, event.point.toArray()));
@@ -427,6 +454,7 @@ export function SketchPart({ meshVer, visible = true }) {
         }}
         {...measure}
         {...pick}
+        {...treat}
       >
         <meshStandardMaterial color={PART_COLOR} metalness={0.1} roughness={0.65} side={THREE.DoubleSide} />
       </mesh>
@@ -437,6 +465,48 @@ export function SketchPart({ meshVer, visible = true }) {
           />
         </mesh>
       )}
+    </group>
+  );
+}
+
+/**
+ * Chamfer / Fillet: the edges picked (accent) and the one under the cursor
+ * (hover colour), as bars and rings drawn over the part.
+ */
+export function EdgeTreatMarks({ meshVer }) {
+  const active = useEdgeTreatStore((s) => s.active);
+  const edges = useEdgeTreatStore((s) => s.edges);
+  const hover = useEdgeTreatStore((s) => s.hover);
+  const bounds = useCamPlanStore((s) => s.analysis?.bounds);
+  const size = originMarkerSize(bounds);
+  const marks = useMemo(() => {
+    if (!active) return [];
+    const build = (ref) => (ref.type === 'circle'
+      ? [new THREE.TorusGeometry(ref.radius, Math.max(ref.radius * 0.03, size * 0.015), 8, 96)].map((g) => {
+        if (ref.axis === 0) g.rotateY(Math.PI / 2);
+        if (ref.axis === 1) g.rotateX(Math.PI / 2);
+        g.translate(ref.center[0], ref.center[1], ref.center[2]);
+        return g;
+      })
+      : [edgeMarkerGeometry({
+        a: ref.a, b: ref.b, length: Math.hypot(ref.b[0] - ref.a[0], ref.b[1] - ref.a[1], ref.b[2] - ref.a[2]),
+      }, size * 0.015)]);
+    const out = edges.flatMap((e) => build(e).map((g) => ({ g, color: CAD.accent })));
+    if (hover) out.push(...build(hover).map((g) => ({ g, color: CAD.skHover })));
+    return out;
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [active, edges, hover, size, meshVer]);
+
+  useEffect(() => () => marks.forEach(({ g }) => g.dispose()), [marks]);
+
+  if (!marks.length) return null;
+  return (
+    <group name="edge-treat-marks">
+      {marks.map(({ g, color }) => (
+        <mesh key={g.uuid} geometry={g} renderOrder={11} raycast={() => null}>
+          <meshBasicMaterial color={color} transparent opacity={0.85} depthTest={false} depthWrite={false} />
+        </mesh>
+      ))}
     </group>
   );
 }

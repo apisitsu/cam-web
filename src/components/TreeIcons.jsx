@@ -60,6 +60,24 @@ export function HoleIcon({ inverse = false }) {
   );
 }
 
+/** A corner cut off flat. */
+export function ChamferIcon({ inverse = false }) {
+  return (
+    <svg {...base} stroke={ink(inverse)} strokeWidth="1.4" strokeLinejoin="round">
+      <path d="M2 14V7l5-5h7v12z" fill={fillOf(inverse)} />
+    </svg>
+  );
+}
+
+/** A corner rounded. */
+export function FilletIcon({ inverse = false }) {
+  return (
+    <svg {...base} stroke={ink(inverse)} strokeWidth="1.4" strokeLinejoin="round">
+      <path d="M2 14V8a6 6 0 016-6h6v12z" fill={fillOf(inverse)} />
+    </svg>
+  );
+}
+
 export function ImportIcon({ inverse = false }) {
   return (
     <svg {...base} stroke={ink(inverse)} strokeWidth="1.4" strokeLinejoin="round">
@@ -96,5 +114,7 @@ export function FeatureIcon({ kind, inverse = false }) {
   if (kind === 'revolve') return <RevolveIcon inverse={inverse} />;
   if (kind === 'import') return <ImportIcon inverse={inverse} />;
   if (kind === 'hole') return <HoleIcon inverse={inverse} />;
+  if (kind === 'chamfer') return <ChamferIcon inverse={inverse} />;
+  if (kind === 'fillet') return <FilletIcon inverse={inverse} />;
   return <ExtrudeIcon inverse={inverse} />;
 }

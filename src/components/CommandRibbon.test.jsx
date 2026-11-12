@@ -180,7 +180,7 @@ describe('CommandRibbon', () => {
     for (const t of ['features', 'cam']) {
       // eslint-disable-next-line no-await-in-loop
       await press(tab(t));
-      expect(container.textContent).not.toMatch(/soon|Fillet|Pattern|Section View/);
+      expect(container.textContent).not.toMatch(/soon|Pattern|Section View/);
     }
   });
 

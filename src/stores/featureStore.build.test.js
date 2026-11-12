@@ -3,6 +3,7 @@ import { useSketchStore } from './sketchStore.js';
 import { useCamPlanStore } from './camPlanStore.js';
 import { useFeatureStore } from './featureStore.js';
 import { addPoint, addLine, addCircle } from '../engine/sketch/model.js';
+import { useEdgeTreatStore } from './edgeTreatStore.js';
 
 /** A mesh boolean grows the new solid by a micron (`lib/csg.js` GROW): near, not exact. */
 const nearVolume = (v, want) => expect(Math.abs(v - want)).toBeLessThan(1);
@@ -234,5 +235,45 @@ describe('sketch → solid — what it refuses, and what it says', () => {
     rect(0, -5, 20, 5);
     expect(await build({ op: 'revolve', axis: 'x' })).toBeNull();
     expect(sketch().error).toMatch(/crosses the X axis/i);
+  });
+});
+
+describe('Chamfer / Fillet from picked edges', () => {
+  const topFront = { type: 'line', a: [0, 0, 10], b: [40, 0, 10] };
+
+  it('adds the feature, rebuilds, and ends the pick', async () => {
+    rect(0, 0, 40, 20);
+    await build({ depth: 10 });
+    const pick = useEdgeTreatStore.getState();
+    pick.start('chamfer');
+    pick.toggleEdge(topFront);
+    pick.setSize(2);
+    const analysis = await useFeatureStore.getState().buildEdgeTreatment();
+    nearVolume(analysis.volume, 8000 - 2 * 40);
+    const f = useFeatureStore.getState().features.at(-1);
+    expect(f.kind).toBe('chamfer');
+    expect(f.name).toBe('Chamfer1');
+    expect(useEdgeTreatStore.getState().active).toBe(null);
+  });
+
+  it('a picked edge clicked again is dropped', () => {
+    const pick = useEdgeTreatStore.getState();
+    pick.start('fillet');
+    pick.toggleEdge(topFront);
+    pick.toggleEdge({ ...topFront, a: topFront.b, b: topFront.a });
+    expect(useEdgeTreatStore.getState().edges).toEqual([]);
+    pick.stop();
+  });
+
+  it('leaves the tree as it was when the treatment cannot be made', async () => {
+    rect(0, 0, 40, 20);
+    await build({ depth: 10 });
+    const pick = useEdgeTreatStore.getState();
+    pick.start('fillet');
+    pick.toggleEdge({ type: 'line', a: [0, 0, 30], b: [40, 0, 30] });
+    expect(await useFeatureStore.getState().buildEdgeTreatment()).toBe(null);
+    expect(useFeatureStore.getState().features.map((f) => f.kind)).toEqual(['extrude']);
+    expect(useEdgeTreatStore.getState().error).toMatch(/no longer on the part/);
+    pick.stop();
   });
 });

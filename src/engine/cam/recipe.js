@@ -384,6 +384,7 @@ export function entry(kind, toolId, opts = {}) {
  *
  * `pass` — `'choose'`: Rough or Finish can be picked; `'rough'`/`'finish'`: fixed.
  * `stepover`/`leave` — whether a rough pass of it has a side step / stock to leave.
+ * `stepdown` — a finish pass that still steps down (Contour) offers its depth step.
  * Kinds not listed (drilling, tapping, tracing…) have no step settings.
  */
 export const CUT_SETTINGS = {
@@ -392,7 +393,7 @@ export const CUT_SETTINGS = {
   region: { pass: 'choose', stepover: true, leave: true },
   rough: { pass: 'rough', stepover: true, leave: true },
   face: { pass: 'rough', stepover: true, leave: false },
-  finish: { pass: 'finish' },
+  finish: { pass: 'finish', stepdown: true },
 };
 
 /**

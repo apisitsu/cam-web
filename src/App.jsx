@@ -107,7 +107,6 @@ export default function App() {
   const rapidRate = useCamStore((s) => s.rapidRate);
   const toolChangeSeconds = useCamStore((s) => s.toolChangeSeconds);
   const rotaryIndexSeconds = useCamStore((s) => s.rotaryIndexSeconds);
-  const home = useCamStore((s) => s.home);
   const view      = useCamStore((s) => s.view);
   const viewNonce = useCamStore((s) => s.viewNonce);
   const toolRadius = useCamStore((s) => s.toolRadius);
@@ -179,7 +178,6 @@ export default function App() {
   const setViewPreset = useCamStore((s) => s.setViewPreset);
   const setRapidRate = useCamStore((s) => s.setRapidRate);
   const setToolChangeSeconds = useCamStore((s) => s.setToolChangeSeconds);
-  const setHomeAxis = useCamStore((s) => s.setHomeAxis);
   const setRotaryIndexSeconds = useCamStore((s) => s.setRotaryIndexSeconds);
   const setDiameterMode = useCamStore((s) => s.setDiameterMode);
   const setRotaryFrame = useCamStore((s) => s.setRotaryFrame);
@@ -841,20 +839,6 @@ export default function App() {
                     mm/min
                   </span>
                 </Space.Compact>
-                <Tooltip title={`Where G28 sends each axis, measured from work zero${turning ? ' (X as a diameter)' : ''}. Estimated from the selected machine's stroke — enter your machine's real numbers for a closer cycle time.`}>
-                  <span style={{ color: CAD.label }}>G28 home</span>
-                </Tooltip>
-                {Object.keys(home ?? {}).map((axis) => (
-                  <Space.Compact key={axis}>
-                    <span className="ant-input-group-addon" style={addonStyle('left')}>{axis}</span>
-                    <InputNumber controls={false}
-                      step={10}
-                      value={home[axis]}
-                      onChange={(v) => setHomeAxis(axis, Number.isFinite(v) ? v : 0)}
-                      style={{ width: 64 }}
-                    />
-                  </Space.Compact>
-                ))}
                 <Tooltip title="Seconds billed for every tool change — 0 means not counted. Not a published spec like Rapid; set it from your own machine's chip-to-chip time.">
                   <span style={{ color: CAD.label }}>Tool change</span>
                 </Tooltip>

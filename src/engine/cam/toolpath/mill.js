@@ -272,10 +272,12 @@ export function contourOp(mesh, part, opts) {
   }
 
   if (moves.length === 0) return null;
-  return makeOp('finish', 'Contour', tool, speeds, moves, [
+  const op = makeOp('finish', 'Contour', tool, speeds, moves, [
     `${step.toFixed(2)} mm stepdown following the part wall`,
     ...(overhung ? [OVERHANG_NOTE] : []),
   ]);
+  op.engagement = { pass: 'finish', stepdown: step };
+  return op;
 }
 
 /** Empty probes in a row that end a hole (see `detectHoles`). */

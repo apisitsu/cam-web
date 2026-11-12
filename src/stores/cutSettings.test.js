@@ -1,7 +1,7 @@
 import { describe, it, expect, beforeEach } from 'vitest';
 import { useCamPlanStore } from './camPlanStore.js';
 import { box } from '../engine/mesh/fixtures.js';
-import { pocketOp, profileOp } from '../engine/cam/toolpath/sketchOps.js';
+import { pocketOp, profileOp, RAMP_DEG } from '../engine/cam/toolpath/sketchOps.js';
 import { toolById } from '../engine/cam/library.js';
 import { machineById } from '../engine/cam/machines.js';
 import { setStepParams } from '../engine/cam/recipe.js';
@@ -22,7 +22,7 @@ function stlFile(soup, name = 'part.stl') {
 const store = () => useCamPlanStore.getState();
 const cut = { material: 'aluminium', tool: toolById('em6'), machine: machineById('haas-vf2') };
 const square = { z: 0, loops: [[-20, -20, 20, -20, 20, 20, -20, 20]] };
-const zs = (op) => [...new Set(op.moves.filter((m) => m.t === 'feed').map((m) => m.z))];
+const zs = (op) => [...new Set(op.moves.filter((m) => m.t === 'feed' && !m.ramp).map((m) => m.z))];
 
 describe('pocket / profile: rough and finish', () => {
   it('rough steps down by the depth step and leaves stock on the floor', () => {
@@ -55,6 +55,39 @@ describe('pocket / profile: rough and finish', () => {
     const op = pocketOp(square, { ...cut, depth: 6 });
     expect(Math.min(...zs(op))).toBeCloseTo(-6, 6);
     expect(op.engagement.leave).toBe(0);
+  });
+});
+
+describe('pocket: ramp entry', () => {
+  const op = pocketOp(square, { ...cut, depth: 4, pass: 'rough', stepdown: 2 });
+  const ramps = op.moves.filter((m) => m.ramp);
+
+  it('enters each level on a ramp, not a straight plunge', () => {
+    expect(ramps.length).toBeGreaterThan(0);
+    // One ramp landing per level; the wider loops after it start in cleared air.
+    expect(ramps.filter((m) => m.z === -2 || m.z === -4).length).toBe(2);
+    for (let i = 1; i < op.moves.length; i++) {
+      const a = op.moves[i - 1]; const b = op.moves[i];
+      if (b.t !== 'feed' || b.ramp || b.z >= a.z) continue;
+      expect(a.z - b.z).toBeLessThanOrEqual(1 + 1e-9);
+    }
+    expect(op.notes.join(' ')).toMatch(/Ramps in/);
+  });
+
+  it('descends no steeper than the ramp angle', () => {
+    const slope = Math.tan((RAMP_DEG * Math.PI) / 180);
+    for (let i = 1; i < op.moves.length; i++) {
+      const a = op.moves[i - 1]; const b = op.moves[i];
+      if (!b.ramp) continue;
+      expect(a.z - b.z).toBeLessThanOrEqual(Math.hypot(b.x - a.x, b.y - a.y) * slope + 1e-9);
+    }
+  });
+
+  it('a level too small to ramp into is plunged, and says so', () => {
+    const tiny = { z: 0, loops: [[-3.2, -3.2, 3.2, -3.2, 3.2, 3.2, -3.2, 3.2]] };
+    const deep = pocketOp(tiny, { ...cut, depth: 30, pass: 'finish' });
+    expect(deep.moves.some((m) => m.ramp)).toBe(false);
+    expect(deep.notes.join(' ')).toMatch(/too small to ramp/);
   });
 });
 
@@ -96,6 +129,18 @@ describe('pocket / profile from a picked face', () => {
     const step = store().plan.steps.find((s) => s.key === key);
     expect(step.cut.stepdown).toBe(1.5);
     expect(step.notes[0]).toMatch(/4 level/);
+  });
+
+  it('contour shows its depth step, and takes an override', async () => {
+    await store().loadStl(stlFile(box(60, 40, 20)));
+    await store().makePlan();
+    const finish = store().plan.steps.find((s) => s.kind === 'finish');
+    expect(finish.cut).toMatchObject({ pass: 'finish' });
+    expect(finish.cut.stepdown).toBeGreaterThan(0);
+    store().setStepParams(finish.key, { stepdown: 5 });
+    const after = store().plan.steps.find((s) => s.key === finish.key);
+    expect(after.cut.stepdown).toBe(5);
+    expect(after.notes[0]).toMatch(/^5\.00 mm stepdown/);
   });
 
   it('roughing shows its automatic steps, and takes an override', async () => {

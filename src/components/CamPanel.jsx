@@ -351,6 +351,15 @@ function CutSettings({ row, onChange }) {
       ) : (
         <Tag style={{ margin: 0 }}>{pass === 'rough' ? 'Rough' : 'Finish'}</Tag>
       )}
+      {pass === 'finish' && spec.stepdown && (
+        <StepNumber
+          label="Depth step"
+          value={round2(cut.stepdown)}
+          own={own.stepdown != null}
+          onCommit={(v) => onChange({ stepdown: v })}
+          title="How deep each level of the finish pass goes down the wall (mm)."
+        />
+      )}
       {pass === 'rough' && (
         <>
           <StepNumber

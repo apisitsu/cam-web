@@ -18,6 +18,11 @@ import { cutLengthOf } from './mill.js';
 
 const FLAT = 0.999;
 
+/** Ramp angle for a pocket entry, degrees — gentle enough for any endmill. */
+export const RAMP_DEG = 3;
+/** Turns round a loop a ramp may take before the loop counts as too small to ramp in. */
+const MAX_RAMP_TURNS = 20;
+
 /**
  * A sketch's regions in the setup frame.
  *
@@ -95,14 +100,83 @@ function cutLoopAt(moves, loop, z, safeZ) {
   moves.push({ t: 'rapid', x: pts[0], y: pts[1], z: safeZ });
 }
 
+function loopPoints(loop) {
+  return Array.isArray(loop) ? loop : loop.points;
+}
+
+function insideLoop(pts, x, y) {
+  let inside = false;
+  const n = pts.length / 2;
+  for (let i = 0, j = n - 1; i < n; j = i++) {
+    const xi = pts[i * 2]; const yi = pts[i * 2 + 1];
+    const xj = pts[j * 2]; const yj = pts[j * 2 + 1];
+    if ((yi > y) !== (yj > y) && x < ((xj - xi) * (y - yi)) / (yj - yi) + xi) inside = !inside;
+  }
+  return inside;
+}
+
+/**
+ * Enter a loop on a ramp instead of plunging: feed down from `fromZ` to `z`
+ * along the loop itself at `angle`°, going round as often as the drop needs
+ * (on a round loop that is a helix), then once more round at `z` so the floor
+ * is flat. Returns false, adding nothing, when the loop is too short to ramp.
+ */
+function rampLoopAt(moves, loop, fromZ, z, safeZ, angle) {
+  const pts = loopPoints(loop);
+  const n = pts.length / 2;
+  if (n < 3) return false;
+  const seg = [];
+  let perimeter = 0;
+  for (let i = 0; i < n; i++) {
+    const j = (i + 1) % n;
+    const len = Math.hypot(pts[j * 2] - pts[i * 2], pts[j * 2 + 1] - pts[i * 2 + 1]);
+    seg.push(len);
+    perimeter += len;
+  }
+  const slope = Math.tan((angle * Math.PI) / 180);
+  const drop = fromZ - z;
+  if (!(perimeter > 0) || drop / slope > perimeter * MAX_RAMP_TURNS) return false;
+
+  moves.push({ t: 'rapid', x: pts[0], y: pts[1], z: safeZ });
+  moves.push({ t: 'rapid', x: pts[0], y: pts[1], z: fromZ });
+  let height = fromZ;
+  let i = 0;
+  for (;;) {
+    const j = (i + 1) % n;
+    const fall = seg[i] * slope;
+    if (fall >= height - z) {
+      const f = fall > 0 ? (height - z) / fall : 1;
+      const x = pts[i * 2] + (pts[j * 2] - pts[i * 2]) * f;
+      const y = pts[i * 2 + 1] + (pts[j * 2 + 1] - pts[i * 2 + 1]) * f;
+      moves.push({ t: 'feed', x, y, z, ramp: true });
+      // Once round at the floor, from where the ramp landed back to it.
+      for (let k = 1; k <= n; k++) {
+        const v = (i + k) % n;
+        moves.push({ t: 'feed', x: pts[v * 2], y: pts[v * 2 + 1], z });
+      }
+      moves.push({ t: 'feed', x, y, z });
+      break;
+    }
+    height -= fall;
+    moves.push({ t: 'feed', x: pts[j * 2], y: pts[j * 2 + 1], z: height, ramp: true });
+    i = j;
+  }
+  moves.push({ t: 'rapid', x: moves[moves.length - 1].x, y: moves[moves.length - 1].y, z: safeZ });
+  return true;
+}
+
 /**
  * Clear the inside of the sketch's profiles, islands kept, level by level.
+ *
+ * Each level is entered on a ramp (`rampLoopAt`) wherever the cutter meets
+ * uncut material — the innermost loop of every separate area — rather than
+ * plunged. The later, wider loops start inside what is already cleared.
  *
  * @param {{z:number, loops:object[]}} shape  from `sketchInFrame`
  */
 export function pocketOp(shape, opts) {
   const {
-    material, tool, machine, depth, safeZ = 10, pass, leave = 0,
+    material, tool, machine, depth, safeZ = 10, pass, leave = 0, rampDeg = RAMP_DEG,
   } = opts;
   if (!(depth > 0)) return null;
   const speeds = millingSpeeds({
@@ -115,17 +189,31 @@ export function pocketOp(shape, opts) {
   const rings = clearingRings(shape.loops, tool.diameter / 2 + left, ae);
   if (rings.length === 0) return null;
   const moves = [];
-  for (const z of levels) {
+  let ramps = 0;
+  let plunges = 0;
+  levels.forEach((z, li) => {
+    const fromZ = (li === 0 ? shape.z : levels[li - 1]) + 1;
+    const cut = [];
     // Innermost first: start in the middle, finish on the wall.
     for (const ring of [...rings].reverse()) {
-      for (const loop of ring.loops) cutLoopAt(moves, loop, z, safeZ);
+      for (const loop of ring.loops) {
+        const pts = loopPoints(loop);
+        const fresh = !cut.some((p) => insideLoop(pts, p[0], p[1]));
+        if (fresh && rampLoopAt(moves, loop, fromZ, z, safeZ, rampDeg)) ramps += 1;
+        else {
+          if (fresh) plunges += 1;
+          cutLoopAt(moves, loop, z, safeZ);
+        }
+        cut.push([pts[0], pts[1]]);
+      }
     }
-  }
+  });
   return sketchOp('pocket', 'Pocket', tool, speeds, moves, [
     passNote(pass, levels, ap, depth),
     `${ae.toFixed(2)} mm stepover`,
     ...(left > 0 ? [`${left} mm left on the walls and floor for finishing`] : []),
-    'Plunges straight in at the middle of each level; no ramp entry yet',
+    ...(ramps ? [`Ramps in at ${rampDeg}° along the path (a helix where the path is round)`] : []),
+    ...(plunges ? [`${plunges} entr${plunges === 1 ? 'y is' : 'ies are'} too small to ramp — plunged straight in; use a centre-cutting endmill`] : []),
   ], { pass: pass ?? 'rough', stepdown: ap, stepover: ae, leave: left });
 }
 

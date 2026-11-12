@@ -13,7 +13,7 @@
 import { planeToWorld } from '../../sketch/plane.js';
 import { normalizeLoops, zLevels } from '../../mesh/slice.js';
 import { offsetLoops, clearingRings } from '../offset.js';
-import { millingSpeeds, millingEngagement } from '../feeds.js';
+import { millingSpeeds, engagementWith } from '../feeds.js';
 import { cutLengthOf } from './mill.js';
 
 const FLAT = 0.999;
@@ -47,7 +47,28 @@ export function sketchInFrame(sketch, toFrame) {
   return { z: o[2], loops: normalizeLoops(raw) };
 }
 
-function sketchOp(kind, name, tool, speeds, moves, notes) {
+/**
+ * The Z levels of a pocket or profile, and the stock it leaves.
+ *
+ * Rough: steps of `ap` down to the floor, `leave` mm left on the walls and the
+ * floor for a finishing pass. Finish: one pass at the full depth, nothing left.
+ * No `pass` (a recipe saved before Rough/Finish existed) cuts as it always did:
+ * stepped, nothing left.
+ */
+function passLevels(top, depth, ap, { pass, leave }) {
+  const left = pass === 'rough' && leave > 0 ? Math.min(leave, depth) : 0;
+  const bottom = top - depth + left;
+  const levels = pass === 'finish' ? [bottom] : zLevels(top, bottom, ap);
+  return { levels, left };
+}
+
+function passNote(pass, levels, ap, depth) {
+  return pass === 'finish'
+    ? `Finish: ${depth} mm deep in one pass`
+    : `${depth} mm deep in ${levels.length} level(s) at ${ap.toFixed(2)} mm`;
+}
+
+function sketchOp(kind, name, tool, speeds, moves, notes, engagement) {
   const cutLength = cutLengthOf(moves);
   return {
     kind,
@@ -56,6 +77,7 @@ function sketchOp(kind, name, tool, speeds, moves, notes) {
     speeds,
     moves,
     notes,
+    engagement,
     cutLength: Number(cutLength.toFixed(2)),
     estMinutes: speeds.feed > 0 ? Number((cutLength / speeds.feed).toFixed(2)) : 0,
   };
@@ -80,18 +102,18 @@ function cutLoopAt(moves, loop, z, safeZ) {
  */
 export function pocketOp(shape, opts) {
   const {
-    material, tool, machine, depth, safeZ = 10,
+    material, tool, machine, depth, safeZ = 10, pass, leave = 0,
   } = opts;
   if (!(depth > 0)) return null;
   const speeds = millingSpeeds({
     material, diameter: tool.diameter, flutes: tool.flutes, machine,
   });
-  const { ap, ae } = millingEngagement({
+  const { ap, ae } = engagementWith({
     material, diameter: tool.diameter, type: tool.type, machine,
-  });
-  const rings = clearingRings(shape.loops, tool.diameter / 2, ae);
+  }, opts);
+  const { levels, left } = passLevels(shape.z, depth, ap, { pass, leave });
+  const rings = clearingRings(shape.loops, tool.diameter / 2 + left, ae);
   if (rings.length === 0) return null;
-  const levels = zLevels(shape.z, shape.z - depth, ap);
   const moves = [];
   for (const z of levels) {
     // Innermost first: start in the middle, finish on the wall.
@@ -100,10 +122,11 @@ export function pocketOp(shape, opts) {
     }
   }
   return sketchOp('pocket', 'Pocket', tool, speeds, moves, [
-    `${depth} mm deep in ${levels.length} level(s) at ${ap.toFixed(2)} mm`,
+    passNote(pass, levels, ap, depth),
     `${ae.toFixed(2)} mm stepover`,
+    ...(left > 0 ? [`${left} mm left on the walls and floor for finishing`] : []),
     'Plunges straight in at the middle of each level; no ramp entry yet',
-  ]);
+  ], { pass: pass ?? 'rough', stepdown: ap, stepover: ae, leave: left });
 }
 
 /**
@@ -114,26 +137,28 @@ export function pocketOp(shape, opts) {
  */
 export function profileOp(shape, opts) {
   const {
-    material, tool, machine, depth, side = 'outside', safeZ = 10,
+    material, tool, machine, depth, side = 'outside', safeZ = 10, pass, leave = 0,
   } = opts;
   if (!(depth > 0)) return null;
   const speeds = millingSpeeds({
     material, diameter: tool.diameter, flutes: tool.flutes, machine,
   });
-  const { ap } = millingEngagement({
+  const { ap } = engagementWith({
     material, diameter: tool.diameter, type: tool.type, machine,
-  });
+  }, opts);
+  const { levels, left } = passLevels(shape.z, depth, ap, { pass, leave });
   const outers = shape.loops.filter((l) => !l.isHole);
-  const r = tool.diameter / 2;
+  const r = tool.diameter / 2 + left;
   const paths = offsetLoops(outers, side === 'inside' ? -r : r);
   if (paths.length === 0) return null;
-  const levels = zLevels(shape.z, shape.z - depth, ap);
   const moves = [];
   for (const z of levels) {
     for (const loop of paths) cutLoopAt(moves, loop, z, safeZ);
   }
   return sketchOp('profile', `Profile ${side}`, tool, speeds, moves, [
-    `${depth} mm deep in ${levels.length} level(s) at ${ap.toFixed(2)} mm`,
-    `Cutter ${side} the profile, no finishing allowance`,
-  ]);
+    passNote(pass, levels, ap, depth),
+    left > 0
+      ? `Cutter ${side} the profile, ${left} mm left on for finishing`
+      : `Cutter ${side} the profile, no finishing allowance`,
+  ], { pass: pass ?? 'rough', stepdown: ap, leave: left });
 }

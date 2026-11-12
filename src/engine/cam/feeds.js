@@ -148,6 +148,18 @@ export function millingEngagement({ material, diameter, type = 'endmill', machin
 }
 
 /**
+ * `millingEngagement`, with the operator's own depth step (`stepdown`) and side
+ * step (`stepover`) wherever they set one. Unset, zero or negative = automatic.
+ */
+export function engagementWith(args, { stepdown, stepover } = {}) {
+  const auto = millingEngagement(args);
+  return {
+    ap: stepdown > 0 ? stepdown : auto.ap,
+    ae: stepover > 0 ? stepover : auto.ae,
+  };
+}
+
+/**
  * Drilling data. Peck depth is what keeps a deep hole from packing with chips —
  * past about 3×D a plain G81 stops being safe, so this reports when G83 is
  * needed rather than leaving the caller to guess.

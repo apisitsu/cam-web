@@ -167,11 +167,17 @@ function toPartFrame(p, aDeg, bDeg, aCenter) {
  *     varies by machine far more than it varies by how many degrees the
  *     index itself covers — so this is a flat cost per index, not a
  *     degrees-per-second rate that would claim more precision than is real.
+ *   home — where G28/G30 sends each axis, in work coordinates (mm; a lathe's
+ *     X as a diameter), e.g. `{ X: 381, Y: 203, Z: 254 }`. The leg is timed
+ *     and measured but never drawn: a point hundreds of mm above the part
+ *     would stretch the bounds that size the simulated stock. Without it the
+ *     return is drawn only as far as its intermediate point, with a warning.
  */
 export function interpret(text, opts = {}) {
   const {
     mode = 'mill', rapidRate = 5000, diameterMode = true, rotaryFrame = 'part',
     rotaryCenter, maxTurnRpm, toolChangeSeconds = 0, rotaryIndexSeconds = 0,
+    home = null,
   } = opts;
   const turning = mode === 'turn';
   const partFrame = rotaryFrame !== 'machine';
@@ -230,6 +236,16 @@ export function interpret(text, opts = {}) {
   let feedTime = 0;
   let dwellTime = 0;
   let toolChangeTime = 0;
+  // G28/G30 legs to and from the reference position (see `home`), already
+  // inside rapidLength/rapidTime. `homeReturn` is the leg back, billed on the
+  // next move — a return that ends the program never comes back down.
+  let homeLength = 0;
+  let homeTime = 0;
+  let homeReturn = 0;
+  const billHome = (d) => {
+    const t = rapidRate > 0 ? (d / rapidRate) * 60 : 0;
+    homeLength += d; homeTime += t; rapidLength += d; rapidTime += t;
+  };
   let rotaryIndexTime = 0;
   const aIndices = new Set([0]); // every A angle the program machines at
   const toolCut = new Map(); // tool number -> { feeds, cutLength } actually cut
@@ -316,6 +332,7 @@ export function interpret(text, opts = {}) {
    * don't pollute the geometry.
    */
   const emit = (type, a, b, line) => {
+    if (homeReturn > 0) { billHome(homeReturn); homeReturn = 0; }
     // Time and distance are the same in either frame — rotation is rigid — so
     // measure before the transform and reuse it.
     const d = dist(a, b);
@@ -825,7 +842,6 @@ export function interpret(text, opts = {}) {
       // fixed in *machine* coordinates. We don't know where that is, so only the
       // intermediate leg is drawn. Non-modal: the motion mode is left alone.
       if (refReturn) {
-        warnOnce(`G${refReturn} return-to-reference is drawn only as far as its intermediate point — the machine home position is not in the program`);
         const start = state.pos.slice();
         // The intermediate point is X/Y/Z on a mill; on a lathe it is given with
         // the incremental words U/V/W (`G28 U0 W0`), which stay incremental
@@ -840,6 +856,20 @@ export function interpret(text, opts = {}) {
         ];
         if (dist(start, via) > EPS) sink('rapid', start, via, lineNo);
         state.pos = via;
+        // On to the reference position, for every axis the block names.
+        const target = via.slice();
+        let unknown = false;
+        [['X', 'U'], ['Y', 'V'], ['Z', 'W']].forEach(([axis, inc], k) => {
+          if (words[axis] === undefined && words[inc] === undefined) return;
+          const h = home?.[axis];
+          if (!Number.isFinite(h)) { unknown = true; return; }
+          target[k] = axis === 'X' && turning && diameterMode ? h / 2 : h;
+        });
+        if (unknown) {
+          warnOnce(`G${refReturn} return-to-reference is drawn only as far as its intermediate point — the machine home position is not in the program`);
+        }
+        const leg = dist(via, target);
+        if (leg > EPS) { billHome(leg); homeReturn += leg; }
         continue;
       }
 
@@ -976,6 +1006,8 @@ export function interpret(text, opts = {}) {
       feedTime,            // seconds
       dwellTime,           // seconds
       toolChangeTime,      // seconds — 0 unless `toolChangeSeconds` was given
+      homeLength,          // mm of G28/G30 travel, already inside rapidLength
+      homeTime,            // seconds, already inside rapidTime
       rotaryIndexTime,     // seconds — 0 unless `rotaryIndexSeconds` was given
       cycleTime: rapidTime + feedTime + dwellTime + toolChangeTime + rotaryIndexTime,
       // Distinct A-axis indices the program machines at. More than one means a

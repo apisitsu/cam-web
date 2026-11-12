@@ -465,15 +465,43 @@ export const useCamPlanStore = create((set, get) => ({
   /**
    * A pocket or profile from a sketch.
    *
+   * `pass` 'both' adds a rough step (leaving `leave` mm) and a finish step after it.
+   *
    * @param {'pocket'|'profile'} kind
-   * @param {{depth:number, side?:'outside'|'inside'}} opts
+   * @param {{depth:number, side?:'outside'|'inside', pass?:'rough'|'finish'|'both', leave?:number}} opts
    */
-  addSketchStep(kind, sketchId, { depth, side = 'outside' } = {}) {
+  addSketchStep(kind, sketchId, { depth, side = 'outside', pass, leave } = {}) {
     const s = sketchSource().find((x) => x.id === sketchId);
     if (!s || !_ctx) return null;
-    return get().addStep(kind, {
+    return get().addPassSteps(kind, {
       sketchId, name: s.name, plane: s.plane, regions: s.regions, depth, side,
-    });
+    }, { pass, leave });
+  },
+
+  /** A pocket or profile on the outline of a flat face picked on the model. */
+  addFaceShapeStep(kind, faceId, { depth, side = 'outside', pass, leave } = {}) {
+    if (!_ctx) return null;
+    return get().addPassSteps(kind, { faceId, depth, side }, { pass, leave });
+  },
+
+  /** Depth from the top of the stock down to a picked face — the default for a face pocket. */
+  faceDepth(faceId) {
+    return _ctx ? recipeOps.faceDepth(_ctx, faceId) : 0;
+  },
+
+  addPassSteps(kind, target, { pass, leave = 0.2 } = {}) {
+    if (!_ctx) return null;
+    const angle = target?.angle ?? get().indexAngle;
+    const full = angle ? { ...target, angle } : target;
+    // No pass given: one step cut as it always was (stepped, nothing left).
+    const passes = pass === 'both' ? ['rough', 'finish'] : [pass];
+    let recipe = get().recipe;
+    for (const p of passes) {
+      const params = p == null ? undefined : (p === 'rough' ? { pass: p, leave } : { pass: p });
+      recipe = recipeOps.addStep(recipe, kind, _ctx, { target: full, params });
+    }
+    set({ recipe });
+    return get().rebuild();
   },
 
   // ---- Recipe editing -------------------------------------------------------
@@ -482,6 +510,12 @@ export const useCamPlanStore = create((set, get) => ({
 
   setStepTool(key, toolId) {
     set({ recipe: recipeOps.setStepTool(get().recipe, key, toolId) });
+    return get().rebuild();
+  },
+
+  /** Rough/Finish, depth step, side step, stock to leave — null puts one back to automatic. */
+  setStepParams(key, patch) {
+    set({ recipe: recipeOps.setStepParams(get().recipe, key, patch) });
     return get().rebuild();
   },
 

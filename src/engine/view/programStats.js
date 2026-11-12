@@ -62,7 +62,7 @@ export function timingBreakdown(stats) {
   if (!stats) return '';
   const parts = [
     `feed ${formatDuration(stats.feedTime)}`,
-    `rapid ${formatDuration(stats.rapidTime)}`,
+    `rapid ${formatDuration(stats.rapidTime)}${stats.homeTime > 0 ? ` (G28 home ${formatDuration(stats.homeTime)})` : ''}`,
   ];
   if (stats.dwellTime > 0) parts.push(`dwell ${formatDuration(stats.dwellTime)}`);
   if (stats.toolChangeTime > 0) parts.push(`tool change ${formatDuration(stats.toolChangeTime)}`);

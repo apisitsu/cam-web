@@ -41,7 +41,7 @@ import { DEFAULT_MACHINE } from './feeds.js';
 import { normalizeAngle } from '../mesh/rotate.js';
 import * as turn from './toolpath/turn.js';
 import * as mill from './toolpath/mill.js';
-import { faceRegionOp, traceOp } from './toolpath/feature.js';
+import { faceRegionOp, traceOp, faceToLoops } from './toolpath/feature.js';
 import { sketchInFrame, pocketOp, profileOp } from './toolpath/sketchOps.js';
 
 /**
@@ -111,9 +111,9 @@ export const OPERATION_KINDS = [
     hint: 'Taps the Hole Wizard tapped holes with G84.',
   },
   {
-    kind: 'pocket', mode: 'mill', label: 'Pocket from sketch', order: 36,
+    kind: 'pocket', mode: 'mill', label: 'Pocket', order: 36,
     toolTypes: ['endmill'], needs: 'sketch',
-    hint: 'Clears the inside of a sketch\'s profiles to a depth.',
+    hint: 'Clears the inside of a sketch\'s profiles, or of a flat face picked on the model, to a depth.',
   },
   {
     kind: 'cbore', mode: 'mill', label: 'Counterbore', order: 38,
@@ -126,9 +126,9 @@ export const OPERATION_KINDS = [
     hint: 'Chamfers the hole\'s edge on the counterbore floor, after the counterbore.',
   },
   {
-    kind: 'profile', mode: 'mill', label: 'Profile from sketch', order: 44,
+    kind: 'profile', mode: 'mill', label: 'Profile', order: 44,
     toolTypes: ['endmill'], needs: 'sketch',
-    hint: 'Follows a sketch\'s outline, outside or inside it, to a depth.',
+    hint: 'Follows the outline of a sketch, or of a flat face picked on the model, outside or inside it, to a depth.',
   },
   {
     kind: 'rough', mode: 'mill', label: 'Z-level roughing', order: 30,
@@ -136,7 +136,7 @@ export const OPERATION_KINDS = [
     hint: 'Clears bulk material level by level. Wants the biggest cutter that fits.',
   },
   {
-    kind: 'finish', mode: 'mill', label: 'Contour finishing', order: 40,
+    kind: 'finish', mode: 'mill', label: 'Contour', order: 40,
     toolTypes: ['endmill', 'ballmill'], indexable: true,
     hint: 'Follows the finished wall. Bound by the narrowest passage.',
   },
@@ -263,9 +263,10 @@ function toolMisfit(kind, tool, ctx, target = null) {
   if (kind === 'pocket' || kind === 'profile') {
     const depth = target?.depth ?? 0;
     if (tool.fluteLength < depth) return `${tool.fluteLength} mm of flute against ${depth} mm deep.`;
-    const span = sketchSpan(target);
+    const face = target?.faceId ? featureFace(ctx, target) : null;
+    const span = face ? [...face.bounds.size].sort((a, b) => b - a)[1] : sketchSpan(target);
     const inside = kind === 'pocket' || target?.side === 'inside';
-    return inside && tool.diameter >= span ? `Ø${tool.diameter} does not fit inside the ${span.toFixed(1)} mm sketch.` : null;
+    return inside && tool.diameter >= span ? `Ø${tool.diameter} does not fit inside the ${span.toFixed(1)} mm ${face ? 'face' : 'sketch'}.` : null;
   }
   if (kind === 'drill') return null; // any drill can make some hole
   if (kind === 'trace') {
@@ -371,8 +372,57 @@ function featureEdge(ctx, target) {
 
 /** One recipe entry. */
 export function entry(kind, toolId, opts = {}) {
-  const { target = null, enabled = true, warning = null, auto = true } = opts;
-  return { key: keyFor(kind, target), kind, toolId, enabled, target, warning, auto };
+  const { target = null, enabled = true, warning = null, auto = true, params } = opts;
+  return {
+    key: keyFor(kind, target), kind, toolId, enabled, target, warning, auto,
+    ...(params ? { params } : {}),
+  };
+}
+
+/**
+ * Which cut settings a step offers the operator, by kind.
+ *
+ * `pass` — `'choose'`: Rough or Finish can be picked; `'rough'`/`'finish'`: fixed.
+ * `stepover`/`leave` — whether a rough pass of it has a side step / stock to leave.
+ * Kinds not listed (drilling, tapping, tracing…) have no step settings.
+ */
+export const CUT_SETTINGS = {
+  pocket: { pass: 'choose', stepover: true, leave: true },
+  profile: { pass: 'choose', stepover: false, leave: true },
+  region: { pass: 'choose', stepover: true, leave: true },
+  rough: { pass: 'rough', stepover: true, leave: true },
+  face: { pass: 'rough', stepover: true, leave: false },
+  finish: { pass: 'finish' },
+};
+
+/**
+ * Set a step's cut settings: `{ pass, stepdown, stepover, leave }`. A null or
+ * empty value goes back to automatic.
+ */
+export function setStepParams(recipe, key, patch) {
+  return recipe.map((e) => {
+    if (e.key !== key) return e;
+    const params = { ...(e.params ?? {}), ...patch };
+    for (const k of Object.keys(params)) if (params[k] == null || params[k] === '') delete params[k];
+    return { ...e, params, auto: false };
+  });
+}
+
+/** "Rough " / "Finish " in front of a step's title, when the operator chose one. */
+function passWord(e) {
+  const pass = e.params?.pass;
+  return pass === 'rough' ? 'Rough ' : pass === 'finish' ? 'Finish ' : '';
+}
+
+/** The cut settings a build passes on: only the values the operator actually set. */
+function cutParams(e) {
+  const p = e.params ?? {};
+  const out = {};
+  if (p.pass === 'rough' || p.pass === 'finish') out.pass = p.pass;
+  for (const k of ['stepdown', 'stepover', 'leave']) {
+    if (Number.isFinite(p[k]) && p[k] >= 0) out[k] = p[k];
+  }
+  return out;
 }
 
 // ---------------------------------------------------------------------------
@@ -421,7 +471,7 @@ export function addStep(recipe, kind, ctx, opts = {}) {
   if (target?.angle && !meta.indexable) return recipe;
   const toolId = opts.toolId ?? defaultToolFor(kind, ctx, target)?.id ?? null;
   const fresh = {
-    ...entry(kind, toolId, { target, auto: false }),
+    ...entry(kind, toolId, { target, auto: false, params: opts.params }),
     key: uniqueKey(recipe, kind, target),
     // A step the geometry cannot support is still added — the operator asked
     // for it — but it carries the reason with it, so the row explains itself
@@ -478,6 +528,8 @@ export function reconcile(recipe, ctx) {
     const meta = operationKind(e.kind, ctx.mode);
     if (!meta) return false;
     if (!e.target) return true;
+    // A pocket or profile aimed at a picked face, rather than a sketch.
+    if (meta.needs === 'sketch' && e.target.faceId) return featureFace(ctx, e.target) != null;
     if (meta.needs === 'recess') return e.target.index < (ctx.profile?.recesses.length ?? 0);
     if (meta.needs === 'hole') return e.target.index < (ctx.holeGroups?.length ?? 0);
     if (meta.needs === 'tap') return e.target.index < (ctx.tapGroups?.length ?? 0);
@@ -680,6 +732,7 @@ function toStep(n, key, title, why, op) {
     cutLength: op.cutLength,
     estMinutes: op.estMinutes,
     notes: op.notes,
+    cut: op.engagement ?? null,
   };
 }
 
@@ -799,12 +852,53 @@ function opts_from(ctx, face) {
   return top != null && top > face.bounds.max[2] ? top : face.bounds.max[2];
 }
 
+/**
+ * A pocket or profile aimed at a flat face picked on the model. The face's own
+ * outline is the shape, cut from the top of the stock down by the step's depth —
+ * by default down to the face itself (`faceDepth`).
+ */
+function buildFaceShapeStep(parentCtx, ctx, e, tool, common, warnings) {
+  const t = e.target;
+  const face = featureFace(parentCtx, t);
+  if (!face) {
+    warnings.push('The picked face is not on this part.');
+    return { op: null, warnings };
+  }
+  if (face.facing !== 'up') {
+    warnings.push(`The picked ${face.facing} face cannot be reached along the tool axis — pick a face that faces up.`);
+    return { op: null, warnings };
+  }
+  const shape = { z: opts_from(ctx, face), loops: faceToLoops(face) };
+  const op = e.kind === 'pocket'
+    ? pocketOp(shape, { ...common, depth: t.depth })
+    : profileOp(shape, { ...common, depth: t.depth, side: t.side });
+  if (!op) warnings.push(`Face ${face.id}: the Ø${tool.diameter} does not fit, or the depth is 0.`);
+  return {
+    op,
+    title: e.kind === 'pocket'
+      ? `${passWord(e)}Pocket face ${face.id} ${t.depth} mm`
+      : `${passWord(e)}Profile face ${face.id} ${t.side} ${t.depth} mm`,
+    why: `The outline of the picked face ${face.id}: ${t.depth} mm down from Z${shape.z.toFixed(2)} with the ${tool.label}.`,
+    warnings,
+  };
+}
+
+/**
+ * Default depth for a pocket or profile on a picked face: from the top of the
+ * stock down to the face. 0 for the top face itself.
+ */
+export function faceDepth(ctx, faceId) {
+  const face = featureFace(ctx, { faceId });
+  if (!face) return 0;
+  return Number(Math.max(0, opts_from(ctx, face) - face.centroid[2]).toFixed(3));
+}
+
 function buildMillStep(parentCtx, e, tool, cut) {
   // Everything below is computed on the part as it presents itself at this
   // step's rotary index. At A0 — almost always — this is the parent context.
   const ctx = ctxAt(parentCtx, e.target);
   const { welded, stock, part, depth, neck } = ctx;
-  const common = { ...cut, part, tool };
+  const common = { ...cut, part, tool, ...cutParams(e) };
   const warnings = [];
   const angle = e.target?.angle ?? 0;
   const at = angle ? ` at A${angle}` : '';
@@ -892,6 +986,7 @@ function buildMillStep(parentCtx, e, tool, cut) {
     case 'pocket':
     case 'profile': {
       const t = e.target ?? {};
+      if (t.faceId) return buildFaceShapeStep(parentCtx, ctx, e, tool, common, warnings);
       if (angle || !parentCtx.toFrame) {
         warnings.push(`A ${e.kind} from a sketch runs at A0 only.`);
         return { op: null, warnings };
@@ -908,8 +1003,8 @@ function buildMillStep(parentCtx, e, tool, cut) {
       return {
         op,
         title: e.kind === 'pocket'
-          ? `Pocket "${t.name}" ${t.depth} mm`
-          : `Profile "${t.name}" ${t.side} ${t.depth} mm`,
+          ? `${passWord(e)}Pocket "${t.name}" ${t.depth} mm`
+          : `${passWord(e)}Profile "${t.name}" ${t.side} ${t.depth} mm`,
         why: `From the sketch itself, so curves stay exact: ${t.depth} mm down from Z${shape.z.toFixed(2)} with the ${tool.label}.`,
         warnings,
       };

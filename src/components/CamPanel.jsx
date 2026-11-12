@@ -48,7 +48,7 @@ import {
   machineById, machinesByBrand, axisLabel, travelLabel,
 } from '../engine/cam/machines.js';
 import { axisSummary, fitWarnings } from '../engine/cam/envelope.js';
-import { operationKind } from '../engine/cam/recipe.js';
+import { operationKind, CUT_SETTINGS } from '../engine/cam/recipe.js';
 import { describeFace, describeEdge } from '../engine/mesh/features.js';
 import { flipOf } from '../engine/mesh/datum.js';
 import { visibleFeatures, hiddenNote } from '../engine/view/featureList.js';
@@ -138,11 +138,16 @@ function ManualToolpath({
   const addStep = useCamPlanStore((s) => s.addStep);
   const sketchList = useCamPlanStore((s) => s.sketchList);
   const addSketchStep = useCamPlanStore((s) => s.addSketchStep);
+  const addFaceShapeStep = useCamPlanStore((s) => s.addFaceShapeStep);
+  const faceDepth = useCamPlanStore((s) => s.faceDepth);
   const [kind, setKind] = React.useState(null);
   const [choice, setChoice] = React.useState(0);
   const [sketchId, setSketchId] = React.useState(null);
   const [depth, setDepth] = React.useState(5);
   const [side, setSide] = React.useState('outside');
+  // Where a pocket/profile takes its shape from: a sketch, or a face clicked on the model.
+  const [source, setSource] = React.useState('sketch');
+  const [pass, setPass] = React.useState('rough');
 
   const kinds = addableKinds().filter((k) => !PICKED_ON_MODEL.has(k.needs));
   const meta = kinds.find((k) => k.kind === kind) ?? kinds[0];
@@ -151,13 +156,26 @@ function ManualToolpath({
   const sketchStep = meta?.needs === 'sketch';
   const sketches = sketchList().filter((s) => s.closed);
   const sketch = sketches.find((s) => s.id === sketchId) ?? sketches[0];
+  const fromFace = sketchStep && source === 'face';
+  const face = selectedFeature?.facing !== undefined ? selectedFeature : null;
+
+  // Picking a face fills in the depth down to it; the operator can still change it.
+  React.useEffect(() => {
+    if (!fromFace || !face) return;
+    const d = faceDepth(face.id);
+    if (d > 0) setDepth(d);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [fromFace, face?.id]);
 
   let blocked = null;
   if (choices && !chosen) blocked = 'This part has none of these.';
-  if (sketchStep && !sketch) blocked = 'Draw a closed profile in a sketch first.';
+  if (sketchStep && !fromFace && !sketch) blocked = 'Draw a closed profile in a sketch first — or use Face.';
+  if (fromFace && !face) blocked = 'Click a flat face on the model (or pick one in the list below).';
+  if (fromFace && face && face.facing !== 'up') blocked = `That face points ${face.facing} — pick one facing the spindle.`;
 
   const add = () => {
-    if (sketchStep) return addSketchStep(meta.kind, sketch.id, { depth, side });
+    if (fromFace) return addFaceShapeStep(meta.kind, face.id, { depth, side, pass });
+    if (sketchStep) return addSketchStep(meta.kind, sketch.id, { depth, side, pass });
     return addStep(meta.kind, chosen?.target ?? undefined);
   };
 
@@ -185,15 +203,25 @@ function ManualToolpath({
             options={choices.map((c) => ({ value: c.value, label: c.label }))}
           />
         )}
-        {sketchStep && sketch && (
+        {sketchStep && (
           <>
-            <Select
+            <Segmented
               size="small"
-              style={{ width: 110 }}
-              value={sketch.id}
-              onChange={setSketchId}
-              options={sketches.map((s) => ({ value: s.id, label: s.name }))}
+              value={source}
+              onChange={setSource}
+              options={[{ value: 'sketch', label: 'Sketch' }, { value: 'face', label: 'Face' }]}
+              data-manual-source
             />
+            {!fromFace && sketch && (
+              <Select
+                size="small"
+                style={{ width: 110 }}
+                value={sketch.id}
+                onChange={setSketchId}
+                options={sketches.map((s) => ({ value: s.id, label: s.name }))}
+              />
+            )}
+            {fromFace && face && <Tag style={{ margin: 0 }}>Face {face.id}</Tag>}
             <InputNumber
               size="small"
               style={{ width: 110 }}
@@ -211,6 +239,19 @@ function ManualToolpath({
                 options={[{ value: 'outside', label: 'Outside' }, { value: 'inside', label: 'Inside' }]}
               />
             )}
+            <Tooltip title="Rough leaves 0.2 mm for a finish pass (change it in the table). Rough + Finish adds both steps.">
+              <Segmented
+                size="small"
+                value={pass}
+                onChange={setPass}
+                options={[
+                  { value: 'rough', label: 'Rough' },
+                  { value: 'finish', label: 'Finish' },
+                  { value: 'both', label: 'Rough + Finish' },
+                ]}
+                data-manual-pass
+              />
+            </Tooltip>
           </>
         )}
         <CommandButton
@@ -223,7 +264,11 @@ function ManualToolpath({
         />
       </Space>
       <Text type="secondary" style={{ fontSize: 11, display: 'block', marginTop: 4 }}>
-        {blocked ?? (sketchStep ? `${meta.hint} The sketch must lie flat on top of the setup.` : meta?.hint)}
+        {blocked ?? (sketchStep
+          ? (fromFace
+            ? `${meta.hint} Depth is measured from the top of the stock.`
+            : `${meta.hint} The sketch must lie flat on top of the setup.`)
+          : meta?.hint)}
       </Text>
 
       {pickable && (
@@ -249,6 +294,93 @@ function ManualToolpath({
         </>
       )}
     </div>
+  );
+}
+
+/**
+ * A number the planner works out but the operator may overrule: shows the value
+ * in use, commits on Enter / leaving the box (each change rebuilds the program),
+ * and an emptied box goes back to automatic.
+ */
+function StepNumber({ label, value, own, onCommit, title }) {
+  const [draft, setDraft] = React.useState(value);
+  React.useEffect(() => { setDraft(value); }, [value]);
+  const commit = () => {
+    if (draft === value && own) return;
+    if (draft == null) { if (own) onCommit(null); return; }
+    if (draft !== value) onCommit(draft);
+  };
+  return (
+    <Tooltip title={`${title} ${own ? 'Set by you — clear the box to go back to automatic.' : 'Automatic from the tool and material — type a number to change it.'}`}>
+      <Space.Compact size="small">
+        <span className="ant-input-group-addon" style={{ fontSize: 11, padding: '0 4px', whiteSpace: 'nowrap', width: 70, textAlign: 'left' }}>{label}</span>
+        <InputNumber
+          size="small"
+          controls={false}
+          min={0}
+          step={0.1}
+          value={draft}
+          onChange={setDraft}
+          onBlur={commit}
+          onPressEnter={commit}
+          style={{ width: 52, fontWeight: own ? 600 : 400, color: own ? undefined : CAD.muted }}
+        />
+      </Space.Compact>
+    </Tooltip>
+  );
+}
+
+const round2 = (v) => (Number.isFinite(v) ? Number(v.toFixed(2)) : null);
+
+/** Rough / Finish, and for a rough pass its depth step, side step and stock to leave. */
+function CutSettings({ row, onChange }) {
+  const spec = CUT_SETTINGS[row.kind];
+  const cut = row.step?.cut;
+  if (!spec || !cut || !row.enabled) return null;
+  const own = row.params ?? {};
+  const pass = spec.pass === 'choose' ? (own.pass ?? cut.pass) : spec.pass;
+  return (
+    <Space direction="vertical" size={2} style={{ marginTop: 2 }} data-cut-settings>
+      {spec.pass === 'choose' ? (
+        <Segmented
+          size="small"
+          value={pass}
+          onChange={(v) => onChange({ pass: v })}
+          options={[{ value: 'rough', label: 'Rough' }, { value: 'finish', label: 'Finish' }]}
+        />
+      ) : (
+        <Tag style={{ margin: 0 }}>{pass === 'rough' ? 'Rough' : 'Finish'}</Tag>
+      )}
+      {pass === 'rough' && (
+        <>
+          <StepNumber
+            label="Depth step"
+            value={round2(cut.stepdown)}
+            own={own.stepdown != null}
+            onCommit={(v) => onChange({ stepdown: v })}
+            title="How deep each level cuts (mm)."
+          />
+          {spec.stepover && (
+            <StepNumber
+              label="Side step"
+              value={round2(cut.stepover)}
+              own={own.stepover != null}
+              onCommit={(v) => onChange({ stepover: v })}
+              title="How far each pass moves sideways (mm)."
+            />
+          )}
+          {spec.leave && (
+            <StepNumber
+              label="Leave"
+              value={round2(cut.leave ?? 0)}
+              own={own.leave != null}
+              onCommit={(v) => onChange({ leave: v })}
+              title="Stock left on the walls and floor for the finish pass (mm)."
+            />
+          )}
+        </>
+      )}
+    </Space>
   );
 }
 
@@ -477,6 +609,7 @@ export default function CamPanel() {
   const setMachine = useCamPlanStore((s) => s.setMachine);
   const setMode = useCamPlanStore((s) => s.setMode);
   const setStepTool = useCamPlanStore((s) => s.setStepTool);
+  const setStepParams = useCamPlanStore((s) => s.setStepParams);
   const toggleStep = useCamPlanStore((s) => s.toggleStep);
   const moveStep = useCamPlanStore((s) => s.moveStep);
   const removeStep = useCamPlanStore((s) => s.removeStep);
@@ -613,6 +746,9 @@ export default function CamPanel() {
             />
           ) : (
             <Text type="danger" style={{ fontSize: 11 }}>no tool fits</Text>
+          )}
+          {plan?.mode === 'mill' && (
+            <CutSettings row={row} onChange={(patch) => setStepParams(row.key, patch)} />
           )}
         </div>
       ),

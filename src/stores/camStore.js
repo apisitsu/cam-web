@@ -21,6 +21,7 @@ import {
   DEFAULT_CUTTER,
 } from '../engine/cam/cutters.js';
 import { getPlanContext } from './camPlanStore.js';
+import { homeEstimate, machineById, DEFAULT_MACHINE_ID } from '../engine/cam/machines.js';
 
 // Lazily create the workers so tests / SSR don't spin them up on import.
 let gcodeApi = null;
@@ -69,6 +70,9 @@ export const useCamStore = create((set, get) => ({
   // machine-picked default — a chip-to-chip time is not a published spec
   // the way a rapid traverse is, so `applyMachine` never touches it.
   toolChangeSeconds: 0,
+  // Where G28 sends each axis, in work coordinates — estimated from the
+  // selected machine's stroke (`homeEstimate`), editable. Times the G28 legs.
+  home: homeEstimate(machineById(DEFAULT_MACHINE_ID)),
   // Seconds billed for every A/B word that actually indexes the rotary axis
   // to a new angle — same reasoning and default as `toolChangeSeconds`
   // (see `interpret`'s own comment): an index's own time is mostly
@@ -433,12 +437,12 @@ export const useCamStore = create((set, get) => ({
   machineOpts() {
     const {
       mode, rapidRate, diameterMode, rotaryFrame, machineMaxTurnRpm,
-      toolChangeSeconds, rotaryIndexSeconds,
+      toolChangeSeconds, rotaryIndexSeconds, home,
     } = get();
     const ctx = getPlanContext();
     const rotaryCenter = mode === 'mill' && ctx?.mode === 'mill' ? ctx.rotaryCenter : undefined;
     return {
-      mode, rapidRate, diameterMode, rotaryFrame, toolChangeSeconds, rotaryIndexSeconds,
+      mode, rapidRate, diameterMode, rotaryFrame, toolChangeSeconds, rotaryIndexSeconds, home,
       ...(rotaryCenter ? { rotaryCenter } : {}),
       // Not also gated on `mode === 'turn'`: `machineMaxTurnRpm` is already
       // only ever set for a lathe (`applyMachine`), and the interpreter only
@@ -485,15 +489,23 @@ export const useCamStore = create((set, get) => ({
     const rotaryFrame = rotaryFrameFor(machine);
     const rapidRate = machine.rapidRate > 0 ? machine.rapidRate : get().rapidRate;
     const machineMaxTurnRpm = machine.kind === 'turn' ? machine.maxTurnRpm : undefined;
+    const home = homeEstimate(machine);
     const changed = rotaryFrame !== get().rotaryFrame
       || rapidRate !== get().rapidRate
-      || machineMaxTurnRpm !== get().machineMaxTurnRpm;
-    set({ rotaryFrame, rapidRate, machineMaxTurnRpm });
+      || machineMaxTurnRpm !== get().machineMaxTurnRpm
+      || JSON.stringify(home) !== JSON.stringify(get().home);
+    set({ rotaryFrame, rapidRate, machineMaxTurnRpm, home });
     if (changed && get().gcode) get().parse();
   },
 
   setRapidRate(rapidRate) {
     set({ rapidRate });
+    if (get().gcode) get().parse(); // cycle time depends on it
+  },
+
+  /** Overwrite one axis of the estimated G28 home (work coordinates, mm). */
+  setHomeAxis(axis, value) {
+    set({ home: { ...get().home, [axis]: value } });
     if (get().gcode) get().parse(); // cycle time depends on it
   },
 

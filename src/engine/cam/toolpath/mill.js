@@ -21,7 +21,7 @@ import {
   offsetLoops, clearingRings, differenceLoops, booleanLoops, rectLoop, perimeterOf, areaOf,
 } from '../offset.js';
 import {
-  millingSpeeds, millingEngagement, drillingSpeeds, tappingSpeeds,
+  millingSpeeds, millingEngagement, engagementWith, drillingSpeeds, tappingSpeeds,
 } from '../feeds.js';
 
 /** Total length of the feed moves in a list. */
@@ -153,7 +153,7 @@ export function facingOp(stock, part, opts) {
   const speeds = millingSpeeds({
     material, diameter: tool.diameter, flutes: tool.flutes, machine,
   });
-  const { ap, ae } = millingEngagement({ material, diameter: tool.diameter, type: tool.type, machine });
+  const { ap, ae } = engagementWith({ material, diameter: tool.diameter, type: tool.type, machine }, opts);
   const passes = Math.max(1, Math.ceil(depth / ap));
   const r = tool.diameter / 2;
 
@@ -177,10 +177,12 @@ export function facingOp(stock, part, opts) {
     moves.push({ t: 'rapid', x: stock.maxX + r, y: stock.maxY, z: safeZ });
   }
 
-  return makeOp('face', 'Face top', tool, speeds, moves, [
+  const op = makeOp('face', 'Face top', tool, speeds, moves, [
     `${passes} pass(es) removing ${depth.toFixed(2)} mm`,
     `${lanes + 1} lanes at ${ae.toFixed(2)} mm stepover`,
   ]);
+  op.engagement = { pass: 'rough', stepdown: ap, stepover: ae };
+  return op;
 }
 
 /**
@@ -196,11 +198,12 @@ export function facingOp(stock, part, opts) {
  * confidence in a generated file.
  */
 export function roughingOp(mesh, stock, part, opts) {
-  const { material, tool, machine, allowance = 0.3, safeZ = 10 } = opts;
+  const { material, tool, machine, safeZ = 10 } = opts;
+  const allowance = Number.isFinite(opts.leave) && opts.leave >= 0 ? opts.leave : (opts.allowance ?? 0.3);
   const speeds = millingSpeeds({
     material, diameter: tool.diameter, flutes: tool.flutes, machine,
   });
-  const { ap, ae } = millingEngagement({ material, diameter: tool.diameter, type: tool.type, machine });
+  const { ap, ae } = engagementWith({ material, diameter: tool.diameter, type: tool.type, machine }, opts);
   const r = tool.diameter / 2;
 
   const levels = zLevels(part.top, part.bottom, ap);
@@ -231,11 +234,13 @@ export function roughingOp(mesh, stock, part, opts) {
   }
 
   if (moves.length === 0) return null;
-  return makeOp('rough', 'Z-level roughing', tool, speeds, moves, [
+  const op = makeOp('rough', 'Z-level roughing', tool, speeds, moves, [
     `${cleared} level(s) at ${ap.toFixed(2)} mm depth of cut`,
     `${ae.toFixed(2)} mm stepover, ${allowance} mm left on for finishing`,
     ...(overhung ? [OVERHANG_NOTE] : []),
   ]);
+  op.engagement = { pass: 'rough', stepdown: ap, stepover: ae, leave: allowance };
+  return op;
 }
 
 /**
@@ -267,7 +272,7 @@ export function contourOp(mesh, part, opts) {
   }
 
   if (moves.length === 0) return null;
-  return makeOp('finish', 'Contour finishing', tool, speeds, moves, [
+  return makeOp('finish', 'Contour', tool, speeds, moves, [
     `${step.toFixed(2)} mm stepdown following the part wall`,
     ...(overhung ? [OVERHANG_NOTE] : []),
   ]);

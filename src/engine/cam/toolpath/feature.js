@@ -24,7 +24,7 @@
  * Pure functions over plain data. No React, no store, no three.js.
  */
 
-import { millingSpeeds, millingEngagement } from '../feeds.js';
+import { millingSpeeds, millingEngagement, engagementWith } from '../feeds.js';
 import { clearingRings, areaOf } from '../offset.js';
 
 /** Shared with mill.js in spirit; duplicated rather than exported across. */
@@ -111,8 +111,11 @@ function reverseLoop(flat) {
  * @returns {object|null}    null when the face cannot be cut this way
  */
 export function faceRegionOp(face, opts) {
-  const { material, tool, machine, safeZ = 10, allowance = 0 } = opts;
+  const { material, tool, machine, safeZ = 10, pass } = opts;
   if (face.facing !== 'up') return null;
+  // Rough leaves `leave` on the walls and floor; finish leaves nothing.
+  const left = pass === 'rough' ? Math.max(0, opts.leave ?? 0) : 0;
+  const allowance = (opts.allowance ?? 0) + left;
 
   const z = face.centroid[2] + allowance;
   // Where the cut starts. Defaults to the top of the face's own bounding box,
@@ -125,14 +128,14 @@ export function faceRegionOp(face, opts) {
   const speeds = millingSpeeds({
     material, diameter: tool.diameter, flutes: tool.flutes, machine,
   });
-  const { ap, ae } = millingEngagement({
+  const { ap, ae } = engagementWith({
     material, diameter: tool.diameter, type: tool.type, machine,
-  });
-  const rings = clearingRings(loops, tool.diameter / 2, ae);
+  }, opts);
+  const rings = clearingRings(loops, tool.diameter / 2 + left, ae);
   if (rings.length === 0) return null;
 
   const depth = Math.max(0, from - z);
-  const passes = Math.max(1, Math.ceil(depth / Math.max(ap, 1e-6)));
+  const passes = pass === 'finish' ? 1 : Math.max(1, Math.ceil(depth / Math.max(ap, 1e-6)));
 
   const moves = [];
   for (let p = 1; p <= passes; p++) {
@@ -146,11 +149,14 @@ export function faceRegionOp(face, opts) {
   }
   if (moves.length === 0) return null;
 
-  return makeOp('region', `Clear ${face.facing} face`, tool, speeds, moves, [
+  const op = makeOp('region', `Clear ${face.facing} face`, tool, speeds, moves, [
     `${rings.length} ring${rings.length === 1 ? '' : 's'} at ${ae.toFixed(2)} mm stepover`,
     passes > 1 ? `${passes} passes of ${(depth / passes).toFixed(2)} mm` : 'single depth pass',
     `face plane Z${z.toFixed(2)}`,
+    ...(left > 0 ? [`${left} mm left on the walls and floor for finishing`] : []),
   ]);
+  op.engagement = { pass: pass ?? 'rough', stepdown: ap, stepover: ae, leave: left };
+  return op;
 }
 
 /**

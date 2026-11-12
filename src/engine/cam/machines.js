@@ -235,6 +235,26 @@ export const MACHINES = [
   }),
 ];
 
+/**
+ * Where G28 sends each axis, in work coordinates — an estimate from the stroke.
+ *
+ * The stroke says how far an axis travels, not where the work sits inside it,
+ * so work zero is taken as mid-stroke and home as the + end: half the stroke on
+ * a mill. A lathe's X is a diameter, so half its radial stroke doubled — the
+ * stroke itself. The operator can overwrite each number with the real one.
+ *
+ * @returns {Record<string, number>}  e.g. `{ X: 381, Y: 203, Z: 254 }`
+ */
+export function homeEstimate(machine) {
+  const out = {};
+  for (const axis of machine?.linear ?? []) {
+    const stroke = machine.travel?.[axis];
+    if (!(stroke > 0)) continue;
+    out[axis] = machine.kind === 'turn' && axis === 'X' ? stroke : Math.round(stroke / 2);
+  }
+  return out;
+}
+
 export const DEFAULT_MILL_ID = 'fanuc-generic-vmc';
 export const DEFAULT_LATHE_ID = 'fanuc-generic-lathe';
 export const DEFAULT_MACHINE_ID = DEFAULT_MILL_ID;

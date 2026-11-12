@@ -50,6 +50,11 @@
  * @property {number} axisCount        linear + rotary — what "5-axis" counts
  * @property {number} rigidity         1.0 = solid industrial machine
  * @property {number} [toolStations]   turret stations / carousel pockets
+ * @property {Record<string, number>} home  where G28 goes, in machine
+ *   coordinates — 0 on every axis for a control whose G28 point is machine zero
+ * @property {string} axes             key into `AXES`
+ * @property {'built-in'|'changed'|'added'} source  shipped as is, changed by
+ *   the shop, or added by the shop (`setShopMachines`)
  */
 
 /**
@@ -60,7 +65,7 @@
  * letters a program may legally contain: a 5-axis machine that swivels on B and
  * rotates on C cannot run a program written for an A axis, and both are "5-axis".
  */
-const AXES = {
+export const AXES = {
   mill3: { linear: ['X', 'Y', 'Z'], rotary: [] },
   mill4: { linear: ['X', 'Y', 'Z'], rotary: ['A'] },
   mill5bc: { linear: ['X', 'Y', 'Z'], rotary: ['B', 'C'] },
@@ -69,9 +74,13 @@ const AXES = {
   swiss: { linear: ['X', 'Y', 'Z'], rotary: ['C'] },
 };
 
+const axesName = (axes) => Object.keys(AXES).find((k) => AXES[k] === axes);
+
 const withAxes = (m, fallback) => {
-  const axes = m.axes ?? fallback;
+  const axes = typeof m.axes === 'string' ? AXES[m.axes] : (m.axes ?? fallback);
   return {
+    axes: axesName(axes),
+    home: Object.fromEntries(axes.linear.map((a) => [a, m.home?.[a] ?? 0])),
     linear: axes.linear,
     rotary: axes.rotary,
     axisCount: axes.linear.length + axes.rotary.length,
@@ -79,12 +88,12 @@ const withAxes = (m, fallback) => {
 };
 
 const mill = (m) => ({
-  kind: 'mill', rigidity: 1, minRpm: 100, ...m,
+  kind: 'mill', rigidity: 1, minRpm: 100, source: 'built-in', ...m,
   ...withAxes(m, AXES.mill3),
   label: `${m.brand} · ${m.model}`,
 });
 const lathe = (m) => ({
-  kind: 'turn', rigidity: 1, minRpm: 50, ...m,
+  kind: 'turn', rigidity: 1, minRpm: 50, source: 'built-in', ...m,
   maxTurnRpm: m.maxTurnRpm ?? m.maxRpm,
   ...withAxes(m, AXES.turn2),
   label: `${m.brand} · ${m.model}`,
@@ -236,6 +245,75 @@ export const MACHINES = [
 ];
 
 /**
+ * The shop's own machines over the built-in list: a row with a built-in id
+ * replaces that machine's figures, any other row is a machine the shop added.
+ * Set from the server (or this browser, offline) by `machineStore`.
+ */
+let shop = [];
+
+const fromRow = (row, source) => {
+  const make = row.kind === 'turn' ? lathe : mill;
+  const { updatedBy, updatedAt, ...rest } = row;
+  return { ...make({ ...rest, source }), updatedBy: updatedBy ?? null, updatedAt: updatedAt ?? null };
+};
+
+/** Replace the shop's machines. Rows that do not build (no kind, no stroke) are ignored. */
+export function setShopMachines(rows) {
+  shop = [];
+  for (const row of rows ?? []) {
+    if (!row?.id || !['mill', 'turn'].includes(row.kind) || !row.travel) continue;
+    try {
+      shop.push(fromRow(row, isBuiltIn(row.id) ? 'changed' : 'added'));
+    } catch {
+      // A malformed row must not take the machine list down with it.
+    }
+  }
+}
+
+/** Every machine: the built-in list with the shop's changes, then the shop's additions. */
+export function allMachines() {
+  const byId = new Map(shop.map((m) => [m.id, m]));
+  return [
+    ...MACHINES.map((m) => byId.get(m.id) ?? m),
+    ...shop.filter((m) => m.source === 'added'),
+  ];
+}
+
+export function isBuiltIn(id) {
+  return MACHINES.some((m) => m.id === id);
+}
+
+/** A built-in machine as shipped, ignoring the shop's changes. */
+export function builtInMachine(id) {
+  return MACHINES.find((m) => m.id === id) ?? null;
+}
+
+/** A machine as the editor and the server see it: plain fields, axes by name. */
+export function machineRow(m) {
+  const row = {
+    kind: m.kind,
+    brand: m.brand,
+    model: m.model,
+    controller: m.controller,
+    note: m.note ?? '',
+    axes: m.axes,
+    maxRpm: m.maxRpm,
+    minRpm: m.minRpm,
+    maxFeed: m.maxFeed,
+    rapidRate: m.rapidRate,
+    rigidity: m.rigidity,
+    toolStations: m.toolStations,
+    travel: { ...m.travel },
+    home: { ...m.home },
+  };
+  if (m.kind === 'turn') {
+    row.maxTurnRpm = m.maxTurnRpm;
+    row.maxTurnDia = m.maxTurnDia;
+  }
+  return row;
+}
+
+/**
  * Where G28 sends each axis, in work coordinates — an estimate from the stroke.
  *
  * The stroke says how far an axis travels, not where the work sits inside it,
@@ -255,19 +333,47 @@ export function homeEstimate(machine) {
   return out;
 }
 
+/**
+ * Where G28 sends each axis, in work coordinates, for a job set up on `offset`.
+ *
+ * `machine.home` is where G28 goes in machine coordinates (0 where G28 is
+ * machine zero); `offset` is the work offset in use — G54's X/Y/Z, the machine
+ * coordinates of work zero, as read off the control's Work Offset page. The
+ * distance is the difference. An axis with no offset value falls back to the
+ * stroke estimate (`homeEstimate`). On a lathe both are diameter values on X.
+ *
+ * @param {object} machine
+ * @param {Record<string, number|null>} [offset]
+ */
+export function homeInWork(machine, offset) {
+  const est = homeEstimate(machine);
+  const out = {};
+  for (const axis of Object.keys(est)) {
+    const o = offset?.[axis];
+    out[axis] = Number.isFinite(o)
+      ? Number(((machine.home?.[axis] ?? 0) - o).toFixed(3))
+      : est[axis];
+  }
+  return out;
+}
+
+/** The work offset codes a project can use. */
+export const WORK_OFFSET_CODES = ['G54', 'G55', 'G56', 'G57', 'G58', 'G59'];
+
 export const DEFAULT_MILL_ID = 'fanuc-generic-vmc';
 export const DEFAULT_LATHE_ID = 'fanuc-generic-lathe';
 export const DEFAULT_MACHINE_ID = DEFAULT_MILL_ID;
 
 /** Look a machine up by id, falling back to the default rather than throwing. */
 export function machineById(id) {
-  return MACHINES.find((m) => m.id === id)
-    || MACHINES.find((m) => m.id === DEFAULT_MACHINE_ID);
+  const all = allMachines();
+  return all.find((m) => m.id === id)
+    || all.find((m) => m.id === DEFAULT_MACHINE_ID);
 }
 
 /** The machines that can perform a given process. */
 export function machinesFor(kind) {
-  return MACHINES.filter((m) => m.kind === kind);
+  return allMachines().filter((m) => m.kind === kind);
 }
 
 /** Machines grouped by brand, for a grouped `<Select>`. */
@@ -289,7 +395,7 @@ export function machinesByBrand(kind) {
  * a Haas mill most likely has the Haas lathe — before falling back to generic.
  */
 export function machineForMode(kind, currentId) {
-  const current = MACHINES.find((m) => m.id === currentId);
+  const current = allMachines().find((m) => m.id === currentId);
   if (current && current.kind === kind) return current;
   if (current) {
     const sameBrand = machinesFor(kind).find((m) => m.brand === current.brand);

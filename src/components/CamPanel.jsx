@@ -43,6 +43,7 @@ import {
 import { useFeatureStore } from '../stores/featureStore.js';
 import { useSketchStore } from '../stores/sketchStore.js';
 import { useCamPlanStore } from '../stores/camPlanStore.js';
+import { useMachineStore } from '../stores/machineStore.js';
 import { MATERIALS } from '../engine/cam/library.js';
 import {
   machineById, machinesByBrand, axisLabel, travelLabel,
@@ -604,6 +605,11 @@ export default function CamPanel() {
   const material = useCamPlanStore((s) => s.material);
   const forceMode = useCamPlanStore((s) => s.forceMode);
   const machineId = useCamPlanStore((s) => s.machineId);
+  // Bumps when the shop's machines are read or edited, so the list re-renders.
+  const machinesVersion = useMachineStore((s) => s.version);
+  const openMachines = useMachineStore((s) => s.openEditor);
+  const activeOffset = useCamPlanStore((s) => s.activeOffset);
+  const openWorkOffsets = useCamPlanStore((s) => s.openWorkOffsets);
   const recipe = useCamPlanStore((s) => s.recipe);
   const partOff = useCamPlanStore((s) => s.partOff);
   const diameterMode = useCamPlanStore((s) => s.diameterMode);
@@ -926,8 +932,22 @@ export default function CamPanel() {
           {/* The machine comes first because it decides the most: the process,
               the spindle and feed limits, and the dialect the NC is written in. */}
           <div>
-            <Text style={{ color: CAD.label, fontSize: 11 }}>Machine</Text>
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+              <Text style={{ color: CAD.label, fontSize: 11 }}>Machine</Text>
+              <Space size={4}>
+                <Tooltip title="Where work zero sits on the machine (G54…), for this project">
+                  <Button size="small" type="link" style={{ padding: 0, fontSize: 11 }} onClick={openWorkOffsets} data-open-offsets>
+                    Work offset {activeOffset}
+                  </Button>
+                </Tooltip>
+                <Text type="secondary" style={{ fontSize: 11 }}>·</Text>
+                <Button size="small" type="link" style={{ padding: 0, fontSize: 11 }} onClick={openMachines} data-open-machines>
+                  Machines
+                </Button>
+              </Space>
+            </div>
             <Select
+              key={machinesVersion}
               size="small"
               style={{ width: '100%' }}
               value={machineId}

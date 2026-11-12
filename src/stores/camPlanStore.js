@@ -20,7 +20,7 @@ import { planJob, planContext, planSummary } from '../engine/cam/plan.js';
 import { post } from '../engine/cam/post/fanuc.js';
 import { DEFAULT_MATERIAL } from '../engine/cam/library.js';
 import {
-  machineById, machineForMode, DEFAULT_MILL_ID,
+  machineById, machineForMode, DEFAULT_MILL_ID, WORK_OFFSET_CODES,
 } from '../engine/cam/machines.js';
 import * as recipeOps from '../engine/cam/recipe.js';
 import { normalizeAngle } from '../engine/mesh/rotate.js';
@@ -107,6 +107,24 @@ const NO_DATUM = {
 let _ctx = null;
 export const getPlanContext = () => _ctx;
 
+const axisValue = (v) => (Number.isFinite(v) ? v : null);
+
+/** Work offsets from a saved project; a file from before them gets a blank G54. */
+function restoredOffsets(settings) {
+  const saved = Array.isArray(settings.workOffsets)
+    ? settings.workOffsets.filter((o) => WORK_OFFSET_CODES.includes(o?.code))
+    : [];
+  const workOffsets = saved.length
+    ? saved.map((o) => ({
+      code: o.code, X: axisValue(o.X), Y: axisValue(o.Y), Z: axisValue(o.Z), note: String(o.note ?? ''),
+    }))
+    : [{ code: 'G54', X: null, Y: null, Z: null, note: '' }];
+  const activeOffset = workOffsets.some((o) => o.code === settings.activeOffset)
+    ? settings.activeOffset
+    : workOffsets[0].code;
+  return { workOffsets, activeOffset };
+}
+
 export const useCamPlanStore = create((set, get) => ({
   stlName: null,
   meshVer: 0,          // bumped whenever _mesh changes, so views re-render
@@ -126,6 +144,60 @@ export const useCamPlanStore = create((set, get) => ({
   partOff: true,
   diameterMode: true,
   programNumber: 1,
+
+  // ---- Work offsets: where work zero sits on the machine, per project ----
+  // `{ code: 'G54', X, Y, Z, note }` — machine coordinates of work zero, as on
+  // the control's Work Offset page; null = not stated. `activeOffset` is the one
+  // the program is posted with, and the one the G28 time is worked out from.
+  workOffsets: [{ code: 'G54', X: null, Y: null, Z: null, note: '' }],
+  activeOffset: 'G54',
+  workOffsetsOpen: false,
+  openWorkOffsets() { set({ workOffsetsOpen: true }); },
+  closeWorkOffsets() { set({ workOffsetsOpen: false }); },
+
+  /** The values of the offset in use, for `homeInWork`. */
+  activeOffsetValues() {
+    const { workOffsets, activeOffset } = get();
+    return workOffsets.find((o) => o.code === activeOffset) ?? null;
+  },
+
+  /** Hand the machine, and the offset in use, to the viewport store. */
+  pushMachine() {
+    useCamStore.getState().applyMachine(machineById(get().machineId), get().activeOffsetValues());
+  },
+
+  /** Change one offset's values or note. */
+  setWorkOffset(code, patch) {
+    set({ workOffsets: get().workOffsets.map((o) => (o.code === code ? { ...o, ...patch, code } : o)) });
+    if (code === get().activeOffset) get().pushMachine();
+  },
+
+  /** Add the next unused offset (G55, G56…). Returns its code, or null when all are in use. */
+  addWorkOffset() {
+    const used = new Set(get().workOffsets.map((o) => o.code));
+    const code = WORK_OFFSET_CODES.find((c) => !used.has(c));
+    if (!code) return null;
+    const workOffsets = [...get().workOffsets, { code, X: null, Y: null, Z: null, note: '' }];
+    workOffsets.sort((a, b) => WORK_OFFSET_CODES.indexOf(a.code) - WORK_OFFSET_CODES.indexOf(b.code));
+    set({ workOffsets });
+    return code;
+  },
+
+  /** Remove an offset. The last one stays; removing the one in use moves to the first. */
+  removeWorkOffset(code) {
+    const workOffsets = get().workOffsets.filter((o) => o.code !== code);
+    if (workOffsets.length === 0) return;
+    set({ workOffsets });
+    if (get().activeOffset === code) get().setActiveOffset(workOffsets[0].code);
+  },
+
+  /** Post the program with this offset, and time G28 from it. */
+  setActiveOffset(code) {
+    if (!get().workOffsets.some((o) => o.code === code)) return;
+    set({ activeOffset: code });
+    get().pushMachine();
+    if (_ctx && get().recipe.length) get().rebuild();
+  },
 
   // ---- Where the operator says X0/Y0/Z0 (and, for a 4-axis mill, the A-axis)
   // physically is ----
@@ -177,7 +249,7 @@ export const useCamPlanStore = create((set, get) => ({
     set({ machineId: machine.id, forceMode: machine.kind });
     // A 4-axis mill turns the work, so the viewport should show it turning.
     // Pushed rather than watched: camStore cannot import this store back.
-    useCamStore.getState().applyMachine(machine);
+    get().pushMachine();
     if (!_mesh.welded) return;
     // Re-measure when the process changed — a turning profile and a milling
     // slice are different measurements of the same mesh — but *keep the
@@ -193,7 +265,7 @@ export const useCamPlanStore = create((set, get) => ({
       ? machineById(get().machineId)
       : machineForMode(mode, get().machineId);
     set({ forceMode: mode, machineId: machine.id });
-    useCamStore.getState().applyMachine(machine);
+    get().pushMachine();
     if (!_mesh.welded) return;
     get().prepare();
     get().rebuild();
@@ -422,6 +494,7 @@ export const useCamPlanStore = create((set, get) => ({
           diameterMode: get().diameterMode,
           programNumber: get().programNumber,
           controller: machine.controller,
+          workOffset: get().activeOffset,
         },
       );
       set({
@@ -1007,6 +1080,8 @@ export const useCamPlanStore = create((set, get) => ({
         diameterMode: s.diameterMode,
         programNumber: s.programNumber,
         indexAngle: s.indexAngle,
+        workOffsets: s.workOffsets,
+        activeOffset: s.activeOffset,
       },
       datum: s.datum,
       recipe: s.recipe,
@@ -1058,6 +1133,7 @@ export const useCamPlanStore = create((set, get) => ({
         diameterMode: settings.diameterMode ?? true,
         programNumber: settings.programNumber ?? 1,
         indexAngle: settings.indexAngle ?? 0,
+        ...restoredOffsets(settings),
         datum: { ...NO_DATUM, ...(cam.datum ?? {}), flip: flipOf(cam.datum) },
         recipe: Array.isArray(cam.recipe) ? cam.recipe : [],
         selectedFeature: null,
@@ -1066,7 +1142,7 @@ export const useCamPlanStore = create((set, get) => ({
       });
 
       // A restored 4-axis machine should restore its viewport behaviour with it.
-      useCamStore.getState().applyMachine(machineById(get().machineId));
+      get().pushMachine();
 
       // Measure against the restored settings; `prepare` reconciles the saved
       // recipe against the freshly measured context (dropping any operation the
@@ -1096,6 +1172,9 @@ export const useCamPlanStore = create((set, get) => ({
       selectedFeature: null, previewFeature: null, indexAngle: 0,
       datum: NO_DATUM, datumPickMode: false,
       status: 'idle', error: null, meshVer: get().meshVer + 1,
+      // Work offsets belong to the project, so a new one starts from a blank G54.
+      ...restoredOffsets({}),
     });
+    get().pushMachine();
   },
 }));

@@ -69,6 +69,9 @@ import CommandRibbon from './components/CommandRibbon.jsx';
 import MeasurePanel from './components/MeasurePanel.jsx';
 import WorkspaceTabs from './components/WorkspaceTabs.jsx';
 import StdVcDialog from './components/StdVcDialog.jsx';
+import MachineDialog from './components/MachineDialog.jsx';
+import WorkOffsetDialog from './components/WorkOffsetDialog.jsx';
+import { useMachineStore } from './stores/machineStore.js';
 import CustomTurnToolDialog from './components/CustomTurnToolDialog.jsx';
 import StdEditorDialog from './components/StdEditorDialog.jsx';
 import { VIEWS } from './components/ViewGlyphs.jsx';
@@ -274,6 +277,9 @@ export default function App() {
   useRotaryCenterReparse({ partDatum, gcode, parse });
 
   useDraftAutosave(notification);
+
+  // The shop's machines, before anyone picks one.
+  useEffect(() => { useMachineStore.getState().load(); }, []);
 
   // Let a save confirmation fade rather than linger.
   useEffect(() => {
@@ -679,6 +685,8 @@ export default function App() {
           padding: '2px 16px 0', background: CAD.headerBg, borderBottom: `1px solid ${CAD.border}`,
         }}>
           <StdVcDialog />
+          <MachineDialog />
+          <WorkOffsetDialog />
           <StdEditorDialog />
           <CustomTurnToolDialog />
           <ToolEditDialog

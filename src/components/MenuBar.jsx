@@ -31,6 +31,7 @@ import { useSketchStore } from '../stores/sketchStore.js';
 import { useFeatureStore } from '../stores/featureStore.js';
 import { useCamPlanStore } from '../stores/camPlanStore.js';
 import { useStdStore } from '../stores/stdStore.js';
+import { useMachineStore } from '../stores/machineStore.js';
 import { useLibraryStore } from '../stores/libraryStore.js';
 import {
   saveProject, saveProjectAs, canPickSaveLocation, currentProjectFileName, openProjectFile, openProgramFile,
@@ -164,6 +165,9 @@ export function buildMenuItems(ctx) {
         { key: 'std', label: 'Standard cutting speeds…', disabled: !hasProgram },
         { key: 'std-restore', label: 'Restore program', disabled: !canRestore },
         { key: 'std-edit', label: 'Edit standard…' },
+        { type: 'divider' },
+        { key: 'machines', label: 'Machines…' },
+        { key: 'work-offsets', label: 'Work offsets…' },
       ],
     },
     {
@@ -253,6 +257,7 @@ export default function MenuBar({
   const checkStd = useStdStore((s) => s.check);
   const restoreStd = useStdStore((s) => s.restore);
   const openStdEditor = useStdStore((s) => s.openEditor);
+  const openMachines = useMachineStore((s) => s.openEditor);
 
   const fileInput = useRef(null);
   const projectInput = useRef(null);
@@ -339,6 +344,8 @@ export default function MenuBar({
     if (key === 'std') { checkStd({ manual: true }); return; }
     if (key === 'std-restore') { restoreStd(); return; }
     if (key === 'std-edit') { openStdEditor(); return; }
+    if (key === 'machines') { openMachines(); return; }
+    if (key === 'work-offsets') { useCamPlanStore.getState().openWorkOffsets(); return; }
     if (key === 'setup') { onOpenSetup(); return; }
     if (key === 'tree') { setTreeOpen(!treeOpen); return; }
     if (key === 'controls') {

@@ -1184,7 +1184,7 @@ export default function App() {
                           min={0.05}
                           step={0.1}
                           value={cellSize}
-                          onChange={(v) => setTool({ cellSize: v || 0.5 })}
+                          onChange={(v) => setTool({ cellSize: v || 1 })}
                           style={{ width: 70 }}
                           // A run that carved at something other than this
                           // number says so, rather than leaving the operator to
@@ -1209,7 +1209,7 @@ export default function App() {
                           min={0.5}
                           step={0.5}
                           value={voxelSize}
-                          onChange={(v) => setTool({ voxelSize: v || 1 })}
+                          onChange={(v) => setTool({ voxelSize: v || 2 })}
                           style={{ width: 70 }}
                         />
                       </Tooltip>

@@ -119,8 +119,8 @@ export const useCamStore = create((set, get) => ({
   // than what it cuts. null = the type's own (just under the cutting diameter).
   toolShank: null,
   toolType: 'flat',
-  cellSize: 0.5,
-  voxelSize: 1,        // voxel sim resolution (mm) — coarser than the dexel cell
+  cellSize: 1,
+  voxelSize: 2,         // voxel sim resolution (mm) — coarser than the dexel cell
   // What the last voxel run actually carved at, and whether the grid budget
   // (not the cutter) decided it. The requested size is only a request: a cut is
   // rounded out to whole voxels, so a thin cutting body forces a finer grid —

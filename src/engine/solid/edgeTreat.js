@@ -809,15 +809,15 @@ export function pickTreatEdge(welded, point, tolerance, edges) {
       // Not round one flat face: fall back to the straight run under the click.
     }
   }
-  const ref = { type: 'line', a: [...pts[first]], b: [...pts[last + 1]] };
-  try {
-    const f = lineEdgeFrame(welded, ref);
-    return {
-      ...ref, a: f.a, b: f.b, n1: f.n1, n2: f.n2,
-    };
-  } catch {
-    return null;
-  }
+  // The two faces from the run's own first segment — looked up, not searched for:
+  // this runs on every pointer move over the part.
+  const tris = edgeTriangles(welded).get(pairKey(pts[first], pts[first + 1])) || [];
+  if (tris.length !== 2) return null;
+  const [n1, n2] = tris.map(normalOf);
+  if (dot(n1, n2) > 0.985) return null;
+  return {
+    type: 'line', a: [...pts[first]], b: [...pts[last + 1]], n1, n2,
+  };
 }
 
 function nearestOnSegment(a, b, q) {

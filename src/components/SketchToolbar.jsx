@@ -55,6 +55,8 @@ const Arc3Icon = skGlyph(<><path d="M4 17A9 9 0 0 1 20 17" /><circle cx="4" cy="
 const TangentArcIcon = skGlyph(<><path d="M3 18h8" /><path d="M11 18a7 7 0 0 0 7-7V5" /><circle cx="11" cy="18" r="1.8" fill="currentColor" /></>);
 // Extend: a short line with an arrow running on to a wall.
 const ExtendIcon = glyph(<><path d="M20 4v16" stroke={INK.sketch} /><path d="M3 12h6" stroke={INK.sketch} /><path d="M9 12h8M14.5 9.5L17 12l-2.5 2.5" stroke={INK.go} strokeDasharray="2 1.5" /></>);
+// Convert Entities: a part's edge (solid) copied up into the sketch (sketch blue).
+const ConvertIcon = glyph(<><path d="M3 15l7-3.5 11 4-7 3.5z" fill={INK.body} /><path d="M3 15l7-3.5 11 4" stroke={INK.sketch} strokeWidth="2.2" /><path d="M12 9V3M9.5 5.5L12 3l2.5 2.5" stroke={INK.go} strokeWidth="2" /></>);
 const TrimIcon = glyph(<><circle cx="6" cy="7" r="2.4" stroke={INK.cut} /><circle cx="6" cy="17" r="2.4" stroke={INK.cut} /><path d="M8 8.4L20 16M8 15.6L20 8" /></>);
 const ChamferIcon = glyph(<><path d="M5 20V10M11 4H20" stroke={INK.sketch} /><path d="M5 10L11 4" stroke={INK.cut} strokeWidth="2.6" /></>);
 // Sketch-modify tools (SolidWorks keeps these on the Sketch tab, not with relations).
@@ -778,6 +780,8 @@ export default function SketchToolbar({ ribbonSlot = null }) {
   const sketchOpen = useSketchStore((s) => s.sketchOpen);
   const startSketch = useFeatureStore((s) => s.startSketch);
   const setFacePick = useSketchStore((s) => s.setFacePick);
+  const convertPick = useSketchStore((s) => s.convertPick);
+  const setConvertPick = useSketchStore((s) => s.setConvertPick);
   const activePlane = useSketchStore((s) => (s.sketches.find((x) => x.id === s.activeId) ?? s.sketches[0])?.plane);
   const hasPart = useCamPlanStore((s) => Boolean(s.analysis));
   const normalTo = useCamStore((s) => s.normalTo);
@@ -971,6 +975,20 @@ export default function SketchToolbar({ ribbonSlot = null }) {
           label="Paste"
           disabled={!clipboard}
           onClick={() => paste()}
+        />
+      </Tooltip>
+      <Tooltip
+        title={hasPart
+          ? (convertPick ? 'Click an edge of the part, or a face for its whole outline · Esc to finish' : 'Convert Entities — copy edges of the part into this sketch')
+          : 'Build or import a part first'}
+        placement="bottom"
+      >
+        <RibbonButton
+          icon={<ConvertIcon />}
+          label="Convert Entities"
+          active={convertPick}
+          disabled={!hasPart}
+          onClick={() => setConvertPick(!convertPick)}
         />
       </Tooltip>
 

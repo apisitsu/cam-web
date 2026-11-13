@@ -446,3 +446,27 @@ describe('Center Rectangle, 3-Point Arc, Tangent Arc and Extend from clicks', ()
     expect(store().error).toMatch(/Nothing lies ahead/);
   });
 });
+
+describe('Convert Entities into the open sketch', () => {
+  it('adds the chains, selects them, and can be undone', () => {
+    store().clear();
+    const before = store().sk.entities.size;
+    const ids = store().convertEntities([
+      { points: [[0, 0, 0], [30, 0, 0], [30, 20, 0], [0, 20, 0]], closed: true },
+    ]);
+    expect(ids).toHaveLength(4);
+    expect(store().selection).toEqual(ids);
+    expect(sketchLoops(store().sk).loops).toHaveLength(1);
+    store().undo();
+    expect(store().sk.entities.size).toBe(before);
+  });
+
+  it('turns Sketch on Face off when it is turned on, and the other way round', () => {
+    store().setFacePick(true);
+    store().setConvertPick(true);
+    expect(store().facePick).toBe(false);
+    store().setFacePick(true);
+    expect(store().convertPick).toBe(false);
+    store().setFacePick(false);
+  });
+});

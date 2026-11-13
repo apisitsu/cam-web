@@ -363,6 +363,7 @@ export default function SketchLayer() {
   const activeId = useSketchStore((s) => s.activeId);
   const tool = useSketchStore((s) => s.tool);
   const facePick = useSketchStore((s) => s.facePick);
+  const convertPick = useSketchStore((s) => s.convertPick);
   const sketchOpen = useSketchStore((s) => s.sketchOpen);
   const measuring = useMeasureStore((s) => s.active);
   const selection = useSketchStore((s) => s.selection);
@@ -519,6 +520,7 @@ export default function SketchLayer() {
       if (!useSketchStore.getState().sketchOpen) return;
       if (e.key === 'Escape') {
         if (useSketchStore.getState().facePick) useSketchStore.getState().setFacePick(false);
+        if (useSketchStore.getState().convertPick) useSketchStore.getState().setConvertPick(false);
         cancelPending();
         cancelBoxSelect();
         clearDimSelect();
@@ -565,7 +567,7 @@ export default function SketchLayer() {
 
   // While Sketch on Face waits for a face, or Measure for a click, the clicks are
   // the part's: the sketch neither draws nor picks, or it would take them first.
-  const inert = facePick || measuring || !sketchOpen;
+  const inert = facePick || convertPick || measuring || !sketchOpen;
   const drawing = !inert && (tool === 'point' || tool === 'line' || tool === 'rectangle'
     || tool === 'circle' || tool === 'arc' || tool === 'slot' || tool === 'polygon'
     || tool === 'centerRect' || tool === 'arc3' || tool === 'tangentArc');

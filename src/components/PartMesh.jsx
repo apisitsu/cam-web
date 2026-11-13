@@ -33,7 +33,7 @@ import { useMeasureStore } from '../stores/measureStore.js';
 import { useEdgeTreatStore } from '../stores/edgeTreatStore.js';
 import { pickTreatEdge } from '../engine/solid/edgeTreat.js';
 import { isSketchableFace } from '../engine/mesh/sketchFace.js';
-import { featureAtPoint } from '../engine/mesh/pickEdge.js';
+import { featureAtPoint, edgeAtPoint } from '../engine/mesh/pickEdge.js';
 import { circlesAt, nearestCircle } from '../engine/mesh/circlePick.js';
 import { originMarkerSize, rotaryAxisLength } from '../engine/view/originMarker.js';
 import { creaseNormals } from '../engine/view/creaseNormals.js';
@@ -363,6 +363,8 @@ export function SketchPart({ meshVer, visible = true }) {
   const sketchOpen = useSketchStore((s) => s.sketchOpen);
   const measuring = useMeasureStore((s) => s.active);
   const treating = useEdgeTreatStore((s) => Boolean(s.active));
+  const converting = useSketchStore((s) => s.sketchOpen && s.convertPick);
+  const [convertHover, setConvertHover] = useState(null);
   // With no sketch open, a click on a face starts one, as a click on a plane does.
   const facePick = !treating && (armed || (!sketchOpen && !measuring));
   const addMeasure = useMeasureStore((s) => s.add);
@@ -384,6 +386,7 @@ export function SketchPart({ meshVer, visible = true }) {
     return () => highlight.geometry.dispose();
   }, [highlight]);
   useEffect(() => { if (!facePick) setHover(null); }, [facePick]);
+  useEffect(() => { if (!converting) setConvertHover(null); }, [converting]);
 
   if (!geometry || !visible) return null;
 
@@ -418,6 +421,34 @@ export function SketchPart({ meshVer, visible = true }) {
       event.stopPropagation();
       const ref = edgeUnder(event);
       if (ref) useEdgeTreatStore.getState().toggleEdge(ref);
+    },
+  } : {};
+  // Convert Entities: the edge under the cursor, else the outline of the face.
+  const convertUnder = (event) => {
+    const { welded } = getRawMesh();
+    if (!welded) return null;
+    const detected = detectFeatures(welded);
+    const tol = event.camera?.zoom ? 8 / event.camera.zoom : undefined;
+    const edge = edgeAtPoint(detected.edges, event.point.toArray(), tol);
+    if (edge) return { key: `e${edge.id}`, chains: [{ points: edge.points, closed: edge.closed }] };
+    const face = faceOfTriangle(detected, event.faceIndex);
+    if (face && isSketchableFace(welded, face)) {
+      return { key: `f${face.id}`, chains: face.loops.map((points) => ({ points, closed: true })) };
+    }
+    return null;
+  };
+  const convert = converting ? {
+    onPointerMove: (event) => {
+      event.stopPropagation();
+      const hit = convertUnder(event);
+      if ((hit?.key ?? null) !== (convertHover?.key ?? null)) setConvertHover(hit);
+    },
+    onPointerOut: () => setConvertHover(null),
+    onClick: (event) => {
+      if (event.delta > CLICK_SLOP) return;
+      event.stopPropagation();
+      const hit = convertUnder(event);
+      if (hit) useSketchStore.getState().convertEntities(hit.chains);
     },
   } : {};
   const measure = measuring && !facePick && !treating ? {
@@ -460,9 +491,11 @@ export function SketchPart({ meshVer, visible = true }) {
         {...measure}
         {...pick}
         {...treat}
+        {...convert}
       >
         <meshStandardMaterial color={PART_COLOR} metalness={0.1} roughness={0.65} side={THREE.DoubleSide} />
       </mesh>
+      {converting && convertHover && <ChainMarks chains={convertHover.chains} />}
       {highlight?.kind === 'face' && (
         <mesh geometry={highlight.geometry}>
           <meshBasicMaterial
@@ -470,6 +503,35 @@ export function SketchPart({ meshVer, visible = true }) {
           />
         </mesh>
       )}
+    </group>
+  );
+}
+
+/** Polylines drawn over everything in the hover colour — what Convert Entities would take. */
+function ChainMarks({ chains }) {
+  const bounds = useCamPlanStore((s) => s.analysis?.bounds);
+  const size = originMarkerSize(bounds);
+  const bars = useMemo(() => {
+    const out = [];
+    for (const { points, closed } of chains) {
+      const pts = closed ? [...points, points[0]] : points;
+      for (let i = 1; i < pts.length; i++) {
+        const a = pts[i - 1];
+        const b = pts[i];
+        const length = Math.hypot(b[0] - a[0], b[1] - a[1], b[2] - a[2]);
+        if (length > 1e-9) out.push(edgeMarkerGeometry({ a, b, length }, size * 0.012));
+      }
+    }
+    return out;
+  }, [chains, size]);
+  useEffect(() => () => bars.forEach((g) => g.dispose()), [bars]);
+  return (
+    <group name="convert-marks">
+      {bars.map((g) => (
+        <mesh key={g.uuid} geometry={g} renderOrder={12} raycast={() => null}>
+          <meshBasicMaterial color={CAD.skHover} depthTest={false} depthWrite={false} />
+        </mesh>
+      ))}
     </group>
   );
 }

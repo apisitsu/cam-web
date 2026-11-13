@@ -37,6 +37,7 @@ import { buildSlot, buildPolygon, axisDistance } from '../engine/sketch/shapes.j
 import {
   buildCenterRectangle, buildArc3, buildTangentArc, extendLine,
 } from '../engine/sketch/drawTools.js';
+import { convertChains } from '../engine/sketch/convert.js';
 import { combineRegions } from '../engine/solid/regionBoolean.js';
 import {
   partReferences, pickPartRef, placePartRef, dropUnusedPartRefs, followPartRefs,
@@ -460,7 +461,7 @@ export const useSketchStore = create((set, get) => ({
 
   setTool(tool) {
     set({
-      tool, pending: null, pending2: null, pendingFrom: null, cursor: null, snap: null, axisSnap: null, lineAngle: null, hoverId: null, error: null, dimensionPending: null, editingConstraint: null, offsetPending: false, linearPatternPending: false, circularPatternPending: false, mirrorPending: false, partRefHover: null, facePick: false, boxSelect: null, _boxStart: null, selectedDims: [], contextMenu: null,
+      tool, pending: null, pending2: null, pendingFrom: null, convertPick: false, cursor: null, snap: null, axisSnap: null, lineAngle: null, hoverId: null, error: null, dimensionPending: null, editingConstraint: null, offsetPending: false, linearPatternPending: false, circularPatternPending: false, mirrorPending: false, partRefHover: null, facePick: false, boxSelect: null, _boxStart: null, selectedDims: [], contextMenu: null,
     });
   },
 
@@ -470,8 +471,35 @@ export const useSketchStore = create((set, get) => ({
    */
   setFacePick(on) {
     set({
-      facePick: on, pending: null, pending2: null, boxSelect: null, _boxStart: null, error: null,
+      facePick: on, convertPick: false, pending: null, pending2: null, boxSelect: null, _boxStart: null, error: null,
     });
+  },
+
+  /**
+   * Convert Entities: while on, a click on the part copies the edge (or the
+   * outline of the face) under it into the open sketch.
+   */
+  convertPick: false,
+  setConvertPick(on) {
+    set({
+      convertPick: on, facePick: false, pending: null, pending2: null, boxSelect: null, _boxStart: null, error: null,
+    });
+  },
+
+  /** Copy part edges — `{points, closed}` 3D chains in the part's frame — into the open sketch. */
+  convertEntities(chains) {
+    const entry = get().activeSketch();
+    if (!entry || !chains?.length) return [];
+    get()._snapshot();
+    const ids = convertChains(get().sk, entry.plane, chains);
+    if (!ids.length) {
+      get()._undoSnapshot();
+      set({ error: 'Nothing on that edge could be brought into the sketch.' });
+      return [];
+    }
+    set({ error: null, selection: ids });
+    get()._bump();
+    return ids;
   },
 
   /** Show a message on the sketcher's error line (used by save/open failures). */

@@ -131,3 +131,32 @@ describe('buildSolid / mergeSoups', () => {
     expect(typeof soup.format).toBe('string');
   });
 });
+
+describe('extrudeRegion — draft', () => {
+  const frustum = (a, b, h) => (h / 3) * (a * a + b * b + a * b);
+
+  it('leans the walls in: a square becomes a closed frustum, either direction', () => {
+    const t = Math.tan((10 * Math.PI) / 180) * 10;
+    for (const depth of [10, -10]) {
+      const soup = extrudeRegion({ outer: square(0, 0, 20, 20) }, { depth, draft: 10 });
+      expect(isClosed(soup)).toBe(true);
+      expect(signedVolume(soup)).toBeCloseTo(frustum(20, 20 - 2 * t, 10), 3);
+    }
+  });
+
+  it('grows a hole as the outside shrinks, and a negative draft leans out', () => {
+    const t = Math.tan((5 * Math.PI) / 180) * 10;
+    const soup = extrudeRegion(
+      { outer: square(0, 0, 40, 40), holes: [[10, 10, 10, 30, 30, 30, 30, 10]] },
+      { depth: 10, draft: 5 },
+    );
+    expect(isClosed(soup)).toBe(true);
+    expect(signedVolume(soup)).toBeCloseTo(frustum(40, 40 - 2 * t, 10) - frustum(20, 20 + 2 * t, 10), 3);
+    const out = extrudeRegion({ outer: square(0, 0, 20, 20) }, { depth: 10, draft: -10 });
+    expect(bounds(out).max[0]).toBeGreaterThan(20);
+  });
+
+  it('refuses a draft so steep the profile closes up', () => {
+    expect(() => extrudeRegion({ outer: square(0, 0, 4, 4) }, { depth: 20, draft: 30 })).toThrow(/too steep/);
+  });
+});

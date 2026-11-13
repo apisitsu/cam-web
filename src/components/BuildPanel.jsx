@@ -122,6 +122,7 @@ export default function BuildPanel({ trigger, preset }) {
   const op = preset?.op ?? chosenOp;
   const [depth, setDepth] = useState(10);
   const [end, setEnd] = useState('blind');
+  const [draft, setDraft] = useState(0);
   // `null` until pressed: until then the extrude runs the way its kind wants to,
   // a cut into the part and a boss out of it (`defaultReverse`).
   const [reverseChoice, setReverse] = useState(null);
@@ -171,7 +172,7 @@ export default function BuildPanel({ trigger, preset }) {
       const shape = op === 'revolve'
         ? { op, ...axisFromValue(axis), angle: (angle * Math.PI) / 180 }
         : {
-          op, depth, end, reverse,
+          op, depth, end, reverse, draft,
         };
       await build({ ...shape, combine: combineOp, merge: mergeOp });
     } finally {
@@ -217,6 +218,19 @@ export default function BuildPanel({ trigger, preset }) {
               />
             </Tooltip>
           )}
+          <Tooltip title="Draft: the walls lean in by this angle going away from the sketch (negative leans out)">
+            <InputNumber
+              size="small"
+              value={draft}
+              onChange={(v) => setDraft(Number(v) || 0)}
+              addonBefore="Draft"
+              addonAfter="°"
+              min={-60}
+              max={60}
+              style={{ width: '100%' }}
+              data-extrude-draft
+            />
+          </Tooltip>
           {/* A cut pointing away from the part removes nothing, so which way it
               runs is chosen for it — and said, with the button to turn it round. */}
           {end !== 'mid' && (

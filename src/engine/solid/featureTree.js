@@ -237,6 +237,8 @@ export function createFeature(kind, props = {}) {
     // How far an extrude runs (SolidWorks' end condition) and which way.
     end: END_CONDITIONS[props.end] ? props.end : 'blind',
     reverse: !!props.reverse,
+    // Extrude only: walls leaning in by this many degrees (negative leans out).
+    draft: Number.isFinite(props.draft) && Math.abs(props.draft) < 89 ? props.draft : 0,
     axis: props.axis === 'y' ? 'y' : 'x',
     // A centerline on the sketch to turn about, by its line id. When set it wins
     // over `axis`, which then only says what to fall back to.
@@ -300,6 +302,7 @@ function makeFeatureSolid(feature, {
     plane,
     depth: span.depth,
     base: span.base,
+    draft: feature.kind === 'extrude' ? feature.draft : 0,
     axis: feature.axis,
     angle: feature.angle,
     segments: feature.segments ?? undefined,
@@ -573,7 +576,8 @@ export function describeFeature(f, sketchName) {
     return `Revolve ${deg}° about ${about}${where}${how}`;
   }
   const back = f.reverse ? ', reversed' : '';
-  if (f.end === 'through') return `Extrude through all${back}${where}${how}`;
+  const drafted = f.draft ? `, draft ${f.draft}°` : '';
+  if (f.end === 'through') return `Extrude through all${back}${drafted}${where}${how}`;
   if (f.end === 'mid') return `Extrude ${Math.abs(f.depth)} mm mid plane${where}${how}`;
-  return `Extrude ${f.depth} mm${back}${f.base ? ` from ${f.base}` : ''}${where}${how}`;
+  return `Extrude ${f.depth} mm${back}${f.base ? ` from ${f.base}` : ''}${drafted}${where}${how}`;
 }

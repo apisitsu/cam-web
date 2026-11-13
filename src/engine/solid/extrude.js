@@ -81,6 +81,65 @@ function walls(loop, at, z0, z1, out) {
   }
 }
 
+/** Side walls between a loop at `z0` and the same loop, moved, at `z1` (a draft). */
+function taperedWalls(loop0, loop1, at, z0, z1, out) {
+  const n = loop0.length / 2;
+  for (let i = 0; i < n; i++) {
+    const j = (i + 1) % n;
+    out.quad(
+      at(loop0[i * 2], loop0[i * 2 + 1], z0),
+      at(loop0[j * 2], loop0[j * 2 + 1], z0),
+      at(loop1[j * 2], loop1[j * 2 + 1], z1),
+      at(loop1[i * 2], loop1[i * 2 + 1], z1),
+    );
+  }
+}
+
+const loopArea = (loop) => {
+  let a = 0;
+  for (let i = 0, n = loop.length / 2; i < n; i++) {
+    const j = (i + 1) % n;
+    a += loop[i * 2] * loop[j * 2 + 1] - loop[j * 2] * loop[i * 2 + 1];
+  }
+  return a / 2;
+};
+
+/**
+ * A loop moved `d` into the material at every vertex along its mitre — the
+ * profile a drafted wall reaches at the far end. Outer loops are counter-clockwise
+ * and holes clockwise, so the same rule shrinks an outer and grows a hole. Vertex
+ * for vertex, so the walls join it quad by quad. Throws when an edge would turn
+ * round (the draft is too steep for the profile).
+ */
+export function draftLoop(loop, d) {
+  const n = loop.length / 2;
+  const P = (i) => [loop[((i + n) % n) * 2], loop[((i + n) % n) * 2 + 1]];
+  const normal = (a, b) => {
+    const dx = b[0] - a[0]; const dy = b[1] - a[1];
+    const l = Math.hypot(dx, dy) || 1;
+    return [dy / l, -dx / l];
+  };
+  const out = new Array(loop.length);
+  for (let i = 0; i < n; i++) {
+    const n1 = normal(P(i - 1), P(i));
+    const n2 = normal(P(i), P(i + 1));
+    const k = 1 + n1[0] * n2[0] + n1[1] * n2[1];
+    const m = k > 1e-6 ? [(n1[0] + n2[0]) / k, (n1[1] + n2[1]) / k] : n1;
+    out[i * 2] = P(i)[0] - d * m[0];
+    out[i * 2 + 1] = P(i)[1] - d * m[1];
+  }
+  for (let i = 0; i < n; i++) {
+    const j = (i + 1) % n;
+    const ex = loop[j * 2] - loop[i * 2]; const ey = loop[j * 2 + 1] - loop[i * 2 + 1];
+    const fx = out[j * 2] - out[i * 2]; const fy = out[j * 2 + 1] - out[i * 2 + 1];
+    if (ex * fx + ey * fy <= 0) throw new Error('The draft is too steep for this profile — an edge would vanish. Make it smaller or the extrude shorter.');
+  }
+  if (Math.sign(loopArea(out)) !== Math.sign(loopArea(loop))) {
+    throw new Error('The draft is too steep for this profile — it closes up before the far end.');
+  }
+  return out;
+}
+
 /**
  * Extrude one region — an outer loop and its holes — into a solid slab.
  *
@@ -92,7 +151,9 @@ function walls(loop, at, z0, z1, out) {
  * @param {{depth:number, plane?:object, base?:number}} opts
  *   `base` lifts the whole slab off the plane (a boss standing on a face).
  */
-export function extrudeRegion(region, { depth, plane, base = 0 } = {}) {
+export function extrudeRegion(region, {
+  depth, plane, base = 0, draft = 0,
+} = {}) {
   if (!region?.outer || region.outer.length < 6) {
     throw new Error('That profile has no closed outer boundary to extrude.');
   }
@@ -110,6 +171,35 @@ export function extrudeRegion(region, { depth, plane, base = 0 } = {}) {
   const lo = base + Math.min(0, depth);
   const hi = base + Math.max(0, depth);
   const V = (i, h) => at(vertices[i * 2], vertices[i * 2 + 1], h);
+
+  // Draft: the walls lean in by `draft` degrees, so the profile at the far end
+  // (away from the plane) is the sketch moved into the material; a negative
+  // draft leans them out.
+  if (draft) {
+    const d = Math.abs(depth) * Math.tan((draft * Math.PI) / 180);
+    const loops = [region.outer, ...holes];
+    const far = loops.map((l) => draftLoop(l, d));
+    const t = triangulate(far[0], far.slice(1));
+    if (!t.indices.length) throw new Error('The drafted end could not be triangulated — make the draft smaller.');
+    const up = depth > 0;
+    const nearH = up ? lo : hi;
+    const farH = up ? hi : lo;
+    const Vf = (i) => at(t.vertices[i * 2], t.vertices[i * 2 + 1], farH);
+    for (let k = 0; k < indices.length; k += 3) {
+      const [a, b, c] = [indices[k], indices[k + 1], indices[k + 2]];
+      if (up) out.tri(V(c, nearH), V(b, nearH), V(a, nearH));
+      else out.tri(V(a, nearH), V(b, nearH), V(c, nearH));
+    }
+    for (let k = 0; k < t.indices.length; k += 3) {
+      const [a, b, c] = [t.indices[k], t.indices[k + 1], t.indices[k + 2]];
+      if (up) out.tri(Vf(a), Vf(b), Vf(c));
+      else out.tri(Vf(c), Vf(b), Vf(a));
+    }
+    loops.forEach((l, i) => (up
+      ? taperedWalls(l, far[i], at, lo, hi, out)
+      : taperedWalls(far[i], l, at, lo, hi, out)));
+    return out.build('extrude');
+  }
 
   for (let k = 0; k < indices.length; k += 3) {
     const [a, b, c] = [indices[k], indices[k + 1], indices[k + 2]];

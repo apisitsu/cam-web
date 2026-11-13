@@ -196,6 +196,19 @@ function FeatureEditor({ feature }) {
                 />
               </Tooltip>
             )}
+            <Tooltip title="Draft: walls lean in by this angle away from the sketch (negative leans out)">
+              <InputNumber
+                size="small"
+                value={feature.draft}
+                min={-60}
+                max={60}
+                onChange={(v) => update(feature.id, { draft: Number(v) || 0 })}
+                addonBefore="∠"
+                addonAfter="°"
+                style={{ width: 104 }}
+                data-feature-draft
+              />
+            </Tooltip>
             {feature.end !== 'mid' && (
               <Tooltip title="Run the other way along the plane's normal">
                 <Button

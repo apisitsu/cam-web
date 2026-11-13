@@ -23,6 +23,7 @@ import { PLANE_PRESETS, planeBasis } from '../engine/sketch/plane.js';
 import { useFeatureStore } from '../stores/featureStore.js';
 import RibbonButton from './RibbonButton.jsx';
 import SketchesPanel from './SketchesPanel.jsx';
+import TextPrompt from './TextPrompt.jsx';
 import BuildPanel from './BuildPanel.jsx';
 // The helper this rail introduced now serves the whole app — see `glyph.jsx`.
 import { glyph, skGlyph, INK } from './glyph.jsx';
@@ -53,6 +54,8 @@ const CenterRectIcon = skGlyph(<><rect x="4.5" y="6.5" width="15" height="11" />
 const Arc3Icon = skGlyph(<><path d="M4 17A9 9 0 0 1 20 17" /><circle cx="4" cy="17" r="1.8" fill="currentColor" /><circle cx="20" cy="17" r="1.8" fill="currentColor" /><circle cx="12" cy="8" r="1.8" fill="currentColor" /></>);
 // Tangent Arc: a line running straight on into a curve.
 const TangentArcIcon = skGlyph(<><path d="M3 18h8" /><path d="M11 18a7 7 0 0 0 7-7V5" /><circle cx="11" cy="18" r="1.8" fill="currentColor" /></>);
+// Text: a single-stroke "A" with a baseline.
+const TextIcon = skGlyph(<><path d="M5 18L12 4l7 14M8 12.5h8" /><path d="M3 21h18" opacity="0.5" /></>);
 // Extend: a short line with an arrow running on to a wall.
 const ExtendIcon = glyph(<><path d="M20 4v16" stroke={INK.sketch} /><path d="M3 12h6" stroke={INK.sketch} /><path d="M9 12h8M14.5 9.5L17 12l-2.5 2.5" stroke={INK.go} strokeDasharray="2 1.5" /></>);
 // Convert Entities: a part's edge (solid) copied up into the sketch (sketch blue).
@@ -94,6 +97,7 @@ const TOOLS = [
   { value: 'tangentArc', label: 'Tangent Arc', Icon: TangentArcIcon, hint: 'Click the end of a line or arc, then where the arc should end · it leaves tangent and stays tangent' },
   { value: 'dimension', label: 'Dimension', Icon: DimIcon, hint: 'Pick 1 pt (to origin) / 2 pts / 1 line / 1 circle / 1 arc / pt+line / 2 lines (gap or angle) / line+circle / 2 circles, or an edge or corner of the part — set value, or click empty space to apply' },
   { value: 'trim', label: 'Trim', Icon: TrimIcon, hint: 'Click a line, circle or arc to trim it at its intersections' },
+  { value: 'text', label: 'Text', Icon: TextIcon, hint: 'Click where the text starts (bottom-left), then type it · single-stroke letters for engraving: A–Z, 0–9 and - . , : / # + = ( ) _' },
   { value: 'extend', label: 'Extend', Icon: ExtendIcon, hint: 'Click a line near the end to run it on to the next line, circle or arc it meets' },
   { value: 'chamfer', label: 'Chamfer / Fillet', Icon: ChamferIcon, hint: 'Click the two elements that share a corner (2 lines, or a line + arc / 2 arcs), choose C (chamfer) or R (fillet — the only option when a curve is involved), then type the size' },
 ];
@@ -1100,6 +1104,7 @@ export default function SketchToolbar({ ribbonSlot = null }) {
     <MirrorInput />
     <LinearPatternInput />
     <CircularPatternInput />
+    <TextPrompt />
     </>
   );
 }

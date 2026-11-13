@@ -38,6 +38,8 @@ import {
   buildCenterRectangle, buildArc3, buildTangentArc, extendLine,
 } from '../engine/sketch/drawTools.js';
 import { convertChains } from '../engine/sketch/convert.js';
+import { sketchStrokes } from '../engine/sketch/strokes.js';
+import { buildText, unsupportedChars } from '../engine/sketch/text.js';
 import { combineRegions } from '../engine/solid/regionBoolean.js';
 import {
   partReferences, pickPartRef, placePartRef, dropUnusedPartRefs, followPartRefs,
@@ -461,7 +463,7 @@ export const useSketchStore = create((set, get) => ({
 
   setTool(tool) {
     set({
-      tool, pending: null, pending2: null, pendingFrom: null, convertPick: false, cursor: null, snap: null, axisSnap: null, lineAngle: null, hoverId: null, error: null, dimensionPending: null, editingConstraint: null, offsetPending: false, linearPatternPending: false, circularPatternPending: false, mirrorPending: false, partRefHover: null, facePick: false, boxSelect: null, _boxStart: null, selectedDims: [], contextMenu: null,
+      tool, pending: null, pending2: null, pendingFrom: null, convertPick: false, textPending: null, cursor: null, snap: null, axisSnap: null, lineAngle: null, hoverId: null, error: null, dimensionPending: null, editingConstraint: null, offsetPending: false, linearPatternPending: false, circularPatternPending: false, mirrorPending: false, partRefHover: null, facePick: false, boxSelect: null, _boxStart: null, selectedDims: [], contextMenu: null,
     });
   },
 
@@ -479,6 +481,26 @@ export const useSketchStore = create((set, get) => ({
    * Convert Entities: while on, a click on the part copies the edge (or the
    * outline of the face) under it into the open sketch.
    */
+  /** Text tool: where the click landed, waiting for the words (TextPrompt). */
+  textPending: null,
+  cancelText() { set({ textPending: null }); },
+
+  /** Write a line of engraving text at the clicked spot. */
+  placeText({ text, height = 5, angle = 0 } = {}) {
+    const at = get().textPending;
+    if (!at || !String(text ?? '').trim()) { set({ textPending: null }); return []; }
+    const bad = unsupportedChars(text);
+    get()._snapshot();
+    const ids = buildText(get().sk, text, { x: at.x, y: at.y, height, angle });
+    set({
+      textPending: null,
+      selection: ids,
+      error: bad.length ? `Not in the engraving font, left out: ${bad.join(' ')}` : null,
+    });
+    get()._bump();
+    return ids;
+  },
+
   convertPick: false,
   setConvertPick(on) {
     set({
@@ -577,7 +599,7 @@ export const useSketchStore = create((set, get) => ({
     // the pairwise scan is O(n²) and means nothing to select / dimension / trim.
     const placing = tool === 'point' || tool === 'line' || tool === 'rectangle'
       || tool === 'circle' || tool === 'arc' || tool === 'slot' || tool === 'polygon'
-      || tool === 'centerRect' || tool === 'arc3' || tool === 'tangentArc';
+      || tool === 'centerRect' || tool === 'arc3' || tool === 'tangentArc' || tool === 'text';
     if (!snap && placing) {
       const xn = nearestIntersection(sk, x, y, tol);
       if (xn) snap = { x: xn.x, y: xn.y, intersection: true, of: xn.ids };
@@ -1059,6 +1081,9 @@ export const useSketchStore = create((set, get) => ({
         get().solve();
         return;
       }
+    } else if (tool === 'text') {
+      // Text: the click is the bottom-left of the first letter; TextPrompt asks for the words.
+      set({ textPending: { x, y }, error: null });
     } else if (tool === 'extend') {
       // Extend: click a line near the end to run on to the next thing it meets.
       const lineHit = hitTestLine(sk, x, y, tol);
@@ -2275,5 +2300,6 @@ registerSketchSource(() => {
     name: s.name,
     plane: s.plane,
     regions: sketchRegions(s.id === activeId ? sk : s.doc).regions,
+    strokes: sketchStrokes(s.id === activeId ? sk : s.doc),
   }));
 });

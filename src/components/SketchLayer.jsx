@@ -570,7 +570,7 @@ export default function SketchLayer() {
   const inert = facePick || convertPick || measuring || !sketchOpen;
   const drawing = !inert && (tool === 'point' || tool === 'line' || tool === 'rectangle'
     || tool === 'circle' || tool === 'arc' || tool === 'slot' || tool === 'polygon'
-    || tool === 'centerRect' || tool === 'arc3' || tool === 'tangentArc');
+    || tool === 'centerRect' || tool === 'arc3' || tool === 'tangentArc' || tool === 'text');
   // Geometry is clickable in select/dimension (pick), trim (cut) and chamfer
   // (pick two lines) modes.
   const picking = !inert && (tool === 'select' || tool === 'dimension' || tool === 'trim' || tool === 'chamfer' || tool === 'extend');

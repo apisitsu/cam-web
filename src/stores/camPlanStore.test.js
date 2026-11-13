@@ -1335,12 +1335,29 @@ describe('camPlanStore — checking the cut, and steps from a sketch', () => {
       id: 5, name: 'Slot', plane: { preset: 'XY', offset: 5 }, regions: [{ outer: [-6, -4, 6, -4, 6, 4, -6, 4] }],
     }]);
     await store().loadStl(stlFile(box(30, 20, 10)));
-    expect(store().sketchList()).toEqual([{ id: 5, name: 'Slot', closed: true }]);
+    expect(store().sketchList()).toEqual([{ id: 5, name: 'Slot', closed: true, drawn: false }]);
     await store().addSketchStep('pocket', 5, { depth: 2 });
     expect(store().plan.steps.map((s) => s.kind)).toEqual(['pocket']);
     await checked();
     expect(store().verification.ok).toBe(false);
     expect(store().verification.gouge.max).toBeCloseTo(2, 1);
+  });
+
+  it('engraves the strokes of a sketch a few tenths deep', async () => {
+    registerSketchSource(() => [{
+      id: 6,
+      name: 'Mark',
+      plane: { preset: 'XY', offset: 5 },
+      regions: [],
+      strokes: [{ points: [[-5, 0], [5, 0]], closed: false }, { points: [[0, -3], [0, 3]], closed: false }],
+    }]);
+    await store().loadStl(stlFile(box(30, 20, 10)));
+    expect(store().sketchList()).toEqual([{ id: 6, name: 'Mark', closed: false, drawn: true }]);
+    await store().addSketchStep('engrave', 6, { depth: 0.3 });
+    expect(store().plan.steps.map((s) => s.kind)).toEqual(['engrave']);
+    const feeds = store().plan.operations[0].moves.filter((m) => m.t === 'feed');
+    expect(feeds).toHaveLength(4);
+    feeds.forEach((m) => expect(m.z).toBeCloseTo(4.7, 6));
   });
 
   it('cuts the sketch as it is now when the plan is rebuilt', async () => {

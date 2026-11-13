@@ -54,7 +54,7 @@ function refreshSketchTargets(recipe) {
     return {
       ...e,
       target: {
-        ...e.target, name: s.name, plane: s.plane, regions: s.regions,
+        ...e.target, name: s.name, plane: s.plane, regions: s.regions, strokes: s.strokes,
       },
     };
   });
@@ -532,7 +532,9 @@ export const useCamPlanStore = create((set, get) => ({
 
   /** The sketches a pocket or profile can be cut from. */
   sketchList() {
-    return sketchSource().map((s) => ({ id: s.id, name: s.name, closed: s.regions.length > 0 }));
+    return sketchSource().map((s) => ({
+      id: s.id, name: s.name, closed: s.regions.length > 0, drawn: (s.strokes?.length ?? 0) > 0,
+    }));
   },
 
   /**
@@ -547,8 +549,8 @@ export const useCamPlanStore = create((set, get) => ({
     const s = sketchSource().find((x) => x.id === sketchId);
     if (!s || !_ctx) return null;
     return get().addPassSteps(kind, {
-      sketchId, name: s.name, plane: s.plane, regions: s.regions, depth, side,
-    }, { pass, leave });
+      sketchId, name: s.name, plane: s.plane, regions: s.regions, strokes: s.strokes, depth, side,
+    }, kind === 'engrave' ? {} : { pass, leave });
   },
 
   /** A pocket or profile on the outline of a flat face picked on the model. */

@@ -155,9 +155,12 @@ function ManualToolpath({
   const choices = meta ? targetChoices(meta.kind) : null;
   const chosen = choices?.find((c) => c.value === choice) ?? choices?.[0];
   const sketchStep = meta?.needs === 'sketch';
-  const sketches = sketchList().filter((s) => s.closed);
+  const engraving = meta?.kind === 'engrave';
+  const sketches = sketchList().filter((s) => (engraving ? s.drawn : s.closed));
   const sketch = sketches.find((s) => s.id === sketchId) ?? sketches[0];
-  const fromFace = sketchStep && source === 'face';
+  const fromFace = sketchStep && !engraving && source === 'face';
+  // Engraving is a few tenths deep, not a pocket's millimetres.
+  React.useEffect(() => { setDepth(engraving ? 0.3 : 5); }, [engraving]);
   const face = selectedFeature?.facing !== undefined ? selectedFeature : null;
 
   // Picking a face fills in the depth down to it; the operator can still change it.
@@ -170,7 +173,9 @@ function ManualToolpath({
 
   let blocked = null;
   if (choices && !chosen) blocked = 'This part has none of these.';
-  if (sketchStep && !fromFace && !sketch) blocked = 'Draw a closed profile in a sketch first — or use Face.';
+  if (sketchStep && !fromFace && !sketch) {
+    blocked = engraving ? 'Draw or write something in a sketch first.' : 'Draw a closed profile in a sketch first — or use Face.';
+  }
   if (fromFace && !face) blocked = 'Click a flat face on the model (or pick one in the list below).';
   if (fromFace && face && face.facing !== 'up') blocked = `That face points ${face.facing} — pick one facing the spindle.`;
 
@@ -206,13 +211,15 @@ function ManualToolpath({
         )}
         {sketchStep && (
           <>
-            <Segmented
-              size="small"
-              value={source}
-              onChange={setSource}
-              options={[{ value: 'sketch', label: 'Sketch' }, { value: 'face', label: 'Face' }]}
-              data-manual-source
-            />
+            {!engraving && (
+              <Segmented
+                size="small"
+                value={source}
+                onChange={setSource}
+                options={[{ value: 'sketch', label: 'Sketch' }, { value: 'face', label: 'Face' }]}
+                data-manual-source
+              />
+            )}
             {!fromFace && sketch && (
               <Select
                 size="small"
@@ -240,6 +247,7 @@ function ManualToolpath({
                 options={[{ value: 'outside', label: 'Outside' }, { value: 'inside', label: 'Inside' }]}
               />
             )}
+            {!engraving && (
             <Tooltip title="Rough leaves 0.2 mm for a finish pass (change it in the table). Rough + Finish adds both steps.">
               <Segmented
                 size="small"
@@ -253,6 +261,7 @@ function ManualToolpath({
                 data-manual-pass
               />
             </Tooltip>
+            )}
           </>
         )}
         <CommandButton

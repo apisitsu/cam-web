@@ -250,3 +250,76 @@ export function profileOp(shape, opts) {
       : `Cutter ${side} the profile, no finishing allowance`,
   ], { pass: pass ?? 'rough', stepdown: ap, leave: left });
 }
+
+/**
+ * A sketch's strokes (`sketchStrokes`) in the setup frame, for engraving.
+ *
+ * @param {{plane:object, strokes:{points:number[][], closed:boolean}[]}} sketch
+ * @returns {{z:number, paths:{points:number[], closed:boolean}[]}|{error:string}}
+ */
+export function strokesInFrame(sketch, toFrame) {
+  const at = (x, y) => toFrame(planeToWorld(sketch.plane, x, y));
+  const o = at(0, 0);
+  const u = at(1, 0).map((v, i) => v - o[i]);
+  const v = at(0, 1).map((w, i) => w - o[i]);
+  const nz = u[0] * v[1] - u[1] * v[0];
+  if (Math.abs(nz) < FLAT) return { error: 'The sketch is not flat in this setup: its plane must face the spindle.' };
+  const paths = (sketch.strokes || []).map((s) => ({
+    points: s.points.flatMap(([x, y]) => { const p = at(x, y); return [p[0], p[1]]; }),
+    closed: s.closed,
+  })).filter((p) => p.points.length >= 4);
+  if (!paths.length) return { error: 'The sketch has nothing drawn to engrave.' };
+  return { z: o[2], paths };
+}
+
+/**
+ * Engrave: the cutter's centre runs along every stroke of the sketch, `depth`
+ * below the sketch, in one pass — lettering and marks with a V-cutter or a small
+ * endmill. Strokes are taken nearest-first so the cutter does not cross the
+ * part back and forth between letters.
+ *
+ * @param {{z:number, paths:{points:number[], closed:boolean}[]}} shape  from `strokesInFrame`
+ */
+export function engraveOp(shape, opts) {
+  const {
+    material, tool, machine, depth, safeZ = 10,
+  } = opts;
+  if (!(depth > 0) || !shape.paths?.length) return null;
+  const speeds = millingSpeeds({
+    material, diameter: tool.diameter, flutes: tool.flutes, machine,
+  });
+  const z = shape.z - depth;
+  const left = shape.paths.map((p) => p);
+  const moves = [];
+  let here = [0, 0];
+  while (left.length) {
+    // The nearest start (either end of an open stroke) to where the cutter is.
+    let best = 0;
+    let bestD = Infinity;
+    let flip = false;
+    left.forEach((p, i) => {
+      const n = p.points.length;
+      const d0 = Math.hypot(p.points[0] - here[0], p.points[1] - here[1]);
+      const d1 = Math.hypot(p.points[n - 2] - here[0], p.points[n - 1] - here[1]);
+      if (d0 < bestD) { bestD = d0; best = i; flip = false; }
+      if (!p.closed && d1 < bestD) { bestD = d1; best = i; flip = true; }
+    });
+    const [path] = left.splice(best, 1);
+    const pts = [];
+    for (let i = 0; i < path.points.length; i += 2) pts.push([path.points[i], path.points[i + 1]]);
+    if (flip) pts.reverse();
+    moves.push({ t: 'rapid', x: pts[0][0], y: pts[0][1], z: safeZ });
+    moves.push({ t: 'rapid', x: pts[0][0], y: pts[0][1], z: shape.z + 1 });
+    for (const [x, y] of pts) moves.push({ t: 'feed', x, y, z });
+    moves.push({ t: 'rapid', x: pts[pts.length - 1][0], y: pts[pts.length - 1][1], z: safeZ });
+    here = pts[pts.length - 1];
+  }
+  // A pointed cutter cuts a groove as wide as its cone is at that depth; a flat one, its diameter.
+  const width = tool.type === 'spot' || tool.angle
+    ? Math.min(tool.diameter, 2 * depth * Math.tan((((tool.angle ?? 90) / 2) * Math.PI) / 180))
+    : tool.diameter;
+  return sketchOp('engrave', 'Engrave', tool, speeds, moves, [
+    `${shape.paths.length} stroke${shape.paths.length === 1 ? '' : 's'} at ${depth} mm deep, one pass`,
+    `The ${tool.label ?? `Ø${tool.diameter}`} runs on the line itself: a groove about ${width.toFixed(2)} mm wide`,
+  ], { pass: 'finish', stepdown: depth });
+}

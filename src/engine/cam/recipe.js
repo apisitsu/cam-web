@@ -42,7 +42,9 @@ import { normalizeAngle } from '../mesh/rotate.js';
 import * as turn from './toolpath/turn.js';
 import * as mill from './toolpath/mill.js';
 import { faceRegionOp, traceOp, faceToLoops } from './toolpath/feature.js';
-import { sketchInFrame, pocketOp, profileOp } from './toolpath/sketchOps.js';
+import {
+  sketchInFrame, pocketOp, profileOp, strokesInFrame, engraveOp,
+} from './toolpath/sketchOps.js';
 
 /**
  * The operations the app can generate, and what each one may be cut with.
@@ -124,6 +126,11 @@ export const OPERATION_KINDS = [
     kind: 'cboreChamfer', mode: 'mill', label: "C'bore hole chamfer", order: 39,
     toolTypes: ['spot'], needs: 'cboreChamfer',
     hint: 'Chamfers the hole\'s edge on the counterbore floor, after the counterbore.',
+  },
+  {
+    kind: 'engrave', mode: 'mill', label: 'Engrave', order: 46,
+    toolTypes: ['spot', 'endmill'], needs: 'sketch',
+    hint: 'Runs the cutter along every line of a sketch — part numbers, marks, text — a set depth deep, in one pass.',
   },
   {
     kind: 'profile', mode: 'mill', label: 'Profile', order: 44,
@@ -259,6 +266,10 @@ function toolMisfit(kind, tool, ctx, target = null) {
     return tool.diameter > group.diameter
       ? `Ø${tool.diameter} will not go into the Ø${group.diameter} counterbore.`
       : null;
+  }
+  if (kind === 'engrave') {
+    const depth = target?.depth ?? 0;
+    return tool.fluteLength < depth ? `${tool.fluteLength} mm of flute against ${depth} mm deep.` : null;
   }
   if (kind === 'pocket' || kind === 'profile') {
     const depth = target?.depth ?? 0;
@@ -583,6 +594,10 @@ export function defaultToolFor(kind, ctx, target = null) {
   if (kind === 'cbore') {
     const group = at.cboreGroups?.[target?.index ?? 0];
     return choices.find((t) => group && t.diameter <= group.diameter * 0.8) ?? choices[0];
+  }
+  if (kind === 'engrave') {
+    // A spot drill is the shop's V-cutter; otherwise the smallest endmill.
+    return choices.find((t) => t.type === 'spot') ?? choices[choices.length - 1];
   }
   if (kind === 'pocket' || kind === 'profile') {
     // Room to step over inside the profile, and no bigger than a Ø10.
@@ -981,6 +996,25 @@ function buildMillStep(parentCtx, e, tool, cut) {
         op: mill.counterboreChamferOp(group.holes, common),
         title: `Chamfer ${group.holes.length} hole${group.holes.length > 1 ? 's' : ''} in the Ø${group.diameter} counterbore${at}`,
         why: `${group.holeChamfer} mm × 45° on the hole's edge at the counterbore floor, after the counterbore so the ${tool.label} meets air on the way down.`,
+        warnings,
+      };
+    }
+    case 'engrave': {
+      const t = e.target ?? {};
+      if (angle || !parentCtx.toFrame) {
+        warnings.push('Engraving from a sketch runs at A0 only.');
+        return { op: null, warnings };
+      }
+      const shape = strokesInFrame(t, parentCtx.toFrame);
+      if (shape.error) {
+        warnings.push(`${t.name ?? 'Sketch'}: ${shape.error}`);
+        return { op: null, warnings };
+      }
+      const op = engraveOp(shape, { ...common, depth: t.depth });
+      return {
+        op,
+        title: `Engrave "${t.name}" ${t.depth} mm`,
+        why: `The cutter's centre on every line of the sketch, ${t.depth} mm below Z${shape.z.toFixed(2)}, with the ${tool.label}.`,
         warnings,
       };
     }

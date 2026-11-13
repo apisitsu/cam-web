@@ -4,7 +4,9 @@
  * live in `sketchStore.contextMenu` (set by `SketchLayer`'s native
  * `contextmenu` listener, which already knows what was under the cursor);
  * this component only renders the menu and acts on `selection`, which is the
- * one thing both sides agree on.
+ * one thing both sides agree on. Above the edit commands it lists the relations
+ * the selection can take (`relationsFor`) — Equal, Concentric, Tangent… — so a
+ * relation is one right-click away, as in SolidWorks.
  *
  * A fixed full-screen catcher closes the menu on the next click or another
  * right-click anywhere else — the same job a native context menu's own
@@ -13,6 +15,7 @@
 import { Menu } from 'antd';
 import { DeleteOutlined, BorderOutlined } from '@ant-design/icons';
 import { useSketchStore } from '../stores/sketchStore.js';
+import { relationsFor } from '../engine/sketch/relations.js';
 import { CAD } from '../theme.js';
 
 export default function SketchContextMenu() {
@@ -22,6 +25,7 @@ export default function SketchContextMenu() {
   const deleteSelected = useSketchStore((s) => s.deleteSelected);
   const toggleConstruction = useSketchStore((s) => s.toggleConstruction);
   const close = useSketchStore((s) => s.closeContextMenu);
+  const applyRelation = useSketchStore((s) => s.applyRelation);
 
   if (!at) return null;
 
@@ -30,7 +34,13 @@ export default function SketchContextMenu() {
     return t === 'line' || t === 'circle' || t === 'arc';
   });
 
+  const relations = relationsFor(sk, selection);
   const items = [
+    ...(relations.length ? [{
+      type: 'group',
+      label: 'Add Relation',
+      children: relations.map((r) => ({ key: `rel:${r.key}`, label: r.label })),
+    }, { type: 'divider' }] : []),
     {
       key: 'construction',
       icon: <BorderOutlined />,
@@ -50,6 +60,10 @@ export default function SketchContextMenu() {
   const onClick = ({ key }) => {
     if (key === 'delete') deleteSelected();
     else if (key === 'construction') toggleConstruction();
+    else if (key.startsWith('rel:')) {
+      const r = relations.find((x) => `rel:${x.key}` === key);
+      if (r) applyRelation(r.constraints);
+    }
     close();
   };
 

@@ -28,7 +28,9 @@ export const CLICK_SLOP = 4;
 const overPart = (event) => event.intersections.some((i) => i.object.name === 'built-part');
 
 function ReferencePlane({ preset, label, half }) {
-  const [hover, setHover] = useState(false);
+  const [pointerOver, setHover] = useState(false);
+  // Lit when the pointer is on the plane itself or on its button in the sketch rail.
+  const hover = useSketchStore((s) => s.hoverPlane === preset) || pointerOver;
   const matrix = useMemo(() => new THREE.Matrix4().fromArray(planeMatrix({ preset, offset: 0 })), [preset]);
   const corners = [[-half, -half, 0], [half, -half, 0], [half, half, 0], [-half, half, 0], [-half, -half, 0]];
 

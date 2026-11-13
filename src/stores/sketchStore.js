@@ -180,6 +180,7 @@ export const useSketchStore = create((set, get) => ({
   selection: [], // selected entity ids — points, lines, circles, and/or arcs (mixed)
   selectedDims: [], // indices into sk.constraints of dimensions selected in the viewport (Delete removes them)
   contextMenu: null, // { x, y } screen position of an open right-click menu, or null
+  hoverPlane: null, // reference-plane preset whose start button is under the pointer — the viewport lights that plane
   dimensionPending: null, // { kind, refs, label, current } set on a dimension-mode empty-click → shows the inline value input
   offsetPending: false, // true while the Offset rail button is waiting for its distance
   facePick: false, // true while Sketch on Face waits for a face of the part to be clicked
@@ -1272,6 +1273,27 @@ export const useSketchStore = create((set, get) => ({
   },
 
   /**
+   * Apply one relation from `relationsFor` — possibly several model constraints
+   * (Equal on four lines) — as a single undo step, then re-solve.
+   */
+  applyRelation(constraints) {
+    const { sk } = get();
+    get()._snapshot();
+    const before = sk.constraints.length;
+    try {
+      for (const [kind, refs] of constraints) addConstraint(sk, kind, refs);
+    } catch (e) {
+      sk.constraints.length = before;
+      get()._undoSnapshot();
+      set({ error: String(e?.message || e) });
+      return;
+    }
+    set({ selection: [], error: null });
+    get()._bump();
+    get().solve({ revertOnConflict: true });
+  },
+
+  /**
    * Resolve the current selection into a "smart dimension" — the constraint kind,
    * the ordered refs it applies to, a human label, and the current geometric
    * value (to seed the input). Pure: no mutation, so the view can use it both to
@@ -1817,6 +1839,10 @@ export const useSketchStore = create((set, get) => ({
     } else {
       set({ contextMenu: { x, y } });
     }
+  },
+
+  setHoverPlane(preset) {
+    if (get().hoverPlane !== preset) set({ hoverPlane: preset });
   },
 
   closeContextMenu() {

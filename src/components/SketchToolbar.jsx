@@ -77,6 +77,18 @@ const PasteIcon = glyph(<><rect x="6" y="5" width="12" height="15" rx="1" /><pat
 // 2D→3D. Planes: two sheets at an angle, the way a CAD tree draws its reference
 // planes. Extrude: a profile with the solid pushed off it.
 const PlanesIcon = glyph(<><path d="M3 8.5l8-3.5 10 3-8 3.5z" fill={INK.sketchSoft} stroke={INK.sketch} /><path d="M3 8.5v7l8 3.5v-7" stroke={INK.sketch} /><path d="M21 8v7l-10 4" stroke={INK.sketch} opacity="0.55" /></>);
+// One icon per reference plane: the three planes drawn as the corner of a cube in
+// the viewport's own isometric (Z up, seen from +X −Y +Z), the chosen one filled.
+// Top is the lid, Front (XZ) the face to the left, Right (YZ) the one to the right.
+const PLANE_FACES = {
+  XY: 'M3.5 8L12 3.5l8.5 4.5L12 12.5z',
+  XZ: 'M3.5 8L12 12.5V21l-8.5-4.5z',
+  YZ: 'M12 12.5l8.5-4.5v8.5L12 21z',
+};
+const PLANE_ICONS = Object.fromEntries(Object.keys(PLANE_FACES).map((preset) => [preset, glyph(<>
+  {Object.entries(PLANE_FACES).filter(([k]) => k !== preset).map(([k, d]) => <path key={k} d={d} stroke={INK.steel} strokeWidth="1.2" />)}
+  <path d={PLANE_FACES[preset]} fill={INK.sketchSoft} stroke={INK.sketch} strokeWidth="2.2" />
+</>)]));
 const ExtrudeIcon = glyph(<><path d="M4 12l8 4 8-4v5l-8 4-8-4z" fill={INK.body} /><path d="M4 12l8-4 8 4-8 4z" fill={INK.bodyTop} /><path d="M12 16v5" /><path d="M12 1.5v8M8.8 4.7L12 1.5l3.2 3.2" stroke={INK.go} strokeWidth="2.4" /></>);
 // Sketch on Face: a block with its top face picked. Normal To: a plane seen square,
 // with the line of sight running into it.
@@ -783,6 +795,7 @@ export default function SketchToolbar({ ribbonSlot = null }) {
   const facePick = useSketchStore((s) => s.facePick);
   const sketchOpen = useSketchStore((s) => s.sketchOpen);
   const startSketch = useFeatureStore((s) => s.startSketch);
+  const setHoverPlane = useSketchStore((s) => s.setHoverPlane);
   const setFacePick = useSketchStore((s) => s.setFacePick);
   const convertPick = useSketchStore((s) => s.convertPick);
   const setConvertPick = useSketchStore((s) => s.setConvertPick);
@@ -882,9 +895,11 @@ export default function SketchToolbar({ ribbonSlot = null }) {
       {Object.entries(PLANE_PRESETS).map(([preset, p]) => (
         <RibbonButton
           key={preset}
-          icon={<PlanesIcon />}
+          icon={PLANE_ICONS[preset]()}
           label={p.label}
-          onClick={() => startSketch({ preset, offset: 0 })}
+          onClick={() => { setHoverPlane(null); startSketch({ preset, offset: 0 }); }}
+          onMouseEnter={() => setHoverPlane(preset)}
+          onMouseLeave={() => setHoverPlane(null)}
           data-sketch-start={preset}
         />
       ))}

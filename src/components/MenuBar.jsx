@@ -435,9 +435,33 @@ export default function MenuBar({
     />
   );
 
+  // Two rows: the app name with the command search on the right, and the menus
+  // under it, starting at the left edge the way a desktop CAD lays out its title.
   return (
-    <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-      {brand}
+    <div style={{ display: 'flex', flexDirection: 'column' }} data-menu-bar>
+      <div style={{ display: 'flex', alignItems: 'center', gap: 8, height: 34, lineHeight: 'normal' }} data-menu-title>
+        {brand}
+        <span style={{ flex: 1 }} />
+        <AutoComplete
+          ref={searchRef}
+          size="small"
+          value={query}
+          options={options}
+          onChange={setQuery}
+          onSelect={(key) => { run({ key }); setQuery(''); searchRef.current?.blur(); }}
+          filterOption={false}
+          placeholder="Search commands (Ctrl+K)"
+          allowClear
+          style={{ width: 230, flex: '0 0 auto' }}
+          popupMatchSelectWidth={300}
+          data-menu-search
+        />
+        {operator && (
+          <span style={{ color: CAD.label, fontSize: 12, whiteSpace: 'nowrap' }} data-menu-operator>
+            {operator}
+          </span>
+        )}
+      </div>
       {hiddenInput(fileInput, PROGRAM_ACCEPT, (file) => announced(async () => {
         if (!await openProgramFile(file)) return null;
         useLibraryStore.getState().setOpenItem(null);
@@ -492,33 +516,14 @@ export default function MenuBar({
         items={items}
         onClick={run}
         style={{
-          flex: 1,
           minWidth: 0,
+          marginLeft: -12,
           background: 'transparent',
           borderBottom: 'none',
-          lineHeight: '30px',
+          lineHeight: '28px',
           fontSize: 12,
         }}
       />
-      <AutoComplete
-        ref={searchRef}
-        size="small"
-        value={query}
-        options={options}
-        onChange={setQuery}
-        onSelect={(key) => { run({ key }); setQuery(''); searchRef.current?.blur(); }}
-        filterOption={false}
-        placeholder="Search commands (Ctrl+K)"
-        allowClear
-        style={{ width: 230, flex: '0 0 auto' }}
-        popupMatchSelectWidth={300}
-        data-menu-search
-      />
-      {operator && (
-        <span style={{ color: CAD.label, fontSize: 12, whiteSpace: 'nowrap' }} data-menu-operator>
-          {operator}
-        </span>
-      )}
     </div>
   );
 }

@@ -36,7 +36,7 @@
 import { extrudeRegion, revolveRegion } from './extrude.js';
 import { detectSharpEdges } from '../mesh/features.js';
 import { weld } from '../mesh/stl.js';
-import { edgeAtPoint } from '../mesh/pickEdge.js';
+import { edgeAtPoint, distanceSqToEdge } from '../mesh/pickEdge.js';
 import { fitCircle } from '../mesh/circlePick.js';
 
 export const EDGE_TREATMENTS = {
@@ -158,7 +158,7 @@ export function treatmentSection({
  * runs in this mesh. `ref.a`/`ref.b` say where it was; the run returned is the
  * stretch of the line where both faces still meet, overlapping that.
  */
-export function lineEdgeFrame(soup, ref) {
+export function lineEdgeFrame(soup, ref, { strict = false } = {}) {
   const d = unit(sub(ref.b, ref.a));
   const L0 = len(sub(ref.b, ref.a));
   if (!(L0 > 1e-6)) throw new Error('that edge has no length');
@@ -186,6 +186,7 @@ export function lineEdgeFrame(soup, ref) {
     const g1 = pick(ref.n1);
     const g2 = pick(ref.n2);
     if (g1 && g2 && g1 !== g2) groups = [g1, g2];
+    else if (strict) throw new Error('that edge is no longer on the part');
   }
   if (groups.length < 2) throw new Error('that edge is no longer on the part');
   const [f1, f2] = groups;
@@ -229,8 +230,52 @@ export function lineEdgeFrame(soup, ref) {
   };
 }
 
+/**
+ * Where a straight edge went when the part changed under it: the nearest
+ * straight sharp edge running the same way between faces facing the same ways
+ * as the stored ones. Null if there is none.
+ */
+function relocateLine(soup, ref) {
+  if (!ref.n1 || !ref.n2) return null;
+  const d = unit(sub(ref.b, ref.a));
+  const mid = scale(add(ref.a, ref.b), 0.5);
+  const cands = [];
+  for (const chain of detectSharpEdges(weld(soup))) {
+    const pts = chainCorners(chain.points, chain.closed);
+    const segs = chain.closed ? pts.length : pts.length - 1;
+    for (let i = 0; i < segs; i++) {
+      const a = pts[i];
+      const b = pts[(i + 1) % pts.length];
+      const dir = unit(sub(b, a));
+      if (Math.abs(dot(dir, d)) < 0.9999) continue;
+      cands.push({ a, b, dist: len(sub(scale(add(a, b), 0.5), mid)) });
+    }
+  }
+  cands.sort((x, y) => x.dist - y.dist);
+  for (const c of cands) {
+    try {
+      const f = lineEdgeFrame(soup, {
+        type: 'line', a: c.a, b: c.b, n1: ref.n1, n2: ref.n2,
+      }, { strict: true });
+      return {
+        type: 'line', a: f.a, b: f.b, n1: f.n1, n2: f.n2,
+      };
+    } catch {
+      // not this one
+    }
+  }
+  return null;
+}
+
 function lineTool(soup, ref, kind, size) {
-  const f = lineEdgeFrame(soup, ref);
+  let f;
+  try {
+    f = lineEdgeFrame(soup, ref);
+  } catch (e) {
+    const moved = relocateLine(soup, ref);
+    if (!moved) throw e;
+    f = lineEdgeFrame(soup, moved);
+  }
   const u = f.n1;
   const v = cross(f.d, u);
   const to2 = (w) => [dot(w, u), dot(w, v)];
@@ -242,7 +287,7 @@ function lineTool(soup, ref, kind, size) {
     plane: { origin: sub(f.a, scale(f.d, PAST_END)), u, v },
     depth: L + 2 * PAST_END,
   });
-  return { solid, merge: convex ? 'cut' : 'add' };
+  return { solid, merge: convex ? 'cut' : 'add', frame: { ...f, convex } };
 }
 
 // ---------------------------------------------------------------------------
@@ -326,12 +371,46 @@ const MAX_JOINT_TURN = (30 * Math.PI) / 180;
 /** Angle between two segment directions. */
 const turnOf = (d0, d1) => Math.acos(Math.max(-1, Math.min(1, dot(d0, d1))));
 
+/**
+ * The run of edges a chain reference names on this part: the one under its seed,
+ * or — when the part changed and moved it — the nearest run round a face facing
+ * the same way, open or closed as it was.
+ */
+function findChain(welded, ref) {
+  const chains = detectSharpEdges(welded);
+  const framesOf = (chain) => {
+    try {
+      return chainFrames(welded, chain.points, chain.closed);
+    } catch {
+      return null;
+    }
+  };
+  const under = edgeAtPoint(chains, ref.seed, 0.5);
+  if (under) {
+    const f = framesOf(under);
+    if (f && (!ref.n || dot(f.N, ref.n) > 0.999)) return f;
+  }
+  const near = chains
+    .filter((c) => !!c.closed === !!ref.closed)
+    .map((c) => ({ c, d: distanceSqToEdge(c, ref.seed) }))
+    .sort((x, y) => x.d - y.d);
+  for (const { c } of near) {
+    const f = framesOf(c);
+    if (f && ref.n && dot(f.N, ref.n) > 0.999) return f;
+  }
+  throw new Error('that run of edges is no longer on the part');
+}
+
+/**
+ * Tool pieces for a chain. A run that goes from an outside corner to an inside
+ * one (a boss whose rounded outline meets a pocket's) is split where it changes:
+ * the outside stretches are cut, the inside ones filled.
+ *
+ * @returns {{solids:object[], merge:'cut'|'add'}[]}
+ */
 function chainTools(soup, ref, kind, size) {
   const welded = weld(soup);
-  const chain = edgeAtPoint(detectSharpEdges(welded), ref.seed, 0.5);
-  if (!chain) throw new Error('that run of edges is no longer on the part');
-  const { N, segs, closed } = chainFrames(welded, chain.points, chain.closed);
-  if (ref.n && dot(N, ref.n) < 0.999) throw new Error('that run of edges is no longer on the part');
+  const { N, segs, closed } = findChain(welded, ref);
 
   const sections = segs.map((sg) => {
     const u = N;
@@ -344,10 +423,6 @@ function chainTools(soup, ref, kind, size) {
     for (let i = 0; i < sec.loop.length; i += 2) reach = Math.max(reach, Math.hypot(sec.loop[i], sec.loop[i + 1]));
     return { ...sec, u, v, reach };
   });
-  const convex = sections[0].convex;
-  if (sections.some((sc) => sc.convex !== convex)) {
-    throw new Error('that run of edges turns from an outside corner to an inside one — pick the two parts separately');
-  }
 
   // Each segment's piece runs on past its joints far enough to close the gap the
   // turn opens between it and the next: reach·tan(turn/2). Where the gap is on
@@ -361,17 +436,26 @@ function chainTools(soup, ref, kind, size) {
     if (turn > MAX_JOINT_TURN) throw new Error('that run of edges has a sharp corner in it — pick the straight edges either side');
     return Math.max(sections[i].reach, sections[j].reach) * Math.tan(turn / 2) + 1e-3;
   };
-  const after = segs.map((_, i) => (!closed && i === n - 1 ? PAST_END : pastJoint(i)));
+  // Where the run changes from cut to fill the two sides must not reach into each
+  // other: they meet with only a hair of overlap.
+  const after = segs.map((_, i) => {
+    if (!closed && i === n - 1) return PAST_END;
+    if (sections[i].convex !== sections[(i + 1) % n].convex) return 1e-3;
+    return pastJoint(i);
+  });
   const before = segs.map((_, i) => (!closed && i === 0 ? PAST_END : after[(i + n - 1) % n]));
 
-  const solids = segs.map((sg, i) => {
-    const { loop, u, v } = sections[i];
-    return extrudeRegion({ outer: loop }, {
+  const groups = { cut: [], add: [] };
+  segs.forEach((sg, i) => {
+    const { loop, u, v, convex } = sections[i];
+    groups[convex ? 'cut' : 'add'].push(extrudeRegion({ outer: loop }, {
       plane: { origin: sub(sg.a, scale(sg.d, before[i])), u, v },
       depth: len(sub(sg.b, sg.a)) + before[i] + after[i],
-    });
+    }));
   });
-  return { solids, merge: convex ? 'cut' : 'add' };
+  return Object.entries(groups)
+    .filter(([, solids]) => solids.length)
+    .map(([merge, solids]) => ({ solids, merge }));
 }
 
 // ---------------------------------------------------------------------------
@@ -380,17 +464,35 @@ function chainTools(soup, ref, kind, size) {
 const AXIS_VEC = [[1, 0, 0], [0, 1, 0], [0, 0, 1]];
 
 /**
+ * A rim's frame: its axis `k` and two directions `e1`, `e2` across it. A rim
+ * about X, Y or Z keeps the other two axes in order (what the faceting phase is
+ * measured from); one about a tilted axis — a bore drilled square to an angled
+ * face — carries its axis as `n`.
+ */
+function circleBasis(ref) {
+  if (Array.isArray(ref.n)) {
+    const k = unit(ref.n);
+    const helper = Math.abs(k[0]) < 0.9 ? [1, 0, 0] : [0, 1, 0];
+    const e1 = unit(cross(k, helper));
+    return { k, e1, e2: cross(k, e1) };
+  }
+  const [iu, iv] = [0, 1, 2].filter((i) => i !== ref.axis);
+  return { k: AXIS_VEC[ref.axis], e1: AXIS_VEC[iu], e2: AXIS_VEC[iv] };
+}
+
+/**
  * The faces at a circular rim: the flat one square to the axis and the round
  * wall, read off the triangles that touch the rim. Also the rim's own facets —
  * count and phase — so the tool can be faceted to match.
  */
 export function circleEdgeFrame(soup, ref) {
-  const { axis, center, radius: R } = ref;
-  const k = AXIS_VEC[axis];
-  const [iu, iv] = [0, 1, 2].filter((i) => i !== axis);
+  const { center, radius: R } = ref;
+  const { k, e1, e2 } = circleBasis(ref);
   const tol = Math.max(ON, R * 2e-3);
-  const radial = (p) => Math.hypot(p[iu] - center[iu], p[iv] - center[iv]);
-  const onRim = (p) => Math.abs(p[axis] - center[axis]) < tol && Math.abs(radial(p) - R) < tol;
+  const axial = (p) => dot(sub(p, center), k);
+  const across = (p) => { const w = sub(p, center); return sub(w, scale(k, dot(w, k))); };
+  const radial = (p) => len(across(p));
+  const onRim = (p) => Math.abs(axial(p)) < tol && Math.abs(radial(p) - R) < tol;
 
   let flat = null;
   let wall = null;
@@ -406,8 +508,8 @@ export function circleEdgeFrame(soup, ref) {
     if (Math.abs(nk) > 0.99) {
       flat = flat || { nk: Math.sign(nk), tr: Math.sign(radial(c) - R) || -1 };
     } else if (Math.abs(nk) < 0.2) {
-      const rdir = unit([...[0, 1, 2]].map((i) => (i === axis ? 0 : c[i] - center[i])));
-      wall = wall || { nr: Math.sign(dot(n, rdir)), tz: Math.sign(c[axis] - center[axis]) };
+      const rdir = unit(across(c));
+      wall = wall || { nr: Math.sign(dot(n, rdir)), tz: Math.sign(axial(c)) };
     }
   }
   if (!flat || !wall) throw new Error(`the Ø${(2 * R).toFixed(2)} rim is no longer on the part`);
@@ -430,7 +532,8 @@ export function circleEdgeFrame(soup, ref) {
   const angles = [];
   for (const { p, r } of radii) {
     if (Math.abs(r - rCorner) >= band) continue;
-    const a = Math.atan2(p[iv] - center[iv], p[iu] - center[iu]);
+    const w = across(p);
+    const a = Math.atan2(dot(w, e2), dot(w, e1));
     if (!angles.some((b) => Math.abs(Math.atan2(Math.sin(a - b), Math.cos(a - b))) < 2e-3)) angles.push(a);
   }
   angles.sort((a, b) => a - b);
@@ -442,6 +545,8 @@ export function circleEdgeFrame(soup, ref) {
 
   return {
     k,
+    e1,
+    e2,
     n1: [0, flat.nk],
     t1: [flat.tr, 0],
     n2: [wall.nr, 0],
@@ -453,8 +558,35 @@ export function circleEdgeFrame(soup, ref) {
 }
 
 
+/**
+ * Where a rim went when the part changed under it: the nearest round closed edge
+ * of the same size about the same axis. Null if there is none.
+ */
+function relocateCircle(soup, ref) {
+  const { k } = circleBasis(ref);
+  let best = null;
+  for (const chain of detectSharpEdges(weld(soup))) {
+    if (!chain.closed) continue;
+    const c = roundChain(chain);
+    if (!c || Math.abs(Math.abs(dot(circleBasis(c).k, k)) - 1) > 1e-3) continue;
+    if (Math.abs(c.radius - ref.radius) > Math.max(0.02, ref.radius * 0.01)) continue;
+    const d = len(sub(c.center, ref.center));
+    if (!best || d < best.d) best = { c, d };
+  }
+  return best ? best.c : null;
+}
+
 function circleTool(soup, ref, kind, size) {
-  const f = circleEdgeFrame(soup, ref);
+  let f;
+  try {
+    f = circleEdgeFrame(soup, ref);
+  } catch (e) {
+    const moved = relocateCircle(soup, ref);
+    if (!moved) throw e;
+    // eslint-disable-next-line no-param-reassign
+    ref = moved;
+    f = circleEdgeFrame(soup, ref);
+  }
   const R = f.radius;
   const { loop, convex } = treatmentSection({
     P: [R, 0], n1: f.n1, n2: f.n2, t1: f.t1, t2: f.t2,
@@ -462,10 +594,7 @@ function circleTool(soup, ref, kind, size) {
   for (let i = 0; i < loop.length; i += 2) {
     if (loop[i] <= 0) throw new Error(`a ${size} mm ${kind} does not fit a Ø${(2 * R).toFixed(2)} rim`);
   }
-  const [iu, iv] = [0, 1, 2].filter((i) => i !== ref.axis);
-  const u = [0, 0, 0];
-  u[iu] = Math.cos(f.phase);
-  u[iv] = Math.sin(f.phase);
+  const u = add(scale(f.e1, Math.cos(f.phase)), scale(f.e2, Math.sin(f.phase)));
   const solid = revolveRegion({ outer: loop }, {
     axis: 'y',
     plane: { origin: [...ref.center], u, v: f.k },
@@ -483,13 +612,78 @@ function circleTool(soup, ref, kind, size) {
 export function edgeTreatmentTools(soup, feature) {
   if (!soup?.triangleCount) throw new Error(`a ${feature.kind} needs a part to work on`);
   if (!feature.edges?.length) throw new Error('no edges are picked');
-  return feature.edges.map((ref) => {
-    if (ref.type === 'chain') return chainTools(soup, ref, feature.kind, feature.size);
-    const { solid, merge } = ref.type === 'circle'
-      ? circleTool(soup, ref, feature.kind, feature.size)
-      : lineTool(soup, ref, feature.kind, feature.size);
-    return { solids: [solid], merge };
-  });
+  const out = [];
+  const lines = [];
+  for (const ref of feature.edges) {
+    if (ref.type === 'chain') { out.push(...chainTools(soup, ref, feature.kind, feature.size)); continue; }
+    if (ref.type === 'circle') {
+      const { solid, merge } = circleTool(soup, ref, feature.kind, feature.size);
+      out.push({ solids: [solid], merge });
+      continue;
+    }
+    const { solid, merge, frame } = lineTool(soup, ref, feature.kind, feature.size);
+    out.push({ solids: [solid], merge });
+    lines.push(frame);
+  }
+  if (feature.kind === 'fillet') out.push(...ballCorners(lines, feature.size));
+  return out;
+}
+
+/** Points closer than this (mm) are one corner. */
+const CORNER_TOL = 1e-3;
+
+/**
+ * Where three filleted straight edges meet square at an outside corner — the
+ * corner of a block — the three round faces are joined by a ball, as a rolling
+ * ball would leave it: the corner's cube of side r, less the ball of radius r
+ * sitting in it, is cut away after the edges. Corners that are not three square
+ * edges keep the edges' own meeting.
+ *
+ * @returns {{corner:{cube:object, ball:object}}[]}
+ */
+function ballCorners(frames, r) {
+  const ends = [];
+  for (const f of frames) {
+    if (!f.convex) continue;
+    ends.push({ p: f.a, e: unit(sub(f.b, f.a)) });
+    ends.push({ p: f.b, e: unit(sub(f.a, f.b)) });
+  }
+  const used = new Set();
+  const out = [];
+  for (let i = 0; i < ends.length; i++) {
+    if (used.has(i)) continue;
+    const at = [i];
+    for (let j = i + 1; j < ends.length; j++) {
+      if (!used.has(j) && len(sub(ends[j].p, ends[i].p)) < CORNER_TOL) at.push(j);
+    }
+    if (at.length !== 3) continue;
+    const [a, b, c] = at.map((k) => ends[k].e);
+    if (Math.abs(dot(a, b)) > 1e-3 || Math.abs(dot(b, c)) > 1e-3 || Math.abs(dot(a, c)) > 1e-3) continue;
+    at.forEach((k) => used.add(k));
+    const P = ends[i].p;
+    const eps = Math.min(0.05, r * 0.1);
+    // The cube: on the corner's own three edges, a hair out past each face.
+    const n = cross(a, b);
+    const up = dot(n, c) > 0 ? 1 : -1;
+    const cube = extrudeRegion({ outer: [-eps, -eps, r, -eps, r, r, -eps, r] }, {
+      plane: { origin: P, u: a, v: b },
+      depth: up * (r + eps),
+      base: up * -eps,
+    });
+    // The ball: a half disc turned about the axis through its centre.
+    const C = add(P, scale(add(add(a, b), c), r));
+    const half = [];
+    const steps = 24;
+    for (let k = 0; k <= steps; k++) {
+      const t = -Math.PI / 2 + (Math.PI * k) / steps;
+      half.push(r * Math.cos(t), r * Math.sin(t));
+    }
+    const ball = revolveRegion({ outer: half }, {
+      axis: 'y', plane: { origin: C, u: a, v: c }, segments: 48,
+    });
+    out.push({ corner: { cube, ball } });
+  }
+  return out;
 }
 
 /**
@@ -500,7 +694,13 @@ export function edgeTreatmentTools(soup, feature) {
 export function applyEdgeTreatment(soup, feature, meshBoolean) {
   if (!meshBoolean) throw new Error('no solid boolean is available to cut the part with');
   let out = soup;
-  for (const { solids, merge } of edgeTreatmentTools(soup, feature)) {
+  for (const entry of edgeTreatmentTools(soup, feature)) {
+    if (entry.corner) {
+      const shell = meshBoolean(entry.corner.cube, entry.corner.ball, 'cut', feature.kind);
+      out = meshBoolean(out, shell, 'cut', feature.kind);
+      continue;
+    }
+    const { solids, merge } = entry;
     const once = solids.length > 1 ? meshBoolean.many?.(out, solids, merge, feature.kind) : null;
     if (once) { out = once; continue; }
     for (const tool of solids) out = meshBoolean(out, tool, merge, feature.kind);
@@ -526,10 +726,13 @@ export function parseEdgeRef(raw) {
     if (Array.isArray(raw.points) && raw.points.every(vec)) ref.points = raw.points.map((q) => [...q]);
     return ref;
   }
-  if (raw?.type === 'circle' && [0, 1, 2].includes(raw.axis) && vec(raw.center) && raw.radius > 0) {
-    return {
-      type: 'circle', axis: raw.axis, center: [...raw.center], radius: raw.radius,
+  if (raw?.type === 'circle' && vec(raw.center) && raw.radius > 0
+    && ([0, 1, 2].includes(raw.axis) || vec(raw.n))) {
+    const ref = {
+      type: 'circle', axis: [0, 1, 2].includes(raw.axis) ? raw.axis : -1, center: [...raw.center], radius: raw.radius,
     };
+    if (vec(raw.n)) ref.n = [...raw.n];
+    return ref;
   }
   return null;
 }
@@ -538,7 +741,10 @@ export function parseEdgeRef(raw) {
 export function sameEdge(a, b) {
   const near = (p, q) => len(sub(p, q)) < 0.01;
   if (a?.type !== b?.type) return false;
-  if (a.type === 'circle') return a.axis === b.axis && near(a.center, b.center) && Math.abs(a.radius - b.radius) < 0.01;
+  if (a.type === 'circle') {
+    return Math.abs(Math.abs(dot(circleBasis(a).k, circleBasis(b).k)) - 1) < 1e-6
+      && near(a.center, b.center) && Math.abs(a.radius - b.radius) < 0.01;
+  }
   if (a.type === 'chain') {
     // Two clicks on one run of edges: same length, and each seed on the other's run.
     const on = (pts, q) => pts?.some((p, i) => i > 0 && len(sub(q, nearestOnSegment(pts[i - 1], p, q))) < 0.05);
@@ -562,20 +768,8 @@ export function pickTreatEdge(welded, point, tolerance, edges) {
   if (!chain) return null;
   const pts = chain.points;
   if (chain.closed && pts.length >= 8) {
-    const { min, max } = chain.bounds;
-    const axis = [0, 1, 2].find((i) => max[i] - min[i] < 1e-3);
-    if (axis != null) {
-      const [iu, iv] = [0, 1, 2].filter((i) => i !== axis);
-      const circle = fitCircle(pts.flatMap((p) => [p[iu], p[iv]]));
-      if (circle) {
-        const center = [0, 0, 0];
-        center[axis] = (min[axis] + max[axis]) / 2;
-        [center[iu], center[iv]] = circle.center;
-        return {
-          type: 'circle', axis, center, radius: circle.radius,
-        };
-      }
-    }
+    const circle = roundChain(chain);
+    if (circle) return circle;
   }
   // The straight run containing the segment nearest the click.
   let best = 0;
@@ -630,6 +824,48 @@ function nearestOnSegment(a, b, q) {
   const ab = sub(b, a);
   const t = Math.max(0, Math.min(1, dot(sub(q, a), ab) / (dot(ab, ab) || 1)));
   return add(a, scale(ab, t));
+}
+
+/**
+ * A closed chain read as a circle — about X, Y or Z, or about whatever axis its
+ * plane faces (a rim on an angled face) — or null when it is not round and flat.
+ */
+export function roundChain(chain) {
+  const pts = chain.points;
+  if (!chain.closed || pts.length < 8) return null;
+  const { min, max } = chain.bounds;
+  const axis = [0, 1, 2].find((i) => max[i] - min[i] < 1e-3);
+  if (axis != null) {
+    const [iu, iv] = [0, 1, 2].filter((i) => i !== axis);
+    const circle = fitCircle(pts.flatMap((p) => [p[iu], p[iv]]));
+    if (!circle) return null;
+    const center = [0, 0, 0];
+    center[axis] = (min[axis] + max[axis]) / 2;
+    [center[iu], center[iv]] = circle.center;
+    return {
+      type: 'circle', axis, center, radius: circle.radius,
+    };
+  }
+  // Tilted: the plane of the loop from its area vector (Newell), then the fit in it.
+  const nrm = [0, 0, 0];
+  for (let i = 0; i < pts.length; i++) {
+    const a = pts[i];
+    const b = pts[(i + 1) % pts.length];
+    nrm[0] += (a[1] - b[1]) * (a[2] + b[2]);
+    nrm[1] += (a[2] - b[2]) * (a[0] + b[0]);
+    nrm[2] += (a[0] - b[0]) * (a[1] + b[1]);
+  }
+  if (!(len(nrm) > 1e-9)) return null;
+  const k = unit(nrm);
+  const o = pts[0];
+  if (pts.some((q) => Math.abs(dot(sub(q, o), k)) > 1e-3)) return null;
+  const { e1, e2 } = circleBasis({ n: k });
+  const circle = fitCircle(pts.flatMap((q) => { const w = sub(q, o); return [dot(w, e1), dot(w, e2)]; }));
+  if (!circle) return null;
+  const center = add(o, add(scale(e1, circle.center[0]), scale(e2, circle.center[1])));
+  return {
+    type: 'circle', axis: -1, n: k, center, radius: circle.radius,
+  };
 }
 
 /** A short label for a picked edge. */

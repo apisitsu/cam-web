@@ -250,3 +250,73 @@ describe('chains — straight runs and arcs round a flat face', () => {
     expect(ref.type).toBe('line');
   });
 });
+
+describe('phase 8 — edits that move edges, ball corners, tilted rims', () => {
+  it('follows a straight edge that moved when the part got taller', () => {
+    // The chamfer was picked on a 10-high block; the block is now 15 high.
+    const ref = pickTreatEdge(weld(box(0, 0, 40, 20, 0, 10)), [20, 0, 10], 0.5);
+    const taller = box(0, 0, 40, 20, 0, 15);
+    const out = applyEdgeTreatment(taller, { kind: 'chamfer', size: 2, edges: [ref] }, meshBoolean);
+    near(volume(out), 40 * 20 * 15 - 2 * 40, 0.5);
+    // The cut is on the new top edge, not the old line through the front face.
+    const zs = [];
+    for (let i = 2; i < out.positions.length; i += 3) zs.push(out.positions[i]);
+    expect(Math.max(...zs)).toBeCloseTo(15, 3);
+  });
+
+  it('follows a rim whose hole moved', () => {
+    const plate = box(-20, -20, 20, 20, 0, 10);
+    const bore = (x) => extrudeRegion({ outer: circleLoop(5).map((v, i) => (i % 2 ? v : v + x)) }, { depth: 12, base: -1 });
+    const ref = pickTreatEdge(weld(meshBoolean(plate, bore(0), 'cut')), [5, 0.05, 10], 0.5);
+    const moved = meshBoolean(plate, bore(6), 'cut');
+    const out = applyEdgeTreatment(moved, { kind: 'chamfer', size: 1, edges: [ref] }, meshBoolean);
+    near(volume(moved) - volume(out), 0.5 * 2 * Math.PI * (5 + 1 / 3), 0.2);
+  });
+
+  it('rounds the corner where three filleted edges meet into a ball', () => {
+    const r = 3;
+    const part = box(0, 0, 40, 30, 0, 20);
+    const edges = [
+      { type: 'line', a: [0, 0, 0], b: [40, 0, 0] },
+      { type: 'line', a: [0, 0, 0], b: [0, 30, 0] },
+      { type: 'line', a: [0, 0, 0], b: [0, 0, 20] },
+    ].map((e) => pickTreatEdge(weld(part), e.a.map((v, i) => (v + e.b[i]) / 2), 0.5));
+    const out = applyEdgeTreatment(part, { kind: 'fillet', size: r, edges }, meshBoolean);
+    // Along each edge past the corner cube, and the corner cube less an eighth of the ball.
+    const along = (1 - Math.PI / 4) * r * r * ((40 - r) + (30 - r) + (20 - r));
+    const corner = r ** 3 * (1 - Math.PI / 6);
+    near(volume(part) - volume(out), along + corner, 1.5);
+    expect(analyzeMesh(out, weld(out)).warnings).toEqual([]);
+    // Nearest the corner along its diagonal the part now starts on the ball,
+    // x+y+z = 3r(1 − 1/√3) ≈ 3.80, not at the three fillets' seam (≈ 2.64).
+    let least = Infinity;
+    for (let i = 0; i < out.positions.length; i += 3) {
+      least = Math.min(least, out.positions[i] + out.positions[i + 1] + out.positions[i + 2]);
+    }
+    expect(least).toBeGreaterThan(3.6);
+    expect(least).toBeLessThan(3.85);
+  });
+
+  it('finds and chamfers a rim on a tilted face', () => {
+    const plate = box(-20, -20, 20, 20, 0, 10);
+    const flat = meshBoolean(plate, extrudeRegion({ outer: circleLoop(5) }, { depth: 12, base: -1 }), 'cut');
+    // The same plate turned 30° about X: the bore's axis is no longer Z.
+    const t = Math.PI / 6;
+    const tilted = { ...flat, positions: new Float32Array(flat.positions.length) };
+    for (let i = 0; i < flat.positions.length; i += 3) {
+      const [x, y, z] = [flat.positions[i], flat.positions[i + 1], flat.positions[i + 2]];
+      tilted.positions[i] = x;
+      tilted.positions[i + 1] = y * Math.cos(t) - z * Math.sin(t);
+      tilted.positions[i + 2] = y * Math.sin(t) + z * Math.cos(t);
+    }
+    const onRim = [5, -10 * Math.sin(t), 10 * Math.cos(t)];
+    const ref = pickTreatEdge(weld(tilted), onRim, 0.5);
+    expect(ref.type).toBe('circle');
+    expect(ref.axis).toBe(-1);
+    expect(Math.abs(ref.n[2])).toBeCloseTo(Math.cos(t), 4);
+    const out = applyEdgeTreatment(tilted, { kind: 'chamfer', size: 1, edges: [ref] }, meshBoolean);
+    near(volume(tilted) - volume(out), 0.5 * 2 * Math.PI * (5 + 1 / 3), 0.2);
+    expect(openEdgeCount(out)).toBe(0);
+    expect(parseEdgeRef(JSON.parse(JSON.stringify(ref)))).toEqual(ref);
+  });
+});

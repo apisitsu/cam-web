@@ -559,8 +559,10 @@ export function EdgeTreatMarks({ meshVer }) {
       ? (ref.points || []).slice(1).map((q, i) => bar(ref.points[i], q))
       : ref.type === 'circle'
       ? [new THREE.TorusGeometry(ref.radius, Math.max(ref.radius * 0.03, size * 0.015), 8, 96)].map((g) => {
-        if (ref.axis === 0) g.rotateY(Math.PI / 2);
-        if (ref.axis === 1) g.rotateX(Math.PI / 2);
+        if (Array.isArray(ref.n)) {
+          g.applyQuaternion(new THREE.Quaternion().setFromUnitVectors(new THREE.Vector3(0, 0, 1), new THREE.Vector3(...ref.n).normalize()));
+        } else if (ref.axis === 0) g.rotateY(Math.PI / 2);
+        else if (ref.axis === 1) g.rotateX(Math.PI / 2);
         g.translate(ref.center[0], ref.center[1], ref.center[2]);
         return g;
       })

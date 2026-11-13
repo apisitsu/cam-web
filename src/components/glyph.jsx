@@ -60,6 +60,14 @@ export const PartIcon = glyph(
   </>,
 );
 
+/** A solid cut open: the near half gone, the cut face lit. */
+export const SectionIcon = glyph(
+  <>
+    <path d="M4 8l8-4 8 4v8l-8 4-8-4z" opacity="0.45" />
+    <path d="M12 4v16l8-4V8z" fill={INK.cut} fillOpacity="0.55" stroke={INK.cut} />
+  </>,
+);
+
 /** A plain isometric billet — the raw stock block, drawn or hidden. */
 export const StockIcon = glyph(
   <>

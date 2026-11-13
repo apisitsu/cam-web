@@ -20,9 +20,11 @@ import {
   EditOutlined,
 } from '@ant-design/icons';
 import CommandButton from './components/CommandButton.jsx';
+import { SectionControls } from './components/SectionView.jsx';
+import { useSectionStore } from './stores/sectionStore.js';
 import {
   PartIcon, StockIcon, StockCutIcon, VoxelIcon, TurningIcon, ArborIcon, LatheToolIcon, RotateWorkIcon,
-  ToolpathIcon,
+  ToolpathIcon, SectionIcon,
 } from './components/glyph.jsx';
 import { cutterById } from './engine/cam/cutters.js';
 import { effectiveTool } from './engine/cam/effectiveTool.js';
@@ -196,6 +198,8 @@ export default function App() {
   const displayedRotaryCenter = useCamPlanStore((s) => s.displayedRotaryCenter);
   const partDatum     = useCamPlanStore((s) => s.datum);
   const [showPart, setShowPart] = useState(true);
+  const sectionOn = useSectionStore((st) => st.active);
+  const toggleSection = useSectionStore((st) => st.toggle);
   // The sim's fallback cutter is collapsed until asked for — see `ToolFallback`.
   const [toolFallbackOpen, setToolFallbackOpen] = useState(false);
 
@@ -1387,6 +1391,15 @@ export default function App() {
                   onClick={() => setShowPart(!showPart)}
                 />
               )}
+              {partAnalysis && showPart && (
+                <CommandButton
+                  id="section" size="small"
+                  type={sectionOn ? 'primary' : 'default'}
+                  icon={<SectionIcon />}
+                  onClick={toggleSection}
+                />
+              )}
+              {partAnalysis && showPart && <SectionControls raw={sketching} />}
               {/* Show/hide the billet and the carved block — a view toggle like
                   the part and toolpath ones, so it belongs here beside them
                   rather than as a lone switch in the Setup drawer. Offered only

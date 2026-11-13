@@ -33,6 +33,7 @@ import { useMeasureStore } from '../stores/measureStore.js';
 import { useEdgeTreatStore } from '../stores/edgeTreatStore.js';
 import { pickTreatEdge } from '../engine/solid/edgeTreat.js';
 import { isSketchableFace } from '../engine/mesh/sketchFace.js';
+import { useSectionClip } from './SectionView.jsx';
 import { featureAtPoint, edgeAtPoint } from '../engine/mesh/pickEdge.js';
 import { circlesAt, nearestCircle } from '../engine/mesh/circlePick.js';
 import { originMarkerSize, rotaryAxisLength } from '../engine/view/originMarker.js';
@@ -117,6 +118,7 @@ export default function PartMesh({ meshVer, visible = true, wireframe = false })
   const circleCache = useRef(null);
   // eslint-disable-next-line react-hooks/exhaustive-deps
   const geometry = useMemo(() => soupGeometry(getMesh().soup), [meshVer]);
+  const clip = useSectionClip(false, meshVer);
 
   useEffect(() => {
     if (!geometry) return undefined;
@@ -289,6 +291,7 @@ export default function PartMesh({ meshVer, visible = true, wireframe = false })
         opacity={0.85}
         wireframe={wireframe}
         side={THREE.DoubleSide}
+        clippingPlanes={clip}
       />
     </mesh>
   );
@@ -371,6 +374,7 @@ export function SketchPart({ meshVer, visible = true }) {
   const [hover, setHover] = useState(null);
   // eslint-disable-next-line react-hooks/exhaustive-deps
   const geometry = useMemo(() => soupGeometry(getRawMesh().soup), [meshVer]);
+  const clip = useSectionClip(true, meshVer);
   const highlight = useMemo(
     () => highlightGeometry(hover, getRawMesh().soup),
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -493,7 +497,7 @@ export function SketchPart({ meshVer, visible = true }) {
         {...treat}
         {...convert}
       >
-        <meshStandardMaterial color={PART_COLOR} metalness={0.1} roughness={0.65} side={THREE.DoubleSide} />
+        <meshStandardMaterial color={PART_COLOR} metalness={0.1} roughness={0.65} side={THREE.DoubleSide} clippingPlanes={clip} />
       </mesh>
       {converting && convertHover && <ChainMarks chains={convertHover.chains} />}
       {highlight?.kind === 'face' && (

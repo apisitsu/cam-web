@@ -18,6 +18,7 @@ import PartMesh, {
 } from './PartMesh.jsx';
 import { CHUCK, chuckBodyRadius } from '../engine/view/setup.js';
 import SketchStage from './SketchStage.jsx';
+import { SectionCap } from './SectionView.jsx';
 import { getBuf, setView } from '../engine/bufferCache.js';
 import { sliceUpTo } from '../engine/gcode/path.js';
 import { useSketchStore } from '../stores/sketchStore.js';
@@ -720,6 +721,7 @@ export function SceneContents({
       {sketching ? (
         <>
           <SketchPart meshVer={partVer} visible={showPart} />
+          {showPart && <SectionCap raw meshVer={partVer} />}
           {showPart && <MeasureMarks meshVer={partVer} raw />}
           {showPart && <EdgeTreatMarks meshVer={partVer} />}
           <SketchStage meshVer={partVer} />
@@ -749,6 +751,7 @@ export function SceneContents({
               whenever a program is not mid-index, which is when picking happens. */}
           <WorkGroup name="part-work" t={partT}>
             <PartMesh meshVer={partVer} visible={showPart} />
+            {showPart && <SectionCap meshVer={partVer} />}
             {showPart && <FeatureHighlight meshVer={partVer} />}
             {showPart && <DatumPickHighlight meshVer={partVer} />}
             {showPart && <OriginMarker meshVer={partVer} />}

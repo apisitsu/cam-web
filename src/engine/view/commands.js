@@ -235,6 +235,10 @@ export const COMMANDS = [
     hint: 'Draw the lathe holder and insert — hide it to see the cut it covers',
   },
   {
+    id: 'section', group: 'view', label: 'Section view',
+    hint: 'Cut the part open across X, Y or Z to see inside it — drag to move the cut',
+  },
+  {
     id: 'showToolpath', group: 'view', label: 'Show toolpath',
     hint: 'Draw the programmed moves — hide them to see the cut surface alone',
   },

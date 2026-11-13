@@ -32,6 +32,7 @@ import { measurePick } from '../engine/mesh/measure.js';
 import { useMeasureStore } from '../stores/measureStore.js';
 import { useEdgeTreatStore } from '../stores/edgeTreatStore.js';
 import { pickTreatEdge } from '../engine/solid/edgeTreat.js';
+import { isSketchableFace } from '../engine/mesh/sketchFace.js';
 import { featureAtPoint } from '../engine/mesh/pickEdge.js';
 import { circlesAt, nearestCircle } from '../engine/mesh/circlePick.js';
 import { originMarkerSize, rotaryAxisLength } from '../engine/view/originMarker.js';
@@ -386,9 +387,11 @@ export function SketchPart({ meshVer, visible = true }) {
 
   if (!geometry || !visible) return null;
 
+  // Only a face a sketch can go on: one strip of a bore or a fillet is not one.
   const faceUnder = (event) => {
     const { welded } = getRawMesh();
-    return welded ? faceOfTriangle(detectFeatures(welded), event.faceIndex) : null;
+    const face = welded ? faceOfTriangle(detectFeatures(welded), event.faceIndex) : null;
+    return face && isSketchableFace(welded, face) ? face : null;
   };
 
   // Measure takes clicks here as on the machining pages, in the frame the part

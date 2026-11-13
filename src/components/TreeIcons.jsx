@@ -78,6 +78,16 @@ export function FilletIcon({ inverse = false }) {
   );
 }
 
+/** Three copies of one block in a row. */
+export function PatternIcon({ inverse = false }) {
+  return (
+    <svg {...base} stroke={ink(inverse)} strokeWidth="1.4" strokeLinejoin="round">
+      <path d="M1.5 9h3.5v4.5H1.5zM6.25 9h3.5v4.5h-3.5zM11 9h3.5v4.5H11z" fill={fillOf(inverse)} />
+      <path d="M1.5 6.5h13" strokeDasharray="1.5 1.5" />
+    </svg>
+  );
+}
+
 export function ImportIcon({ inverse = false }) {
   return (
     <svg {...base} stroke={ink(inverse)} strokeWidth="1.4" strokeLinejoin="round">
@@ -116,5 +126,6 @@ export function FeatureIcon({ kind, inverse = false }) {
   if (kind === 'hole') return <HoleIcon inverse={inverse} />;
   if (kind === 'chamfer') return <ChamferIcon inverse={inverse} />;
   if (kind === 'fillet') return <FilletIcon inverse={inverse} />;
+  if (kind === 'pattern') return <PatternIcon inverse={inverse} />;
   return <ExtrudeIcon inverse={inverse} />;
 }

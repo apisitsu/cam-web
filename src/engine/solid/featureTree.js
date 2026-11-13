@@ -53,6 +53,9 @@ import {
 } from './hole.js';
 import { boundsOf } from '../mesh/analyze.js';
 import { applyEdgeTreatment, parseEdgeRef } from './edgeTreat.js';
+import {
+  PATTERN_TYPES, patternTransforms, transformSoup, transformHole,
+} from './pattern.js';
 
 /**
  * How far an extrude runs. Blind is the depth typed; Through All is past the far
@@ -126,6 +129,7 @@ export const FEATURE_KINDS = {
   hole: { label: 'Hole', needsSketch: true },
   chamfer: { label: 'Chamfer', needsSketch: false },
   fillet: { label: 'Fillet', needsSketch: false },
+  pattern: { label: 'Pattern', needsSketch: false },
 };
 
 /** Chamfer and fillet work on edges of the part, not on a sketch. */
@@ -173,6 +177,30 @@ export function createFeature(kind, props = {}) {
       merge: 'cut',
       size: positive(props.size, 1),
       edges: (Array.isArray(props.edges) ? props.edges : []).map(parseEdgeRef).filter(Boolean),
+    };
+  }
+  if (kind === 'pattern') {
+    const pattern = PATTERN_TYPES[props.pattern] ? props.pattern : 'linear';
+    const axis = (v, d) => (v === 'x' || v === 'y' || v === 'z' ? v : d);
+    const count = (v) => (Number.isFinite(v) ? Math.max(1, Math.min(500, Math.round(v))) : 2);
+    return {
+      ...base,
+      name: props.name || PATTERN_TYPES[pattern],
+      merge: 'add', // each copy takes its seed's own merge on replay
+      pattern,
+      // The features copied, by id; none (a mirror only) copies the whole body.
+      seeds: (Array.isArray(props.seeds) ? props.seeds : []).filter(Number.isFinite),
+      dir: axis(props.dir, 'x'),
+      count: count(props.count),
+      spacing: Number.isFinite(props.spacing) ? props.spacing : 20,
+      dir2: props.dir2 ? axis(props.dir2, null) : null,
+      count2: count(props.count2),
+      spacing2: Number.isFinite(props.spacing2) ? props.spacing2 : 20,
+      axis: axis(props.axis, 'z'),
+      center: Array.isArray(props.center) && props.center.length === 3 ? props.center.map(Number) : [0, 0, 0],
+      angle: Number.isFinite(props.angle) ? props.angle : 360,
+      mirrorPlane: ['XY', 'XZ', 'YZ'].includes(props.mirrorPlane) ? props.mirrorPlane : 'YZ',
+      mirrorOffset: Number.isFinite(props.mirrorOffset) ? props.mirrorOffset : 0,
     };
   }
   if (kind === 'hole') {
@@ -360,6 +388,8 @@ export function rebuildFeatures(features, ctx = {}, { keepIntermediates = false 
   const used = new Set(); // sketches a feature was actually built from
   const fctx = { ...ctx, refBounds, planes, used };
   let holes = [];
+  // Each built feature's own solid and how it joined, for a pattern to copy.
+  const solids = new Map();
 
   const fail = (f, message) => {
     const step = {
@@ -392,6 +422,23 @@ export function rebuildFeatures(features, ctx = {}, { keepIntermediates = false 
       continue;
     }
 
+    if (f.kind === 'pattern') {
+      if (!current) { fail(f, 'a pattern needs a part to work on'); continue; }
+      try {
+        const out = applyPattern(current, f, solids, meshBoolean);
+        current = out.soup;
+        holes.push(...out.holes);
+      } catch (e) {
+        fail(f, e?.message || String(e));
+        continue;
+      }
+      steps.push({
+        id: f.id, name: f.name, kind: f.kind, ok: true, merge: f.merge, triangleCount: current.triangleCount,
+        ...(keepIntermediates ? { soup: current } : {}),
+      });
+      continue;
+    }
+
     let made;
     try {
       // What Through All has to get through: the part as it stands before this.
@@ -401,6 +448,8 @@ export function rebuildFeatures(features, ctx = {}, { keepIntermediates = false 
       continue;
     }
 
+    // How a copy of this feature joins the part: the base of the part is a boss.
+    const seedMerge = !current || f.merge === 'new' ? 'add' : f.merge;
     // Nothing to combine with yet: the first feature that builds is the base,
     // whatever merge mode it happens to carry.
     if (!current || f.merge === 'new') {
@@ -419,6 +468,7 @@ export function rebuildFeatures(features, ctx = {}, { keepIntermediates = false 
     }
 
     if (made.holes) holes.push(...made.holes);
+    solids.set(f.id, { soup: made, merge: seedMerge, holes: made.holes || [] });
     const bounds = boundsOf(made);
     refBounds.set(f.id, bounds);
     steps.push({
@@ -449,6 +499,39 @@ export function rebuildFeatures(features, ctx = {}, { keepIntermediates = false 
   };
 }
 
+/**
+ * Replay a Pattern or Mirror: every copy of each seed's solid, joined to the part
+ * with that seed's merge in one pass where the boolean allows it. With no seeds a
+ * mirror copies the whole body as it stands and joins the reflection to it.
+ */
+function applyPattern(current, f, solids, meshBoolean) {
+  if (!meshBoolean) throw new Error('no solid boolean is available to combine the copies');
+  const xforms = patternTransforms(f);
+  if (!xforms.length) throw new Error('the pattern makes no copies — raise the count');
+  const groups = [];
+  if (!f.seeds.length) {
+    if (f.pattern !== 'mirror') throw new Error('pick the features to pattern');
+    groups.push({ soup: current, merge: 'add', holes: [] });
+  } else {
+    for (const id of f.seeds) {
+      const seed = solids.get(id);
+      if (!seed) throw new Error('a feature it copies is gone, failed, suppressed or comes after it');
+      groups.push(seed);
+    }
+  }
+  let soup = current;
+  const holes = [];
+  for (const g of groups) {
+    const op = g.merge === 'cut' ? 'cut' : g.merge === 'common' ? 'common' : 'add';
+    const tools = xforms.map((x) => transformSoup(g.soup, x));
+    const many = tools.length > 1 && meshBoolean.many ? meshBoolean.many(soup, tools, op, 'pattern') : null;
+    if (many) soup = many;
+    else for (const t of tools) soup = meshBoolean(soup, t, op, 'pattern');
+    for (const x of xforms) holes.push(...g.holes.map((h) => transformHole(h, x)));
+  }
+  return { soup, holes };
+}
+
 /** Whether replaying this tree will need a solid boolean at all. */
 export function needsMeshBoolean(features) {
   let seen = 0;
@@ -467,6 +550,14 @@ export function describeFeature(f, sketchName) {
     const n = f.edges.length;
     const size = f.kind === 'fillet' ? `R${f.size}` : `${f.size} mm`;
     return `${f.kind === 'fillet' ? 'Fillet' : 'Chamfer'} ${size} · ${n} edge${n === 1 ? '' : 's'}`;
+  }
+  if (f.kind === 'pattern') {
+    const n = f.seeds.length;
+    const what = n ? `${n} feature${n === 1 ? '' : 's'}` : 'the body';
+    if (f.pattern === 'mirror') return `Mirror ${what} in ${f.mirrorPlane}${f.mirrorOffset ? ` at ${f.mirrorOffset} mm` : ''}`;
+    if (f.pattern === 'circular') return `Circular pattern ${what} × ${f.count} about ${f.axis.toUpperCase()}, ${f.angle}°`;
+    const grid = f.dir2 ? ` × ${f.count2} along ${f.dir2.toUpperCase()}` : '';
+    return `Linear pattern ${what} × ${f.count} along ${f.dir.toUpperCase()} @ ${f.spacing} mm${grid}`;
   }
   if (f.kind === 'hole') {
     const size = f.holeType === 'tap' ? f.thread : `Ø${f.diameter}`;

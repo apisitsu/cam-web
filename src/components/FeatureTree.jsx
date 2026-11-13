@@ -36,6 +36,7 @@ import { describeFeature, END_CONDITIONS, isEdgeTreatment } from '../engine/soli
 import { THREADS } from '../engine/solid/hole.js';
 import { planeLabel } from '../engine/sketch/plane.js';
 import RevolveAxis, { axisValueOf, axisFromValue } from './RevolveAxis.jsx';
+import { PatternFields } from './PatternPanel.jsx';
 import { CAD } from '../theme.js';
 
 const { Text } = Typography;
@@ -107,6 +108,16 @@ function FeatureEditor({ feature }) {
           {`${n} edge${n === 1 ? '' : 's'}…`}
         </Button>
       </Space>
+    );
+  }
+  if (feature.kind === 'pattern') {
+    return (
+      <PatternFields
+        value={feature}
+        onChange={(next) => update(feature.id, next)}
+        features={useFeatureStore.getState().features}
+        selfId={feature.id}
+      />
     );
   }
   if (feature.kind === 'hole') {

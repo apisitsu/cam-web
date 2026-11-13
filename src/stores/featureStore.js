@@ -401,6 +401,22 @@ export const useFeatureStore = create((set, get) => ({
   },
 
   /**
+   * Add a Pattern or Mirror and rebuild. One that cannot build is taken back
+   * out again; its message is returned (null when it built).
+   */
+  async buildPattern(props) {
+    const snapshot = get().features;
+    const feature = get().addFeature('pattern', props);
+    await get().rebuild();
+    const failed = get().errors.find((e) => e.id === feature.id);
+    if (!failed) return null;
+    set({ features: snapshot, selectedId: null });
+    get()._discard(1);
+    await get().rebuild();
+    return failed.message;
+  },
+
+  /**
    * Begin picking edges for a Chamfer or Fillet (or for `feature` again). Edges
    * are picked on the part as built, so the Sketch page is shown, with any open
    * sketch closed first — its clicks would otherwise land on the sketch.

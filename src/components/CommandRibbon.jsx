@@ -11,9 +11,8 @@
  * them into the slot here. Hiding the slot, rather than unmounting the toolbar, is
  * what keeps a half-typed dimension alive while the operator looks at another tab.
  *
- * **Only commands that exist are here.** The mockup also draws Fillet, Pattern,
- * Section View and more, and the app has none of them. A button that does
- * nothing teaches people to stop trying the buttons.
+ * **Only commands that exist are here.** The mockup draws more than the app has;
+ * a button that does nothing teaches people to stop trying the buttons.
  *
  * The four feature buttons open `BuildPanel` already set to what they name. The Sketch
  * tab's Build keeps the full panel, for New and Common, which have no button here.
@@ -24,6 +23,7 @@ import { UndoOutlined, RedoOutlined } from '@ant-design/icons';
 import RibbonButton from './RibbonButton.jsx';
 import BuildPanel, { useHasBuiltPart } from './BuildPanel.jsx';
 import HolePanel from './HolePanel.jsx';
+import PatternPanel from './PatternPanel.jsx';
 import { glyph, INK } from './glyph.jsx';
 import { useCamStore } from '../stores/camStore.js';
 import { useCamPlanStore } from '../stores/camPlanStore.js';
@@ -122,6 +122,21 @@ const ChamferIcon = glyph(<>
 const FilletIcon = glyph(<>
   <path d="M3 21V12a9 9 0 0 1 9-9h9v18z" fill={INK.steel} />
   <path d="M3 12a9 9 0 0 1 9-9" stroke={INK.cut} strokeWidth="2.6" />
+</>);
+// Copies of a block: in a row, round a centre, and either side of a plane.
+const LinearPatternIcon = glyph(<>
+  <path d="M2 10h5v8H2zM9.5 10h5v8h-5zM17 10h5v8h-5z" fill={INK.body} />
+  <path d="M3 6h17M17 3.5L20 6l-3 2.5" stroke={INK.go} />
+</>);
+const CircularPatternIcon = glyph(<>
+  <circle cx="12" cy="12" r="7.5" stroke={INK.go} strokeDasharray="2.5 2" />
+  {[[12, 4.5], [18.5, 15.75], [5.5, 15.75]].map(([x, y]) => <rect key={x} x={x - 2.6} y={y - 2.6} width="5.2" height="5.2" fill={INK.body} />)}
+  <circle cx="12" cy="12" r="1.2" fill="currentColor" />
+</>);
+const MirrorIcon = glyph(<>
+  <path d="M12 2v20" stroke={INK.sketch} strokeDasharray="3 2" />
+  <path d="M3 8l6-2v12l-6-2z" fill={INK.body} />
+  <path d="M21 8l-6-2v12l6-2z" fill={INK.bodyTop} />
 </>);
 const MeasureIcon = glyph(<>
   <path d="M3 15l12-12 6 6-12 12z" fill={INK.body} />
@@ -286,6 +301,22 @@ function FeatureCommands() {
         onClick={() => startEdgeTreatment('chamfer')}
         tip={hasPart ? 'Bevel the edges you click on the part' : 'Build a part first: a chamfer needs edges'}
       />
+      <Sep />
+      {[
+        ['linear', LinearPatternIcon, 'Linear Pattern', 'Copy features in a row, or a grid, along X / Y / Z'],
+        ['circular', CircularPatternIcon, 'Circular Pattern', 'Copy features round an axis'],
+        ['mirror', MirrorIcon, 'Mirror', 'Mirror features — or the whole body — in a plane'],
+      ].map(([pattern, Icon, label, tip]) => (
+        <PatternPanel
+          key={pattern}
+          pattern={pattern}
+          trigger={(
+            <Tooltip title={hasPart ? tip : 'Build a part first: a pattern copies its features'} placement="bottom">
+              <RibbonButton icon={<Icon />} label={label} disabled={!hasPart} />
+            </Tooltip>
+          )}
+        />
+      ))}
       <Sep />
       <Command
         icon={<UndoOutlined />} label="Undo" disabled={!canUndo || building}

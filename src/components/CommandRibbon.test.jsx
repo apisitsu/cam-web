@@ -177,10 +177,12 @@ describe('CommandRibbon', () => {
 
   it('offers only commands that exist', async () => {
     await render();
+    await press(tab('features'));
+    expect(container.textContent).toMatch(/Linear Pattern.*Circular Pattern.*Mirror/);
     for (const t of ['features', 'cam']) {
       // eslint-disable-next-line no-await-in-loop
       await press(tab(t));
-      expect(container.textContent).not.toMatch(/soon|Pattern|Section View/);
+      expect(container.textContent).not.toMatch(/soon|Section View/);
     }
   });
 

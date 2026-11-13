@@ -20,6 +20,17 @@
  * around it: **triangle soup in, triangle soup out**, the same shape the CAM
  * pipeline reads everywhere else.
  *
+ * ## Two engines
+ *
+ * **manifold-3d** (wasm) does the work whenever both solids are closed: its
+ * result is always closed too — no cracks, no dropped triangles — and it treats
+ * faces that lie exactly on one another correctly, so nothing has to be nudged.
+ * It has to be loaded first (`loadMeshBoolean`), and it refuses a mesh with
+ * holes in it, which an imported STL can be. For those, and until the wasm is
+ * loaded, **three-bvh-csg** is the fallback: it accepts anything, but leaves
+ * T-junctions (closed up by `repairSoup`) and, where a tool crosses a flat face
+ * at a shallow angle, the odd missing or doubled triangle.
+ *
  * ## What it costs
  *
  * A mesh boolean returns triangles that *approximate* the true boundary, and
@@ -31,6 +42,76 @@ import {
   Evaluator, Brush, ADDITION, SUBTRACTION, INTERSECTION,
 } from 'three-bvh-csg';
 import { repairSoup, openEdgeCount } from '../engine/mesh/repair.js';
+import { weld } from '../engine/mesh/stl.js';
+import { loadManifold } from './manifoldLoader.js';
+
+/** The loaded manifold-3d module, once `loadMeshBoolean` has run. */
+let manifold = null;
+
+/**
+ * Load the manifold engine, then hand back `meshBoolean`. A rebuild awaits this
+ * before it replays the tree, so every boolean in it goes through manifold.
+ */
+export async function loadMeshBoolean() {
+  manifold ??= await loadManifold();
+  return meshBoolean;
+}
+
+/** Which engine did the last boolean, for tests and diagnosis. */
+export let lastEngine = null;
+
+/** Corners closer than this are one when a soup is indexed for manifold, mm. */
+const WELD_TOL = 1e-5;
+
+/** A soup as a Manifold, or null if it is not a closed solid manifold accepts. */
+function manifoldOf(soup) {
+  const { Manifold, Mesh } = manifold;
+  const w = weld(soup, WELD_TOL);
+  const mesh = new Mesh({ numProp: 3, vertProperties: w.positions, triVerts: w.indices });
+  mesh.merge();
+  try {
+    const m = new Manifold(mesh);
+    if (m.status() === 'NoError') return m;
+    m.delete();
+  } catch {
+    // Not manifold: the caller falls back.
+  }
+  return null;
+}
+
+/** A Manifold back to a soup: flat triangles, as the pipeline reads them. */
+function soupOfManifold(m, format) {
+  const { vertProperties: v, triVerts: t, numProp } = m.getMesh();
+  const positions = new Float32Array(t.length * 3);
+  for (let i = 0; i < t.length; i++) {
+    const o = t[i] * numProp;
+    positions[i * 3] = v[o];
+    positions[i * 3 + 1] = v[o + 1];
+    positions[i * 3 + 2] = v[o + 2];
+  }
+  return { positions, triangleCount: t.length / 3, format };
+}
+
+/** The boolean through manifold, or null when either solid is not closed. */
+function manifoldBoolean(part, tool, op, format) {
+  const a = manifoldOf(part);
+  if (!a) return null;
+  const b = manifoldOf(tool);
+  if (!b) { a.delete(); return null; }
+  const raw = op === 'add' ? a.add(b) : op === 'cut' ? a.subtract(b) : a.intersect(b);
+  const result = raw;
+  const empty = result.isEmpty();
+  // Manifold works in double precision; written back as float32, corners where
+  // a tool crosses a faceted wall can land on one another or within the app's
+  // weld tolerance. Welding them and dropping what that flattens keeps the
+  // surface closed — a collapsed sliver's two long sides are each other's partner.
+  const soup = empty ? null : repairSoup(soupOfManifold(result, format), { tol: 1e-4 });
+  a.delete();
+  b.delete();
+  result.delete();
+  if (empty) throw new Error(`Nothing is left after ${op} — the two solids do not overlap the way that needs.`);
+  return soup;
+}
 
 /** Corner tolerances (mm) a repair is tried at, coarse to fine, until one closes the surface. */
 const REPAIR_TOLS = [1e-4, 1e-5, 1e-6];
@@ -121,6 +202,12 @@ export function meshBoolean(part, tool, op, format = op) {
   if (operation === undefined) throw new Error(`unknown mesh boolean: ${op}`);
   if (!part?.triangleCount) throw new Error('There is no part loaded to combine with.');
   if (!tool?.triangleCount) throw new Error('The new solid is empty.');
+
+  if (manifold) {
+    const out = manifoldBoolean(part, tool, op, format);
+    if (out) { lastEngine = 'manifold'; return out; }
+  }
+  lastEngine = 'bvh';
 
   const a = brushOf(part);
   // Add and cut grow the new solid a hair first. A profile drawn to the edge of

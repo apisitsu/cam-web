@@ -1,8 +1,14 @@
 import { describe, it, expect } from 'vitest';
-import { meshBoolean, MESH_OPS } from './csg.js';
+import * as csg from './csg.js';
+import { meshBoolean, MESH_OPS, loadMeshBoolean } from './csg.js';
+import { holeSolid } from '../engine/solid/hole.js';
 import { openEdgeCount } from '../engine/mesh/repair.js';
 import { extrudeRegion, revolveRegion } from '../engine/solid/extrude.js';
 import { volume } from '../engine/solid/solidAssert.js';
+
+// The tests before the `manifold` block run first, on the three-bvh-csg
+// fallback, which is what a boolean uses until the wasm is loaded and whenever a
+// solid is not closed. Once loaded it stays loaded, so the order matters.
 
 /**
  * Add and cut grow the new solid by `GROW` (a micron) so a surface it shares with
@@ -144,5 +150,47 @@ describe('meshBoolean — a part of a turn, and a drilled hole', () => {
     const quad = { positions: new Float32Array([0, 0, 0, 1, 0, 0, 1, 1, 0, 0, 0, 0, 1, 1, 0, 0, 1, 0]), triangleCount: 2 };
     expect(openEdgeCount(quad)).toBe(4); // the rim; the shared diagonal is matched
     expect(openEdgeCount(box(0, 0, 1, 1, 0, 1))).toBe(0);
+  });
+});
+
+describe('meshBoolean — manifold', () => {
+  it('is used once loaded, and comes out exact and closed', async () => {
+    await loadMeshBoolean();
+    const part = box(0, 0, 20, 20, 0, 10);
+    const out = meshBoolean(part, box(5, 5, 15, 15, 6, 11), 'cut');
+    expect(csg.lastEngine).toBe('manifold');
+    expect(volume(out)).toBeCloseTo(4000 - 400, 3);
+    expect(openEdgeCount(out)).toBe(0);
+  });
+
+  it('takes a solid that only touches the part with no nudging', () => {
+    const a = box(0, 0, 20, 20, 0, 10);
+    const b = box(20, 0, 30, 20, 0, 10); // shares the face at x = 20
+    const out = meshBoolean(a, b, 'add');
+    expect(volume(out)).toBeCloseTo(6000, 3);
+    expect(openEdgeCount(out)).toBe(0);
+  });
+
+  it('closes the mouth of a chamfered and a countersunk hole', () => {
+    const plate = box(-30, -20, 30, 20, 0, 10);
+    for (const spec of [
+      { holeType: 'drill', diameter: 10, chamfer: 1 },
+      { holeType: 'csk', diameter: 10, cskDiameter: 14, cskAngle: 90 },
+    ]) {
+      const tool = holeSolid([[0, 0]], { preset: 'XY', offset: 10 }, spec, { depth: 11, through: true });
+      expect(openEdgeCount(meshBoolean(plate, tool, 'cut'))).toBe(0);
+    }
+  });
+
+  it('falls back to three-bvh-csg for a part with a hole in its surface', () => {
+    const part = box(0, 0, 20, 20, 0, 10);
+    // Drop the last triangle: the surface is no longer closed.
+    const open = { ...part, positions: part.positions.slice(0, -9), triangleCount: part.triangleCount - 1 };
+    meshBoolean(open, box(5, 5, 15, 15, 6, 11), 'cut');
+    expect(csg.lastEngine).toBe('bvh');
+  });
+
+  it('says so when nothing is left', () => {
+    expect(() => meshBoolean(box(0, 0, 1, 1, 0, 1), box(5, 5, 6, 6, 0, 1), 'common')).toThrow(/Nothing is left/);
   });
 });

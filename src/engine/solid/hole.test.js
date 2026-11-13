@@ -1,9 +1,14 @@
-import { describe, it, expect } from 'vitest';
+import {
+  describe, it, expect, beforeAll,
+} from 'vitest';
 import {
   holeSection, holePositions, holePointIds, unusedHoleSites, holeSolid, drillDiameter, THREADS, holeSegments,
 } from './hole.js';
 import { createFeature, rebuildFeatures, describeFeature } from './featureTree.js';
-import { meshBoolean } from '../../lib/csg.js';
+import { meshBoolean, loadMeshBoolean } from '../../lib/csg.js';
+
+// The app always booleans through manifold once it is loaded; so do these.
+beforeAll(async () => { await loadMeshBoolean(); });
 import { createSketch, addPoint, addLine, addCircle } from '../sketch/model.js';
 import { volume } from './solidAssert.js';
 

@@ -9,7 +9,7 @@
  * - a **straight edge** — the section extruded the edge's length;
  * - a **round edge** (the rim of a bore or a boss) — the section revolved about
  *   the circle's axis, with the facet count and phase of the rim itself, so the
- *   tool's facets lie on the part's and the boolean has nothing to split.
+ *   tool's facets run along the part's.
  *
  * The section is worked out in a 2D frame square to the edge, from the two faces
  * that meet there: their outward normals `n1`, `n2` and the directions `t1`, `t2`
@@ -87,13 +87,10 @@ function cluster(items, key) {
  * Everything is in a plane square to the edge: `P` the edge, `n1`/`n2` the two
  * faces' outward normals, `t1`/`t2` the way each face runs away from the edge.
  * Returns the loop (counter-clockwise, flat `[x0,y0,…]`) and whether it cuts.
- *
- * `wall`, on an outside corner, makes the tool also take a `skin` off face 2 for
- * `run` along it from the edge — see `circleTool` for why.
  */
 export function treatmentSection({
   P, n1, n2, t1, t2,
-}, kind, size, reach = Infinity, wall = null) {
+}, kind, size, reach = Infinity) {
   if (!(size > 0)) throw new Error(`a ${kind} needs a size greater than zero`);
   const cosPhi = Math.max(-1, Math.min(1, dot(t1, t2)));
   const phi = Math.acos(cosPhi);
@@ -134,18 +131,9 @@ export function treatmentSection({
   // cleanly. A chamfer's flat simply runs on past both faces; a fillet's arc
   // meets its faces tangentially, so it is stepped off them along the normals.
   const Q = add(P, scale(add(n1, n2), s * out));
-  let pts;
-  if (convex && wall) {
-    const start = kind === 'chamfer' ? add(A, scale(unit(sub(A, B)), eps)) : add(A, scale(n1, eps));
-    const Bin = sub(B, scale(n2, wall.skin));
-    const low = add(Bin, scale(t2, wall.run));
-    const lowOut = add(add(P, scale(t2, len(sub(B, P)) + wall.run)), scale(n2, out));
-    pts = [start, ...(kind === 'chamfer' ? [] : [A, ...arc]), B, Bin, low, lowOut, Q];
-  } else {
-    pts = kind === 'chamfer'
-      ? [add(A, scale(unit(sub(A, B)), eps)), add(B, scale(unit(sub(B, A)), eps)), Q]
-      : [add(A, scale(n1, s * eps)), A, ...arc, B, add(B, scale(n2, s * eps)), Q];
-  }
+  const pts = kind === 'chamfer'
+    ? [add(A, scale(unit(sub(A, B)), eps)), add(B, scale(unit(sub(B, A)), eps)), Q]
+    : [add(A, scale(n1, s * eps)), A, ...arc, B, add(B, scale(n2, s * eps)), Q];
   let area = 0;
   for (let i = 0; i < pts.length; i++) {
     const [x0, y0] = pts[i];
@@ -317,63 +305,25 @@ export function circleEdgeFrame(soup, ref) {
     return Math.abs(next - a - step) < step * 0.05;
   });
 
-  // How far the wall runs from the rim, and whether it comes out into the open
-  // at its far end (a through bore, a boss standing off a face's edge) or stops
-  // on a floor.
-  const rc = even ? rCorner : R;
-  const inner = rc * Math.cos(Math.PI / Math.max(angles.length, 8)) - tol;
-  const along = (p) => (p[axis] - center[axis]) * wall.tz;
-  let run = 0;
-  for (let t = 0; t < soup.triangleCount; t++) {
-    const tri = triangle(soup, t);
-    if (Math.abs(dot(normalOf(tri), k)) >= 0.2) continue;
-    if (!tri.every((p) => { const r = radial(p); return r > inner && r < rc + tol && along(p) > -tol; })) continue;
-    for (const p of tri) run = Math.max(run, along(p));
-  }
-  let open = false;
-  for (let t = 0; t < soup.triangleCount && run > 0; t++) {
-    const tri = triangle(soup, t);
-    const nk = dot(normalOf(tri), k);
-    if (Math.abs(nk) < 0.99) continue;
-    if (tri.some((p) => Math.abs(along(p) - run) < tol && Math.abs(radial(p) - rc) < tol)) {
-      if (nk * wall.tz > 0) { open = true; break; }
-    }
-  }
   return {
     k,
     n1: [0, flat.nk],
     t1: [flat.tr, 0],
     n2: [wall.nr, 0],
     t2: [0, wall.tz],
-    radius: rc,
+    radius: even ? rCorner : R,
     segments: even ? angles.length : null,
     phase: even ? angles[0] : 0,
-    run,
-    open,
   };
 }
 
-/**
- * How deep a round tool cuts into the wall it re-cuts, mm: two microns. Thinner
- * than this and the tool's wall and the part's start to read as the same surface
- * to the boolean, which then leaves more cracks rather than fewer.
- */
-const SKIN = 0.002;
 
 function circleTool(soup, ref, kind, size) {
   const f = circleEdgeFrame(soup, ref);
   const R = f.radius;
-  // A tool that stopped where it met a round wall would cross the wall's facets
-  // along a ring, and the mesh boolean leaves that ring full of cracks. So on an
-  // outside rim the tool carries on down the wall, a skin deep, and the part's
-  // wall is replaced by the tool's — whose join to the chamfer is made exactly,
-  // by the revolve. The skin (`SKIN`) is far below anything a machine holds.
-  // A rim's faces are square, so either treatment leaves the wall `size` from
-  // the edge; the run is measured on from there.
-  const run = (f.open ? f.run + size : f.run - SKIN) - size;
   const { loop, convex } = treatmentSection({
     P: [R, 0], n1: f.n1, n2: f.n2, t1: f.t1, t2: f.t2,
-  }, kind, size, R * 0.5, run > 0 ? { run, skin: SKIN } : null);
+  }, kind, size, R * 0.5);
   for (let i = 0; i < loop.length; i += 2) {
     if (loop[i] <= 0) throw new Error(`a ${size} mm ${kind} does not fit a Ø${(2 * R).toFixed(2)} rim`);
   }

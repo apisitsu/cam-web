@@ -1,10 +1,12 @@
-import { describe, it, expect } from 'vitest';
+import {
+  describe, it, expect, beforeAll,
+} from 'vitest';
 import {
   treatmentSection, lineEdgeFrame, circleEdgeFrame, applyEdgeTreatment,
   pickTreatEdge, parseEdgeRef, sameEdge, describeEdgeRef,
 } from './edgeTreat.js';
 import { extrudeRegion, revolveRegion } from './extrude.js';
-import { meshBoolean } from '../../lib/csg.js';
+import { meshBoolean, loadMeshBoolean } from '../../lib/csg.js';
 import { volume, isClosed } from './solidAssert.js';
 import { openEdgeCount } from '../mesh/repair.js';
 import { weld } from '../mesh/stl.js';
@@ -17,6 +19,9 @@ const box = (x0, y0, x1, y1, z0, z1) => extrudeRegion(
 const circleLoop = (r, n = 64) => Array.from({ length: n }, (_, i) => [
   r * Math.cos((2 * Math.PI * i) / n), r * Math.sin((2 * Math.PI * i) / n),
 ]).flat();
+
+// The app always booleans through manifold once it is loaded; so do these.
+beforeAll(async () => { await loadMeshBoolean(); });
 
 const near = (v, want, tol = 1) => expect(Math.abs(v - want)).toBeLessThan(tol);
 // The top front edge of a 40 × 20 × 10 block, running along X.
@@ -87,6 +92,7 @@ describe('applyEdgeTreatment — straight edges', () => {
     const out = applyEdgeTreatment(part, { kind: 'fillet', size: 3, edges: [TOP_FRONT] }, meshBoolean);
     near(volume(out), 8000 - (1 - Math.PI / 4) * 9 * 40, 0.5);
     expect(isClosed(out)).toBe(true);
+    expect(openEdgeCount(out)).toBe(0);
   });
 
   it('chamfers several edges of one block', () => {
@@ -124,17 +130,11 @@ describe('applyEdgeTreatment — round edges', () => {
     expect(f.n1).toEqual([0, 1]);
     expect(f.n2).toEqual([-1, 0]);
     expect(f.segments).toBe(64);
-    expect(f.open).toBe(true);
     const before = volume(part);
     const out = applyEdgeTreatment(part, { kind: 'chamfer', size: 1, edges: [rim] }, meshBoolean);
-    // A ring of triangle ½·1·1 at a mean radius of 5 + 1/3, and the 0.002 mm
-    // skin re-cut down the 9 mm of wall below it and 1 mm past.
-    const chamfer = 0.5 * 2 * Math.PI * (5 + 1 / 3);
-    const skin = 2 * Math.PI * 5 * 0.002 * 10;
-    near(before - volume(out), chamfer + skin, 0.4);
-    // The mesh boolean leaves a few cracks where a cone crosses a flat face —
-    // the Hole Wizard's own chamfer does the same — but not a ring of them.
-    expect(openEdgeCount(out)).toBeLessThan(60);
+    // A ring of triangle ½·1·1 at a mean radius of 5 + 1/3.
+    near(before - volume(out), 0.5 * 2 * Math.PI * (5 + 1 / 3), 0.1);
+    expect(openEdgeCount(out)).toBe(0);
   });
 
   it('fillets the top of a boss', () => {
@@ -144,11 +144,10 @@ describe('applyEdgeTreatment — round edges', () => {
     const before = volume(boss);
     const out = applyEdgeTreatment(boss, { kind: 'fillet', size: 2, edges: [rim] }, meshBoolean);
     const ringArea = (1 - Math.PI / 4) * 4;
-    // The removed ring's section sits between radius 7 and 8, plus the 0.002 mm
-    // skin down the 8 mm of wall below the fillet and 2 mm past its foot.
-    const skin = 2 * Math.PI * 8 * 0.002 * 10;
-    expect(before - volume(out)).toBeGreaterThan(ringArea * 2 * Math.PI * 7 + skin * 0.9);
-    expect(before - volume(out)).toBeLessThan(ringArea * 2 * Math.PI * 8 + skin * 1.1);
+    // The removed ring's section sits between radius 7 and 8.
+    expect(before - volume(out)).toBeGreaterThan(ringArea * 2 * Math.PI * 7);
+    expect(before - volume(out)).toBeLessThan(ringArea * 2 * Math.PI * 8);
+    expect(openEdgeCount(out)).toBe(0);
   });
 });
 

@@ -410,7 +410,7 @@ export const useFeatureStore = create((set, get) => ({
       let meshBoolean;
       if (needsMeshBoolean(features)) {
         try {
-          ({ meshBoolean } = await import('../lib/csg.js'));
+          meshBoolean = await (await import('../lib/csg.js')).loadMeshBoolean();
         } catch (e) {
           // The solid boolean is a lazily-loaded chunk, so this is the one part
           // of a rebuild that can fail for a reason nothing on this page did —

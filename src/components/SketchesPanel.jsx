@@ -17,7 +17,9 @@ import { PlusOutlined, DeleteOutlined, BorderOuterOutlined } from '@ant-design/i
 import { useSketchStore } from '../stores/sketchStore.js';
 import { useCamPlanStore } from '../stores/camPlanStore.js';
 import { useFeatureStore } from '../stores/featureStore.js';
-import { PLANE_PRESETS, planeLabel, withGap } from '../engine/sketch/plane.js';
+import {
+  PLANE_PRESETS, planeLabel, withGap, tiltPlane,
+} from '../engine/sketch/plane.js';
 import { CAD } from '../theme.js';
 
 const { Text } = Typography;
@@ -45,6 +47,10 @@ export default function SketchesPanel({ trigger }) {
   const onFace = Number.isFinite(active?.plane?.gap);
   const gap = onFace ? active.plane.gap : 0;
   const [renaming, setRenaming] = useState(null);
+  // An angled plane off this sketch's plane: the hinge axis, angle, where the
+  // hinge sits across the plane, and a stand-off along the new normal.
+  const [tilt, setTilt] = useState({ axis: 'x', angle: 30, pivot: 0, offset: 0 });
+  const startSketch = useFeatureStore((s) => s.startSketch);
 
   const content = (
     <Space direction="vertical" size={6} style={{ minWidth: 250 }}>
@@ -181,6 +187,62 @@ export default function SketchesPanel({ trigger }) {
       <Text style={{ color: CAD.dim, fontSize: 10 }}>
         Geometry keeps its 2D coordinates; only where the plane sits in space changes.
       </Text>
+
+      <Divider style={{ margin: '2px 0' }} />
+      <Text style={{ color: CAD.dim, fontSize: 11 }}>Angled plane off “{active?.name}”</Text>
+      <Space size={4} wrap style={{ width: 250 }}>
+        <Tooltip title="The axis of this sketch the new plane hinges about">
+          <Select
+            size="small"
+            value={tilt.axis}
+            options={[{ value: 'x', label: 'About X' }, { value: 'y', label: 'About Y' }]}
+            onChange={(axis) => setTilt({ ...tilt, axis })}
+            style={{ width: 92 }}
+            data-tilt-axis
+          />
+        </Tooltip>
+        <InputNumber
+          size="small"
+          value={tilt.angle}
+          min={-180}
+          max={180}
+          onChange={(v) => setTilt({ ...tilt, angle: Number(v) || 0 })}
+          addonAfter="°"
+          style={{ width: 92 }}
+          data-tilt-angle
+        />
+        <Tooltip title={`Where the hinge runs: the ${tilt.axis === 'x' ? 'Y' : 'X'} coordinate, in this sketch, of the line it turns about`}>
+          <InputNumber
+            size="small"
+            value={tilt.pivot}
+            onChange={(v) => setTilt({ ...tilt, pivot: Number(v) || 0 })}
+            addonBefore="at"
+            addonAfter="mm"
+            style={{ width: 120 }}
+            data-tilt-pivot
+          />
+        </Tooltip>
+        <Tooltip title="Stand the angled plane off along its own normal">
+          <InputNumber
+            size="small"
+            value={tilt.offset}
+            onChange={(v) => setTilt({ ...tilt, offset: Number(v) || 0 })}
+            addonBefore="off"
+            addonAfter="mm"
+            style={{ width: 120 }}
+            data-tilt-offset
+          />
+        </Tooltip>
+      </Space>
+      <Button
+        size="small"
+        block
+        disabled={!active || !tilt.angle}
+        onClick={() => startSketch(tiltPlane(active.plane, tilt))}
+        data-tilt-create
+      >
+        New sketch on the angled plane
+      </Button>
     </Space>
   );
 

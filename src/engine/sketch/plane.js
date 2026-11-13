@@ -377,3 +377,50 @@ export function withGap(plane, gap) {
   }
   return out;
 }
+
+/**
+ * An angled reference plane: `base` turned through `angle` degrees about one of
+ * its own axes, the hinge running along that axis at `pivot` mm across the base
+ * (in the base's sketch coordinates), then stood `offset` mm off along the new
+ * normal. The new sketch's origin sits on the hinge, so its X (or Y) runs along
+ * it and the other axis climbs the slope.
+ *
+ * The result is a plain custom plane: its numbers are what it is. A face link
+ * on the base is not carried over — an angled plane does not follow the face.
+ *
+ * @param {object} base  any plane (preset, offset, face, custom)
+ * @param {{axis?:'x'|'y', angle?:number, pivot?:number, offset?:number}} opts
+ */
+export function tiltPlane(base, {
+  axis = 'x', angle = 0, pivot = 0, offset = 0,
+} = {}) {
+  const { origin, u, v, n } = planeBasis(base);
+  const t = (Number(angle) * Math.PI) / 180;
+  const c = Math.cos(t);
+  const s = Math.sin(t);
+  let hinge;
+  let nu;
+  let nv;
+  if (axis === 'y') {
+    // Turning about Y: X tips up towards the normal.
+    hinge = add(origin, scale(u, pivot));
+    nu = add(scale(u, c), scale(n, s));
+    nv = v;
+  } else {
+    // Turning about X: Y tips up towards the normal.
+    hinge = add(origin, scale(v, pivot));
+    nu = u;
+    nv = add(scale(v, c), scale(n, s));
+  }
+  const nn = cross(nu, nv);
+  const round = (a) => a.map((x) => Math.round(x * 1e9) / 1e9);
+  const where = [`${Math.round(angle * 1000) / 1000}° about ${axis.toUpperCase()}`];
+  if (pivot) where.push(`at ${pivot}`);
+  if (offset) where.push(`${offset > 0 ? '+' : ''}${offset}`);
+  return {
+    origin: round(add(hinge, scale(nn, offset))),
+    u: round(nu),
+    v: round(nv),
+    name: `${planeLabel(base)} · ${where.join(' ')}`,
+  };
+}

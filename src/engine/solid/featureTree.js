@@ -56,6 +56,7 @@ import { applyEdgeTreatment, parseEdgeRef } from './edgeTreat.js';
 import {
   PATTERN_TYPES, patternTransforms, transformSoup, transformHole,
 } from './pattern.js';
+import { shellSolid, parseOpenFace } from './shell.js';
 
 /**
  * How far an extrude runs. Blind is the depth typed; Through All is past the far
@@ -130,6 +131,7 @@ export const FEATURE_KINDS = {
   chamfer: { label: 'Chamfer', needsSketch: false },
   fillet: { label: 'Fillet', needsSketch: false },
   pattern: { label: 'Pattern', needsSketch: false },
+  shell: { label: 'Shell', needsSketch: false },
 };
 
 /** Chamfer and fillet work on edges of the part, not on a sketch. */
@@ -177,6 +179,15 @@ export function createFeature(kind, props = {}) {
       merge: 'cut',
       size: positive(props.size, 1),
       edges: (Array.isArray(props.edges) ? props.edges : []).map(parseEdgeRef).filter(Boolean),
+    };
+  }
+  if (kind === 'shell') {
+    return {
+      ...base,
+      merge: 'cut',
+      thickness: positive(props.thickness, 2),
+      // The faces left open, as planes (`openFaceRef`); none hollows it closed.
+      openFaces: (Array.isArray(props.openFaces) ? props.openFaces : []).map(parseOpenFace).filter(Boolean),
     };
   }
   if (kind === 'pattern') {
@@ -425,6 +436,21 @@ export function rebuildFeatures(features, ctx = {}, { keepIntermediates = false 
       continue;
     }
 
+    if (f.kind === 'shell') {
+      if (!current) { fail(f, 'a shell needs a part to hollow'); continue; }
+      try {
+        current = shellSolid(current, f, meshBoolean);
+      } catch (e) {
+        fail(f, e?.message || String(e));
+        continue;
+      }
+      steps.push({
+        id: f.id, name: f.name, kind: f.kind, ok: true, merge: f.merge, triangleCount: current.triangleCount,
+        ...(keepIntermediates ? { soup: current } : {}),
+      });
+      continue;
+    }
+
     if (f.kind === 'pattern') {
       if (!current) { fail(f, 'a pattern needs a part to work on'); continue; }
       try {
@@ -553,6 +579,10 @@ export function describeFeature(f, sketchName) {
     const n = f.edges.length;
     const size = f.kind === 'fillet' ? `R${f.size}` : `${f.size} mm`;
     return `${f.kind === 'fillet' ? 'Fillet' : 'Chamfer'} ${size} · ${n} edge${n === 1 ? '' : 's'}`;
+  }
+  if (f.kind === 'shell') {
+    const n = f.openFaces.length;
+    return `Shell ${f.thickness} mm · ${n ? `${n} face${n === 1 ? '' : 's'} open` : 'closed'}`;
   }
   if (f.kind === 'pattern') {
     const n = f.seeds.length;

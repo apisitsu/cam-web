@@ -78,6 +78,15 @@ export function FilletIcon({ inverse = false }) {
   );
 }
 
+/** A box hollowed out, open at the top. */
+export function ShellIcon({ inverse = false }) {
+  return (
+    <svg {...base} stroke={ink(inverse)} strokeWidth="1.4" strokeLinejoin="round">
+      <path d="M2 4v10h12V4h-2.5v7.5h-7V4z" fill={fillOf(inverse)} />
+    </svg>
+  );
+}
+
 /** Three copies of one block in a row. */
 export function PatternIcon({ inverse = false }) {
   return (
@@ -127,5 +136,6 @@ export function FeatureIcon({ kind, inverse = false }) {
   if (kind === 'chamfer') return <ChamferIcon inverse={inverse} />;
   if (kind === 'fillet') return <FilletIcon inverse={inverse} />;
   if (kind === 'pattern') return <PatternIcon inverse={inverse} />;
+  if (kind === 'shell') return <ShellIcon inverse={inverse} />;
   return <ExtrudeIcon inverse={inverse} />;
 }

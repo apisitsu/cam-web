@@ -366,10 +366,11 @@ export function SketchPart({ meshVer, visible = true }) {
   const sketchOpen = useSketchStore((s) => s.sketchOpen);
   const measuring = useMeasureStore((s) => s.active);
   const treating = useEdgeTreatStore((s) => Boolean(s.active));
+  const shellPick = useFeatureStore((s) => s.shellPick);
   const converting = useSketchStore((s) => s.sketchOpen && s.convertPick);
   const [convertHover, setConvertHover] = useState(null);
   // With no sketch open, a click on a face starts one, as a click on a plane does.
-  const facePick = !treating && (armed || (!sketchOpen && !measuring));
+  const facePick = !treating && !shellPick && (armed || (!sketchOpen && !measuring));
   const addMeasure = useMeasureStore((s) => s.add);
   const [hover, setHover] = useState(null);
   // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -380,6 +381,17 @@ export function SketchPart({ meshVer, visible = true }) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
     [hover, meshVer],
   );
+  const shellLit = useMemo(
+    () => (shellPick?.faces.length
+      ? highlightGeometry({ triangles: shellPick.faces.flatMap((f) => f.triangles) }, getRawMesh().soup)
+      : null),
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [shellPick, meshVer],
+  );
+  useEffect(() => {
+    if (!shellLit) return undefined;
+    return () => shellLit.geometry.dispose();
+  }, [shellLit]);
 
   useEffect(() => {
     if (!geometry) return undefined;
@@ -389,7 +401,7 @@ export function SketchPart({ meshVer, visible = true }) {
     if (!highlight) return undefined;
     return () => highlight.geometry.dispose();
   }, [highlight]);
-  useEffect(() => { if (!facePick) setHover(null); }, [facePick]);
+  useEffect(() => { if (!facePick && !shellPick) setHover(null); }, [facePick, shellPick]);
   useEffect(() => { if (!converting) setConvertHover(null); }, [converting]);
 
   if (!geometry || !visible) return null;
@@ -461,6 +473,20 @@ export function SketchPart({ meshVer, visible = true }) {
       addMeasure(pickFor(getRawMesh().welded, event, event.point.toArray()));
     },
   } : {};
+  const shell = shellPick ? {
+    onPointerMove: (event) => {
+      event.stopPropagation();
+      const face = faceUnder(event);
+      if ((face?.id ?? null) !== (hover?.id ?? null)) setHover(face);
+    },
+    onPointerOut: () => setHover(null),
+    onClick: (event) => {
+      if (event.delta > CLICK_SLOP) return;
+      event.stopPropagation();
+      const face = faceUnder(event);
+      if (face) useFeatureStore.getState().toggleShellFace(face);
+    },
+  } : {};
   const pick = facePick ? {
     onPointerMove: (event) => {
       event.stopPropagation();
@@ -494,12 +520,20 @@ export function SketchPart({ meshVer, visible = true }) {
         }}
         {...measure}
         {...pick}
+        {...shell}
         {...treat}
         {...convert}
       >
         <meshStandardMaterial color={PART_COLOR} metalness={0.1} roughness={0.65} side={THREE.DoubleSide} clippingPlanes={clip} />
       </mesh>
       {converting && convertHover && <ChainMarks chains={convertHover.chains} />}
+      {shellLit && (
+        <mesh geometry={shellLit.geometry} raycast={() => null}>
+          <meshBasicMaterial
+            color={CAD.cut} transparent opacity={0.55} side={THREE.DoubleSide} depthWrite={false}
+          />
+        </mesh>
+      )}
       {highlight?.kind === 'face' && (
         <mesh geometry={highlight.geometry}>
           <meshBasicMaterial

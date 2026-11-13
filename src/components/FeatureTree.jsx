@@ -110,6 +110,20 @@ function FeatureEditor({ feature }) {
       </Space>
     );
   }
+  if (feature.kind === 'shell') {
+    return (
+      <InputNumber
+        size="small"
+        value={feature.thickness}
+        min={0.05}
+        onChange={(v) => { if (Number(v) > 0) update(feature.id, { thickness: Number(v) }); }}
+        addonBefore="Wall"
+        addonAfter="mm"
+        style={{ width: 150 }}
+        data-feature-thickness
+      />
+    );
+  }
   if (feature.kind === 'pattern') {
     return (
       <PatternFields

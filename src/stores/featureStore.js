@@ -33,6 +33,7 @@ import {
   createFeature, parseFeatures, rebuildFeatures, needsMeshBoolean, seedFeatureIds,
 } from '../engine/solid/featureTree.js';
 import { holePointIds, unusedHoleSites } from '../engine/solid/hole.js';
+import { openFaceRef } from '../engine/solid/shell.js';
 import { linkFaceToSolids, planeBasis } from '../engine/sketch/plane.js';
 import { isSketchableFace } from '../engine/mesh/sketchFace.js';
 import { useSketchStore } from './sketchStore.js';
@@ -106,6 +107,7 @@ export const useFeatureStore = create((set, get) => ({
   /** The tree has changed, or a sketch under it has, since the last rebuild. */
   dirty: false,
   building: false,
+  shellPick: null, // { faces } while Shell waits for the faces to leave open
   /** Per-feature outcome of the last rebuild, and the failures among them. */
   steps: [],
   errors: [],
@@ -405,8 +407,13 @@ export const useFeatureStore = create((set, get) => ({
    * out again; its message is returned (null when it built).
    */
   async buildPattern(props) {
+    return get().buildOnPart('pattern', props);
+  },
+
+  /** `buildPattern` for any feature that works on the part rather than a sketch. */
+  async buildOnPart(kind, props) {
     const snapshot = get().features;
-    const feature = get().addFeature('pattern', props);
+    const feature = get().addFeature(kind, props);
     await get().rebuild();
     const failed = get().errors.find((e) => e.id === feature.id);
     if (!failed) return null;
@@ -414,6 +421,35 @@ export const useFeatureStore = create((set, get) => ({
     get()._discard(1);
     await get().rebuild();
     return failed.message;
+  },
+
+  /**
+   * Shell: picking the faces to leave open. `shellPick.faces` holds each picked
+   * face's stored reference and, for drawing it lit, its triangles in the part as
+   * it is now — valid only until the next rebuild, which is why picking ends there.
+   */
+  async startShellPick() {
+    if (useSketchStore.getState().sketchOpen) await get().finishSketch();
+    useMeasureStore.getState().stop();
+    useCamStore.getState().setPage('sketch');
+    set({ shellPick: { faces: [] } });
+  },
+
+  toggleShellFace(face) {
+    const pick = get().shellPick;
+    const ref = openFaceRef(face);
+    if (!pick || !ref) return;
+    const key = JSON.stringify(ref);
+    const has = pick.faces.some((f) => f.key === key);
+    set({
+      shellPick: {
+        faces: has ? pick.faces.filter((f) => f.key !== key) : [...pick.faces, { key, ref, triangles: face.triangles }],
+      },
+    });
+  },
+
+  stopShellPick() {
+    if (get().shellPick) set({ shellPick: null });
   },
 
   /**

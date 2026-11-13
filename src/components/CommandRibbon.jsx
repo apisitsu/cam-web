@@ -24,6 +24,7 @@ import RibbonButton from './RibbonButton.jsx';
 import BuildPanel, { useHasBuiltPart } from './BuildPanel.jsx';
 import HolePanel from './HolePanel.jsx';
 import PatternPanel from './PatternPanel.jsx';
+import ShellPanel from './ShellPanel.jsx';
 import { glyph, INK } from './glyph.jsx';
 import { useCamStore } from '../stores/camStore.js';
 import { useCamPlanStore } from '../stores/camPlanStore.js';
@@ -137,6 +138,12 @@ const MirrorIcon = glyph(<>
   <path d="M12 2v20" stroke={INK.sketch} strokeDasharray="3 2" />
   <path d="M3 8l6-2v12l-6-2z" fill={INK.body} />
   <path d="M21 8l-6-2v12l6-2z" fill={INK.bodyTop} />
+</>);
+// A block hollowed out, its top open.
+const ShellIcon = glyph(<>
+  <path d="M3 9l9-4.5 9 4.5v7.5L12 21l-9-4.5z" fill={INK.body} />
+  <path d="M6 9.4l6-3 6 3-6 3z" fill={INK.paper} stroke={INK.cut} />
+  <path d="M6 9.4v4.2l6 3 6-3V9.4" stroke={INK.cut} strokeDasharray="2 1.5" />
 </>);
 const MeasureIcon = glyph(<>
   <path d="M3 15l12-12 6 6-12 12z" fill={INK.body} />
@@ -300,6 +307,13 @@ function FeatureCommands() {
         icon={<ChamferIcon />} label="Chamfer" disabled={!hasPart} accent={treating === 'chamfer'}
         onClick={() => startEdgeTreatment('chamfer')}
         tip={hasPart ? 'Bevel the edges you click on the part' : 'Build a part first: a chamfer needs edges'}
+      />
+      <ShellPanel
+        trigger={(
+          <Tooltip title={hasPart ? 'Hollow the part to a wall thickness, leaving the faces you click open' : 'Build a part first: a shell hollows it'} placement="bottom">
+            <RibbonButton icon={<ShellIcon />} label="Shell" disabled={!hasPart} />
+          </Tooltip>
+        )}
       />
       <Sep />
       {[

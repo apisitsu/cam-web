@@ -63,8 +63,32 @@ export let lastEngine = null;
 /** Corners closer than this are one when a soup is indexed for manifold, mm. */
 const WELD_TOL = 1e-5;
 
-/** A soup as a Manifold, or null if it is not a closed solid manifold accepts. */
+/**
+ * The last result, kept as a Manifold beside the soup handed back for it. A
+ * rebuild booleans feature after feature onto the part it just made, and taking
+ * that part back into manifold — weld, index, check — was a second or more on a
+ * big one each time. One slot: the next result replaces it, and the old Manifold
+ * is freed (wasm memory is not garbage-collected).
+ */
+let lastResult = null; // { soup, m }
+
+function keepResult(soup, m) {
+  if (lastResult && lastResult.m !== m) lastResult.m.delete();
+  lastResult = soup ? { soup, m } : null;
+  if (!soup) m.delete();
+}
+
+/**
+ * A soup as a Manifold, or null if it is not a closed solid manifold accepts.
+ * `owned` says whether the caller must free it: the kept last result is not theirs.
+ */
 function manifoldOf(soup) {
+  if (lastResult && lastResult.soup === soup) return { m: lastResult.m, owned: false };
+  const m = buildManifold(soup);
+  return m ? { m, owned: true } : null;
+}
+
+function buildManifold(soup) {
   const { Manifold, Mesh } = manifold;
   const w = weld(soup, WELD_TOL);
   const mesh = new Mesh({ numProp: 3, vertProperties: w.positions, triVerts: w.indices });
@@ -79,17 +103,45 @@ function manifoldOf(soup) {
   return null;
 }
 
-/** A Manifold back to a soup: flat triangles, as the pipeline reads them. */
+/** Corners of a result closer than this (mm) are one — the app's own weld tolerance. */
+const RESULT_TOL = 1e-4;
+
+/**
+ * A Manifold back to a soup: flat triangles, as the pipeline reads them.
+ *
+ * Manifold works in double precision; written back as float32, corners where a
+ * tool crosses a faceted wall can land on one another or within the app's weld
+ * tolerance. So the corners are welded at that tolerance and any triangle two of
+ * whose corners became one is dropped — a collapsed sliver's two long sides are
+ * each other's partner, so the surface stays closed. (This used `repairSoup`,
+ * which does the same and also hunts for T-junctions a manifold result cannot
+ * have: on a 174k-triangle part, 2.3 s of a 3.3 s boolean.)
+ */
 function soupOfManifold(m, format) {
   const { vertProperties: v, triVerts: t, numProp } = m.getMesh();
-  const positions = new Float32Array(t.length * 3);
+  const raw = new Float32Array(t.length * 3);
   for (let i = 0; i < t.length; i++) {
     const o = t[i] * numProp;
-    positions[i * 3] = v[o];
-    positions[i * 3 + 1] = v[o + 1];
-    positions[i * 3 + 2] = v[o + 2];
+    raw[i * 3] = v[o];
+    raw[i * 3 + 1] = v[o + 1];
+    raw[i * 3 + 2] = v[o + 2];
   }
-  return { positions, triangleCount: t.length / 3, format };
+  const w = weld({ positions: raw, triangleCount: t.length / 3 }, RESULT_TOL);
+  const ix = w.indices;
+  const out = new Float32Array(raw.length);
+  let n = 0;
+  for (let k = 0; k < ix.length; k += 3) {
+    const a = ix[k];
+    const b = ix[k + 1];
+    const c = ix[k + 2];
+    if (a === b || b === c || a === c) continue;
+    for (const q of [a, b, c]) {
+      out[n++] = w.positions[q * 3];
+      out[n++] = w.positions[q * 3 + 1];
+      out[n++] = w.positions[q * 3 + 2];
+    }
+  }
+  return { positions: n === out.length ? out : out.slice(0, n), triangleCount: n / 9, format };
 }
 
 /** The boolean through manifold, or null when either solid is not closed. */
@@ -97,18 +149,13 @@ function manifoldBoolean(part, tool, op, format) {
   const a = manifoldOf(part);
   if (!a) return null;
   const b = manifoldOf(tool);
-  if (!b) { a.delete(); return null; }
-  const raw = op === 'add' ? a.add(b) : op === 'cut' ? a.subtract(b) : a.intersect(b);
-  const result = raw;
+  if (!b) { if (a.owned) a.m.delete(); return null; }
+  const result = op === 'add' ? a.m.add(b.m) : op === 'cut' ? a.m.subtract(b.m) : a.m.intersect(b.m);
   const empty = result.isEmpty();
-  // Manifold works in double precision; written back as float32, corners where
-  // a tool crosses a faceted wall can land on one another or within the app's
-  // weld tolerance. Welding them and dropping what that flattens keeps the
-  // surface closed — a collapsed sliver's two long sides are each other's partner.
-  const soup = empty ? null : repairSoup(soupOfManifold(result, format), { tol: 1e-4 });
-  a.delete();
-  b.delete();
-  result.delete();
+  const soup = empty ? null : soupOfManifold(result, format);
+  if (a.owned) a.m.delete();
+  if (b.owned) b.m.delete();
+  keepResult(soup, result);
   if (empty) throw new Error(`Nothing is left after ${op} — the two solids do not overlap the way that needs.`);
   return soup;
 }
@@ -263,7 +310,7 @@ export function meshBoolean(part, tool, op, format = op) {
 export function meshBooleanMany(part, tools, op, format = op) {
   if (!manifold || !tools?.length) return null;
   const made = [];
-  const free = () => made.forEach((m) => m.delete());
+  const free = () => made.forEach((x) => { if (x.owned) x.m.delete(); });
   for (const s of [part, ...tools]) {
     const m = manifoldOf(s);
     if (!m) { free(); return null; }
@@ -271,13 +318,13 @@ export function meshBooleanMany(part, tools, op, format = op) {
   }
   const { Manifold } = manifold;
   const [a, ...rest] = made;
-  const tool = Manifold.union(rest);
-  const result = op === 'add' ? a.add(tool) : op === 'cut' ? a.subtract(tool) : a.intersect(tool);
+  const tool = Manifold.union(rest.map((x) => x.m));
+  const result = op === 'add' ? a.m.add(tool) : op === 'cut' ? a.m.subtract(tool) : a.m.intersect(tool);
   const empty = result.isEmpty();
-  const soup = empty ? null : repairSoup(soupOfManifold(result, format), { tol: 1e-4 });
+  const soup = empty ? null : soupOfManifold(result, format);
   free();
   tool.delete();
-  result.delete();
+  keepResult(soup, result);
   if (empty) throw new Error(`Nothing is left after ${op} — the two solids do not overlap the way that needs.`);
   lastEngine = 'manifold';
   return soup;

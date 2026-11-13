@@ -194,3 +194,19 @@ describe('meshBoolean — manifold', () => {
     expect(() => meshBoolean(box(0, 0, 1, 1, 0, 1), box(5, 5, 6, 6, 0, 1), 'common')).toThrow(/Nothing is left/);
   });
 });
+
+describe('meshBoolean — booleans one after another on the result', () => {
+  it('keeps the last result in manifold and builds on it correctly', async () => {
+    await loadMeshBoolean();
+    let part = box(0, 0, 40, 40, 0, 10); // 16000
+    part = meshBoolean(part, box(5, 5, 15, 15, -1, 11), 'cut'); // −1000
+    part = meshBoolean(part, box(25, 25, 35, 35, -1, 11), 'cut'); // −1000
+    part = meshBoolean(part, box(0, 0, 40, 40, 10, 15), 'add'); // +8000
+    expect(volume(part)).toBeCloseTo(16000 - 2000 + 8000, 2);
+    expect(openEdgeCount(part)).toBe(0);
+    // An older result, not the last one, still works: it is read in afresh.
+    const first = meshBoolean(box(0, 0, 10, 10, 0, 10), box(0, 0, 5, 10, 0, 10), 'cut');
+    meshBoolean(box(0, 0, 1, 1, 0, 1), box(0, 0, 1, 1, 0, 2), 'add');
+    expect(volume(meshBoolean(first, box(5, 0, 10, 5, 0, 10), 'cut'))).toBeCloseTo(250, 2);
+  });
+});

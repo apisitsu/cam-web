@@ -34,6 +34,9 @@ import {
 import { sketchRegions } from '../engine/sketch/loops.js';
 import { dxfToSketch } from '../engine/sketch/dxfImport.js';
 import { buildSlot, buildPolygon, axisDistance } from '../engine/sketch/shapes.js';
+import {
+  buildCenterRectangle, buildArc3, buildTangentArc, extendLine,
+} from '../engine/sketch/drawTools.js';
 import { combineRegions } from '../engine/solid/regionBoolean.js';
 import {
   partReferences, pickPartRef, placePartRef, dropUnusedPartRefs, followPartRefs,
@@ -159,6 +162,7 @@ export const useSketchStore = create((set, get) => ({
   polygonSides: 6, // sides the Polygon tool draws — hex is the shop's default
   pending: null, // first click while drawing (line/rect/circle centre, arc centre)
   pending2: null, // second click for a 3-click tool — the arc's start point
+  pendingFrom: null, // Tangent Arc: the line or arc whose end it starts from
   cursor: null, // { x, y } live pointer on the plane — drives rubber-band preview
   boxSelect: null, // { x0, y0, x1, y1 } while a marquee drag is on screen (select tool)
   _boxStart: null, // { x, y } armed marquee origin, before it grows past the click slop
@@ -456,7 +460,7 @@ export const useSketchStore = create((set, get) => ({
 
   setTool(tool) {
     set({
-      tool, pending: null, pending2: null, cursor: null, snap: null, axisSnap: null, lineAngle: null, hoverId: null, error: null, dimensionPending: null, editingConstraint: null, offsetPending: false, linearPatternPending: false, circularPatternPending: false, mirrorPending: false, partRefHover: null, facePick: false, boxSelect: null, _boxStart: null, selectedDims: [], contextMenu: null,
+      tool, pending: null, pending2: null, pendingFrom: null, cursor: null, snap: null, axisSnap: null, lineAngle: null, hoverId: null, error: null, dimensionPending: null, editingConstraint: null, offsetPending: false, linearPatternPending: false, circularPatternPending: false, mirrorPending: false, partRefHover: null, facePick: false, boxSelect: null, _boxStart: null, selectedDims: [], contextMenu: null,
     });
   },
 
@@ -544,7 +548,8 @@ export const useSketchStore = create((set, get) => ({
     // both curves (see `_pointAt`). Only while a point-placing tool is active:
     // the pairwise scan is O(n²) and means nothing to select / dimension / trim.
     const placing = tool === 'point' || tool === 'line' || tool === 'rectangle'
-      || tool === 'circle' || tool === 'arc' || tool === 'slot' || tool === 'polygon';
+      || tool === 'circle' || tool === 'arc' || tool === 'slot' || tool === 'polygon'
+      || tool === 'centerRect' || tool === 'arc3' || tool === 'tangentArc';
     if (!snap && placing) {
       const xn = nearestIntersection(sk, x, y, tol);
       if (xn) snap = { x: xn.x, y: xn.y, intersection: true, of: xn.ids };
@@ -952,6 +957,95 @@ export const useSketchStore = create((set, get) => ({
         set({ pending: null });
         get()._bump();
       }
+    } else if (tool === 'centerRect') {
+      // Center Rectangle: the centre, then a corner.
+      const { pending } = get();
+      if (pending == null) {
+        set({ pending: getOrCreatePoint(sk, x, y, tol), error: null });
+      } else {
+        get()._snapshot();
+        const built = buildCenterRectangle(sk, pending, x, y);
+        set({ pending: null });
+        if (!built) {
+          get()._undoSnapshot();
+          set({ error: 'That rectangle has no width or height — click a corner off the centre lines.' });
+          get()._bump();
+          return;
+        }
+        get()._bump();
+        get().solve();
+        return;
+      }
+    } else if (tool === 'arc3') {
+      // 3-Point Arc: the two ends, then a point the arc passes through.
+      const { pending, pending2 } = get();
+      if (pending == null) {
+        set({ pending: getOrCreatePoint(sk, x, y, tol), error: null });
+      } else if (pending2 == null) {
+        const e = getOrCreatePoint(sk, x, y, tol);
+        if (e === pending) set({ error: 'Both ends landed on one point — click further apart.' });
+        else set({ pending2: e, error: null });
+      } else {
+        get()._snapshot();
+        const arc = buildArc3(sk, pending, pending2, x, y);
+        set({ pending: null, pending2: null });
+        if (arc == null) {
+          get()._undoSnapshot();
+          set({ error: 'The three points are in a line — click the third off the line between the ends.' });
+          get()._bump();
+          return;
+        }
+        get()._bump();
+        get().solve();
+        return;
+      }
+    } else if (tool === 'tangentArc') {
+      // Tangent Arc: the end of a line or arc, then where the arc ends.
+      const { pending, pendingFrom } = get();
+      if (pending == null) {
+        const p = hitTestPoint(sk, x, y, tol);
+        let from = null;
+        if (p != null) {
+          for (const ent of sk.entities.values()) {
+            if (ent.construction) continue;
+            if ((ent.type === 'line' && (ent.p1 === p || ent.p2 === p))
+              || (ent.type === 'arc' && (ent.start === p || ent.end === p))) from = ent.id;
+          }
+        }
+        if (from == null) {
+          set({ error: 'Start a tangent arc on the end of a line or an arc.' });
+          return;
+        }
+        set({ pending: p, pendingFrom: from, error: null });
+      } else {
+        get()._snapshot();
+        const arc = buildTangentArc(sk, pendingFrom, pending, x, y);
+        set({ pending: null, pendingFrom: null });
+        if (arc == null) {
+          get()._undoSnapshot();
+          set({ error: 'That point is straight ahead of the end — a line goes there, not an arc.' });
+          get()._bump();
+          return;
+        }
+        get()._bump();
+        get().solve();
+        return;
+      }
+    } else if (tool === 'extend') {
+      // Extend: click a line near the end to run on to the next thing it meets.
+      const lineHit = hitTestLine(sk, x, y, tol);
+      if (lineHit == null) return;
+      get()._snapshot();
+      const res = extendLine(sk, lineHit, x, y);
+      if (res.error) {
+        get()._undoSnapshot();
+        set({ error: res.error });
+        get()._bump();
+        return;
+      }
+      set({ selection: [], error: null });
+      get()._bump();
+      get().solve();
     } else if (tool === 'trim') {
       // Trim: click a line, circle, or arc to cut away the piece under the cursor
       // at its intersections with the other geometry. Empty space is a no-op, and

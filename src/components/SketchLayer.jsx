@@ -16,6 +16,7 @@ import { useCamPlanStore } from '../stores/camPlanStore.js';
 import { useMeasureStore } from '../stores/measureStore.js';
 import { dimensionAnnotations } from '../engine/sketch/annotations.js';
 import { polygonPreview, slotPreview, axisDistance } from '../engine/sketch/shapes.js';
+import { circleThrough3, leavingDirection } from '../engine/sketch/drawTools.js';
 import { tessellateArc, CHORD_TOL } from '../engine/sketch/loops.js';
 import { planeMatrix } from '../engine/sketch/plane.js';
 import { keyIs } from '../engine/view/viewKeys.js';
@@ -371,6 +372,7 @@ export default function SketchLayer() {
   const axisSnap = useSketchStore((s) => s.axisSnap);
   const lineAngle = useSketchStore((s) => s.lineAngle);
   const pending2 = useSketchStore((s) => s.pending2);
+  const pendingFrom = useSketchStore((s) => s.pendingFrom);
   const hoverId = useSketchStore((s) => s.hoverId);
   const dofState = useSketchStore((s) => s.dofState);
   const solveResult = useSketchStore((s) => s.solveResult);
@@ -565,10 +567,11 @@ export default function SketchLayer() {
   // the part's: the sketch neither draws nor picks, or it would take them first.
   const inert = facePick || measuring || !sketchOpen;
   const drawing = !inert && (tool === 'point' || tool === 'line' || tool === 'rectangle'
-    || tool === 'circle' || tool === 'arc' || tool === 'slot' || tool === 'polygon');
+    || tool === 'circle' || tool === 'arc' || tool === 'slot' || tool === 'polygon'
+    || tool === 'centerRect' || tool === 'arc3' || tool === 'tangentArc');
   // Geometry is clickable in select/dimension (pick), trim (cut) and chamfer
   // (pick two lines) modes.
-  const picking = !inert && (tool === 'select' || tool === 'dimension' || tool === 'trim' || tool === 'chamfer');
+  const picking = !inert && (tool === 'select' || tool === 'dimension' || tool === 'trim' || tool === 'chamfer' || tool === 'extend');
   // Circles/arcs are directly selectable (their own raycast) only when picking a
   // selection — not while trimming/chamfering (both act on lines).
   const selecting = !inert && (tool === 'select' || tool === 'dimension');
@@ -606,6 +609,40 @@ export default function SketchLayer() {
         [anchor.x, anchor.y, Z],
       ];
     }
+    if (tool === 'centerRect') {
+      const hx = tip.x - anchor.x;
+      const hy = tip.y - anchor.y;
+      return [
+        [anchor.x - hx, anchor.y - hy, Z], [anchor.x + hx, anchor.y - hy, Z],
+        [anchor.x + hx, anchor.y + hy, Z], [anchor.x - hx, anchor.y + hy, Z],
+        [anchor.x - hx, anchor.y - hy, Z],
+      ];
+    }
+    if (tool === 'arc3') {
+      if (!arcStart) return [[anchor.x, anchor.y, Z], [tip.x, tip.y, Z]];
+      const c = circleThrough3(anchor, arcStart, tip);
+      if (!c) return [[anchor.x, anchor.y, Z], [arcStart.x, arcStart.y, Z]];
+      const a0 = Math.atan2(anchor.y - c.y, anchor.x - c.x);
+      const a1 = Math.atan2(arcStart.y - c.y, arcStart.x - c.x);
+      const t = Math.atan2(tip.y - c.y, tip.x - c.x);
+      const sweep = (a, b) => (((b - a) % TWO_PI) + TWO_PI) % TWO_PI;
+      return sweep(a0, t) <= sweep(a0, a1) ? arcRing(c.x, c.y, c.r, a0, a1) : arcRing(c.x, c.y, c.r, a1, a0);
+    }
+    if (tool === 'tangentArc' && pendingFrom != null) {
+      const d = leavingDirection(sk, pendingFrom, pending);
+      if (!d) return null;
+      const ex = tip.x - anchor.x;
+      const ey = tip.y - anchor.y;
+      const n = [-d[1], d[0]];
+      const dn = ex * n[0] + ey * n[1];
+      if (Math.abs(dn) < 1e-9) return [[anchor.x, anchor.y, Z], [tip.x, tip.y, Z]];
+      const t = (ex * ex + ey * ey) / (2 * dn);
+      const cx = anchor.x + n[0] * t;
+      const cy = anchor.y + n[1] * t;
+      const a0 = Math.atan2(anchor.y - cy, anchor.x - cx);
+      const a1 = Math.atan2(tip.y - cy, tip.x - cx);
+      return t > 0 ? arcRing(cx, cy, Math.abs(t), a0, a1) : arcRing(cx, cy, Math.abs(t), a1, a0);
+    }
     if (tool === 'circle') {
       const r = Math.hypot(tip.x - anchor.x, tip.y - anchor.y);
       return arcRing(anchor.x, anchor.y, r, 0, TWO_PI);
@@ -632,7 +669,8 @@ export default function SketchLayer() {
       return arcRing(anchor.x, anchor.y, r, a0, a1);
     }
     return null;
-  }, [anchor, arcStart, tip, tool, polygonSides]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [anchor, arcStart, tip, tool, polygonSides, pendingFrom]);
 
   // The whole layer is drawn in sketch coordinates and then placed by the active
   // sketch's plane, so nothing below this line had to learn about planes: local

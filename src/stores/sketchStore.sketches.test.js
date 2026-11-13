@@ -387,3 +387,62 @@ describe('Sketch on Face — waiting for the face', () => {
     expect(store().facePick).toBe(false);
   });
 });
+
+describe('Center Rectangle, 3-Point Arc, Tangent Arc and Extend from clicks', () => {
+  const entities = (type) => [...store().sk.entities.values()].filter((e) => e.type === type && !e.construction);
+  const begin = (tool) => {
+    store().clear();
+    store().setError(null);
+    store().setTool(tool);
+    useSketchStore.setState({ pickTol: 0.5 });
+  };
+
+  it('Center Rectangle: centre then corner makes a closed 20 × 10', () => {
+    begin('centerRect');
+    store().clickAt(0, 0);
+    store().clickAt(10, 5);
+    expect(entities('line')).toHaveLength(4);
+    expect(sketchLoops(store().sk).loops).toHaveLength(1);
+  });
+
+  it('3-Point Arc: two ends and a point on it', () => {
+    begin('arc3');
+    store().clickAt(10, 0);
+    store().clickAt(-10, 0);
+    store().clickAt(0, 10);
+    const [arc] = entities('arc');
+    expect(arc.r).toBeCloseTo(10, 6);
+  });
+
+  it('Tangent Arc: starts on the end of a line and stays tangent', () => {
+    begin('line');
+    store().clickAt(0, 0);
+    store().clickAt(20, 0);
+    store().setTool('tangentArc');
+    store().clickAt(20, 0);
+    store().clickAt(20, 10);
+    const [arc] = entities('arc');
+    expect(arc.r).toBeCloseTo(5, 4);
+    expect(store().sk.constraints.some((c) => c.kind === 'tangentArc')).toBe(true);
+  });
+
+  it('Tangent Arc: says where to start when clicked in open space', () => {
+    begin('tangentArc');
+    store().clickAt(50, 50);
+    expect(store().error).toMatch(/end of a line or an arc/);
+  });
+
+  it('Extend: runs a line on to the next line, and says why when it cannot', () => {
+    begin('line');
+    store().clickAt(0, 0);
+    store().clickAt(10, 0);
+    store().clickAt(30, -10);
+    store().clickAt(30, 10);
+    store().setTool('extend');
+    store().clickAt(9, 0);
+    const xs = entities('line').map((l) => store().sk.entities.get(l.p2).x);
+    expect(Math.max(...xs.filter((x) => x < 30.0001 && x > 10))).toBeCloseTo(30, 4);
+    store().clickAt(30, 9);
+    expect(store().error).toMatch(/Nothing lies ahead/);
+  });
+});

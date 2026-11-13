@@ -47,6 +47,14 @@ const PolygonIcon = skGlyph(<path d="M12 4l7 4.2v7.6L12 20l-7-4.2V8.2z" />);
 const CircleIcon = skGlyph(<circle cx="12" cy="12" r="7.5" />);
 const ArcIcon = skGlyph(<><path d="M4 18A14 14 0 0 1 18 4" /><circle cx="4" cy="18" r="1.8" fill="currentColor" /><circle cx="18" cy="4" r="1.8" fill="currentColor" /></>);
 const DimIcon = glyph(<><path d="M4 7v10M20 7v10M4 12h16" /><path d="M7 9l-3 3 3 3M17 9l3 3-3 3" /></>);
+// Center Rectangle: a rectangle with its centre and a dashed diagonal.
+const CenterRectIcon = skGlyph(<><rect x="4.5" y="6.5" width="15" height="11" /><path d="M4.5 6.5l15 11" strokeDasharray="2 1.6" opacity="0.6" /><circle cx="12" cy="12" r="1.8" fill="currentColor" /></>);
+// 3-Point Arc: an arc through three marked points.
+const Arc3Icon = skGlyph(<><path d="M4 17A9 9 0 0 1 20 17" /><circle cx="4" cy="17" r="1.8" fill="currentColor" /><circle cx="20" cy="17" r="1.8" fill="currentColor" /><circle cx="12" cy="8" r="1.8" fill="currentColor" /></>);
+// Tangent Arc: a line running straight on into a curve.
+const TangentArcIcon = skGlyph(<><path d="M3 18h8" /><path d="M11 18a7 7 0 0 0 7-7V5" /><circle cx="11" cy="18" r="1.8" fill="currentColor" /></>);
+// Extend: a short line with an arrow running on to a wall.
+const ExtendIcon = glyph(<><path d="M20 4v16" stroke={INK.sketch} /><path d="M3 12h6" stroke={INK.sketch} /><path d="M9 12h8M14.5 9.5L17 12l-2.5 2.5" stroke={INK.go} strokeDasharray="2 1.5" /></>);
 const TrimIcon = glyph(<><circle cx="6" cy="7" r="2.4" stroke={INK.cut} /><circle cx="6" cy="17" r="2.4" stroke={INK.cut} /><path d="M8 8.4L20 16M8 15.6L20 8" /></>);
 const ChamferIcon = glyph(<><path d="M5 20V10M11 4H20" stroke={INK.sketch} /><path d="M5 10L11 4" stroke={INK.cut} strokeWidth="2.6" /></>);
 // Sketch-modify tools (SolidWorks keeps these on the Sketch tab, not with relations).
@@ -75,12 +83,16 @@ const TOOLS = [
   { value: 'point', label: 'Point', Icon: PointIcon, hint: 'Click on the plane to add points · snaps to vertices, curve rims, line midpoints, circle quadrants (the axis high points) and where two curves cross' },
   { value: 'line', label: 'Line', Icon: LineIcon, hint: 'Click to start, click to finish · locks to 0/45/90…° and to parallel / perpendicular of an existing line (adds the relation) · snaps tangent, to midpoints, quadrants and intersections · Esc cancels' },
   { value: 'rectangle', label: 'Rectangle', Icon: RectIcon, hint: 'Click two opposite corners' },
+  { value: 'centerRect', label: 'Center Rectangle', Icon: CenterRectIcon, hint: 'Click the centre, then a corner · the centre stays the centre when it is dimensioned' },
   { value: 'slot', label: 'Slot', Icon: SlotIcon, hint: 'Click the two ends of the slot axis, then a point setting the radius · the flanks stay tangent to the caps' },
   { value: 'polygon', label: 'Polygon', Icon: PolygonIcon, hint: 'Click the centre, then a corner (sets size and rotation) · pick the number of sides on the rail' },
   { value: 'circle', label: 'Circle', Icon: CircleIcon, hint: 'Click centre, then a point on the rim' },
   { value: 'arc', label: 'Arc', Icon: ArcIcon, hint: 'Click centre, start, then end (sweeps CCW) · Esc cancels' },
+  { value: 'arc3', label: '3-Point Arc', Icon: Arc3Icon, hint: 'Click the two ends, then a point the arc passes through' },
+  { value: 'tangentArc', label: 'Tangent Arc', Icon: TangentArcIcon, hint: 'Click the end of a line or arc, then where the arc should end · it leaves tangent and stays tangent' },
   { value: 'dimension', label: 'Dimension', Icon: DimIcon, hint: 'Pick 1 pt (to origin) / 2 pts / 1 line / 1 circle / 1 arc / pt+line / 2 lines (gap or angle) / line+circle / 2 circles, or an edge or corner of the part — set value, or click empty space to apply' },
   { value: 'trim', label: 'Trim', Icon: TrimIcon, hint: 'Click a line, circle or arc to trim it at its intersections' },
+  { value: 'extend', label: 'Extend', Icon: ExtendIcon, hint: 'Click a line near the end to run it on to the next line, circle or arc it meets' },
   { value: 'chamfer', label: 'Chamfer / Fillet', Icon: ChamferIcon, hint: 'Click the two elements that share a corner (2 lines, or a line + arc / 2 arcs), choose C (chamfer) or R (fillet — the only option when a curve is involved), then type the size' },
 ];
 

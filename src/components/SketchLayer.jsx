@@ -15,6 +15,7 @@ import { useSketchStore, AXIS_LOCK_FACTOR } from '../stores/sketchStore.js';
 import { useCamPlanStore } from '../stores/camPlanStore.js';
 import { useMeasureStore } from '../stores/measureStore.js';
 import { dimensionAnnotations } from '../engine/sketch/annotations.js';
+import { relationGlyphs } from '../engine/sketch/relationGlyphs.js';
 import { polygonPreview, slotPreview, axisDistance } from '../engine/sketch/shapes.js';
 import { circleThrough3, leavingDirection } from '../engine/sketch/drawTools.js';
 import { tessellateArc, CHORD_TOL } from '../engine/sketch/loops.js';
@@ -301,6 +302,33 @@ function DimensionAnnotations({ sk, version }) {
       })}
     </group>
   );
+}
+
+const relationGlyphStyle = {
+  color: CAD.skDim, background: CAD.glassSolid, border: `1px solid ${CAD.border}`,
+  borderRadius: 3, font: '600 10px sans-serif', lineHeight: '12px', minWidth: 12,
+  textAlign: 'center', padding: '0 2px', whiteSpace: 'nowrap', userSelect: 'none', pointerEvents: 'none',
+};
+
+/**
+ * The relation badges beside the geometry (`engine/sketch/relationGlyphs.js`),
+ * stood a little up-right of their anchor and spread sideways when several share
+ * one. Display only: they take no pointer events, so picking is unaffected.
+ */
+function RelationGlyphs({ sk, version }) {
+  const show = useSketchStore((s) => s.showRelations);
+  const glyphs = useMemo(
+    () => (show ? relationGlyphs(sk) : []),
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [sk, version, show],
+  );
+  return glyphs.map((g) => (
+    <Html key={g.key} position={[g.pos[0], g.pos[1], Z]} zIndexRange={[2, 0]}>
+      <div style={{ ...relationGlyphStyle, transform: `translate(${6 + g.slot * 15}px, -18px)` }} title={g.kind}>
+        {g.text}
+      </div>
+    </Html>
+  ));
 }
 
 /**
@@ -687,6 +715,7 @@ export default function SketchLayer() {
   return (
     <group matrix={planeMat} matrixAutoUpdate={false}>
       <DimensionAnnotations sk={sk} version={version} />
+      <RelationGlyphs sk={sk} version={version} />
 
       {/* Pick plane. In draw mode it takes pointer-downs immediately and tracks
           moves for the rubber-band. In pick mode a tap routes through `clickAt`'s

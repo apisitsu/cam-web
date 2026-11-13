@@ -119,6 +119,14 @@ describe('toPlanegcs — constraints', () => {
     };
   }
 
+  it('collinear is parallel plus the start of the second line on the first', () => {
+    const r = rig();
+    addConstraint(r.sk, 'collinear', [r.l1, r.l2]);
+    const prims = toPlanegcs(r.sk).slice(-2);
+    expect(prims.map((p) => p.type)).toEqual(['parallel', 'point_on_line_pl']);
+    expect(prims[1].l_id).toBe(prims[0].l1_id);
+  });
+
   it('maps each relation to the primitive planegcs knows it by', () => {
     const r = rig();
     const cases = [

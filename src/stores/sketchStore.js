@@ -180,6 +180,7 @@ export const useSketchStore = create((set, get) => ({
   selection: [], // selected entity ids — points, lines, circles, and/or arcs (mixed)
   selectedDims: [], // indices into sk.constraints of dimensions selected in the viewport (Delete removes them)
   contextMenu: null, // { x, y } screen position of an open right-click menu, or null
+  showRelations: true, // draw the relation badges (— | ∥ ⊥ = ◎) beside the geometry
   hoverPlane: null, // reference-plane preset whose start button is under the pointer — the viewport lights that plane
   dimensionPending: null, // { kind, refs, label, current } set on a dimension-mode empty-click → shows the inline value input
   offsetPending: false, // true while the Offset rail button is waiting for its distance
@@ -1839,6 +1840,10 @@ export const useSketchStore = create((set, get) => ({
     } else {
       set({ contextMenu: { x, y } });
     }
+  },
+
+  toggleRelations() {
+    set({ showRelations: !get().showRelations });
   },
 
   setHoverPlane(preset) {

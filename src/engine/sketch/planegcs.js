@@ -136,6 +136,14 @@ export function toPlanegcs(sk) {
         prims.push({ id: cid(), type: 'point_on_perp_bisector_ppp', p_id: a, lp1_id: sid(l.p1), lp2_id: sid(l.p2) });
         break;
       }
+      case 'collinear': {
+        // planegcs has no collinear primitive: parallel, plus one end of the
+        // second line lying on the first (which, being parallel, puts all of it there).
+        const l2 = sk.entities.get(c.refs[1]);
+        prims.push({ id: cid(), type: 'parallel', l1_id: a, l2_id: b });
+        prims.push({ id: cid(), type: 'point_on_line_pl', p_id: sid(l2.p1), l_id: a });
+        break;
+      }
       case 'equalLength':
         prims.push({ id: cid(), type: 'equal_length', l1_id: a, l2_id: b });
         break;

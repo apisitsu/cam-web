@@ -77,6 +77,8 @@ export const CONSTRAINT_KINDS = {
   symmetric: { refTypes: ['point', 'point', 'line'], value: false, dof: 2 },
 
   equalLength: { refTypes: ['line', 'line'], value: false, dof: 1 },
+  // Two lines on one infinite line: parallel, and the second's start on the first.
+  collinear: { refTypes: ['line', 'line'], value: false, dof: 2 },
   // Angle between two lines (value in radians — the model's angle unit; the UI
   // dimensions it in degrees and converts).
   angle: { refTypes: ['line', 'line'], value: true, dof: 1 },

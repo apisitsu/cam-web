@@ -34,15 +34,15 @@ const RibbonButton = forwardRef(function RibbonButton({
       {...rest}
       style={{
         height: 'auto',
-        minWidth: 56,
-        maxWidth: 78,
-        padding: '4px 6px 3px',
+        minWidth: 46,
+        maxWidth: 70,
+        padding: '2px 4px',
         display: 'flex',
         flexDirection: 'column',
         alignItems: 'center',
         justifyContent: 'flex-start',
-        gap: 2,
-        lineHeight: 1.15,
+        gap: 1,
+        lineHeight: 1.1,
         // Opt back in: the floating rail turns its own pointer events off so the
         // viewport underneath stays drawable, and each button turns them on again.
         pointerEvents: 'auto',
@@ -52,13 +52,13 @@ const RibbonButton = forwardRef(function RibbonButton({
     >
       {/* Colour icons go grey when off, so a coloured one never looks ready to use. */}
       <span style={{
-        fontSize: 26, display: 'inline-flex', alignItems: 'center', height: 28,
+        fontSize: 22, display: 'inline-flex', alignItems: 'center', height: 24,
         filter: disabled ? 'grayscale(1)' : undefined, opacity: disabled ? 0.45 : 1,
       }}
       >
         {icon}
       </span>
-      <span style={{ fontSize: 11, textAlign: 'center', whiteSpace: 'normal' }}>{label}</span>
+      <span style={{ fontSize: 10.5, textAlign: 'center', whiteSpace: 'normal' }}>{label}</span>
     </Button>
   );
 });

@@ -33,6 +33,7 @@ export function relationsFor(sk, selection) {
       add('parallel', 'Parallel', chain('parallel', lines));
     }
     if (n === 2) add('perpendicular', 'Perpendicular', [['perpendicular', lines]]);
+    if (n >= 2) add('collinear', 'Collinear', chain('collinear', lines));
   }
 
   if (curves.length === n && n >= 2) {

@@ -105,7 +105,7 @@ const withShortcuts = (items) => items.map((top) => ({
  */
 export function buildMenuItems(ctx) {
   const {
-    libraryOpen, hasProgram, sketching, hasSelection, view, treeOpen, canRestore, hasFace, hasFeatures,
+    libraryOpen, hasProgram, sketching, hasSelection, view, treeOpen, canRestore, hasFace, hasFeatures, showRelations,
   } = ctx;
   return withShortcuts([
     {
@@ -143,6 +143,7 @@ export function buildMenuItems(ctx) {
       label: 'View',
       children: [
         { key: 'fit', label: 'Fit to view' },
+        { key: 'sketch-relations', label: showRelations ? 'Sketch relations ✓' : 'Sketch relations' },
         { type: 'divider' },
         ...VIEW_ITEMS.map((v) => ({
           key: `view:${v.value}`,
@@ -238,6 +239,7 @@ export default function MenuBar({
 
   const sketching = page === 'sketch';
   const selection = useSketchStore((s) => s.selection);
+  const showRelations = useSketchStore((s) => s.showRelations);
   const undo = useSketchStore((s) => s.undo);
   const redo = useSketchStore((s) => s.redo);
   const deleteSelected = useSketchStore((s) => s.deleteSelected);
@@ -273,6 +275,7 @@ export default function MenuBar({
     libraryOpen,
     hasProgram: !!gcode,
     sketching,
+    showRelations,
     hasSelection: selection.length > 0,
     view,
     treeOpen,
@@ -336,6 +339,7 @@ export default function MenuBar({
     if (key === 'rebuild') { rebuild(); return; }
     if (key === 'delete') { deleteSelected(); return; }
     if (key === 'clear-sketch') { clearSketch(); return; }
+    if (key === 'sketch-relations') { useSketchStore.getState().toggleRelations(); return; }
     if (key === 'fit') { setViewPreset(view); return; }
     if (key.startsWith('view:')) { setViewPreset(key.slice(5)); return; }
     if (key === 'new-sketch') { addSketch(); return; }
@@ -439,7 +443,7 @@ export default function MenuBar({
   // under it, starting at the left edge the way a desktop CAD lays out its title.
   return (
     <div style={{ display: 'flex', flexDirection: 'column' }} data-menu-bar>
-      <div style={{ display: 'flex', alignItems: 'center', gap: 8, height: 34, lineHeight: 'normal' }} data-menu-title>
+      <div style={{ display: 'flex', alignItems: 'center', gap: 8, height: 26, lineHeight: 'normal' }} data-menu-title>
         {brand}
         <span style={{ flex: 1 }} />
         <AutoComplete
@@ -520,7 +524,7 @@ export default function MenuBar({
           marginLeft: -12,
           background: 'transparent',
           borderBottom: 'none',
-          lineHeight: '28px',
+          lineHeight: '22px',
           fontSize: 12,
         }}
       />

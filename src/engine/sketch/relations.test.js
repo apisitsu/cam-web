@@ -25,9 +25,10 @@ describe('relationsFor', () => {
     const a = addLineXY(sk, 0, 0, 10, 0).line;
     const b = addLineXY(sk, 0, 5, 7, 5).line;
     const c = addLineXY(sk, 0, 9, 3, 9).line;
-    expect(keys(sk, [a, b, c])).toEqual(['horizontal', 'vertical', 'equal', 'parallel']);
+    expect(keys(sk, [a, b, c])).toEqual(['horizontal', 'vertical', 'equal', 'parallel', 'collinear']);
     expect(find(sk, [a, b, c], 'equal').constraints).toEqual([['equalLength', [a, b]], ['equalLength', [a, c]]]);
     expect(keys(sk, [a, b])).toContain('perpendicular');
+    expect(find(sk, [a, b, c], 'collinear').constraints).toEqual([['collinear', [a, b]], ['collinear', [a, c]]]);
   });
 
   it('circles and arcs: Equal radius and Concentric on the centres', () => {

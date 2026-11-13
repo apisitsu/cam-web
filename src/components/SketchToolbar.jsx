@@ -61,6 +61,7 @@ const ExtendIcon = glyph(<><path d="M20 4v16" stroke={INK.sketch} /><path d="M3 
 // Convert Entities: a part's edge (solid) copied up into the sketch (sketch blue).
 const ConvertIcon = glyph(<><path d="M3 15l7-3.5 11 4-7 3.5z" fill={INK.body} /><path d="M3 15l7-3.5 11 4" stroke={INK.sketch} strokeWidth="2.2" /><path d="M12 9V3M9.5 5.5L12 3l2.5 2.5" stroke={INK.go} strokeWidth="2" /></>);
 const TrimIcon = glyph(<><circle cx="6" cy="7" r="2.4" stroke={INK.cut} /><circle cx="6" cy="17" r="2.4" stroke={INK.cut} /><path d="M8 8.4L20 16M8 15.6L20 8" /></>);
+const SketchFilletIcon = glyph(<><path d="M5 20V12M12 5H20" stroke={INK.sketch} /><path d="M5 12a7 7 0 0 1 7-7" stroke={INK.go} strokeWidth="2.6" /></>);
 const ChamferIcon = glyph(<><path d="M5 20V10M11 4H20" stroke={INK.sketch} /><path d="M5 10L11 4" stroke={INK.cut} strokeWidth="2.6" /></>);
 // Sketch-modify tools (SolidWorks keeps these on the Sketch tab, not with relations).
 const ConstructionIcon = skGlyph(<path d="M4 18L20 6" strokeDasharray="3 2.5" />);
@@ -111,7 +112,10 @@ const TOOLS = [
   { value: 'trim', label: 'Trim', Icon: TrimIcon, hint: 'Click a line, circle or arc to trim it at its intersections' },
   { value: 'text', label: 'Text', Icon: TextIcon, hint: 'Click where the text starts (bottom-left), then type it · single-stroke letters for engraving: A–Z, 0–9 and - . , : / # + = ( ) _' },
   { value: 'extend', label: 'Extend', Icon: ExtendIcon, hint: 'Click a line near the end to run it on to the next line, circle or arc it meets' },
-  { value: 'chamfer', label: 'Chamfer / Fillet', Icon: ChamferIcon, hint: 'Click the two elements that share a corner (2 lines, or a line + arc / 2 arcs), choose C (chamfer) or R (fillet — the only option when a curve is involved), then type the size' },
+  // One tool underneath (`chamfer`), two buttons on the rail the way SolidWorks
+  // has them: each presets which corner it makes; the C/R switch still flips it.
+  { value: 'chamfer', kind: 'R', key: 'sketchFillet', label: 'Sketch Fillet', Icon: SketchFilletIcon, hint: 'Click the two elements that share a corner (2 lines, a line + arc, 2 arcs or 2 crossing circles), then type the radius' },
+  { value: 'chamfer', kind: 'C', key: 'sketchChamfer', label: 'Sketch Chamfer', Icon: ChamferIcon, hint: 'Click the two lines that share a corner, then type the size (a corner with an arc can only be filleted)' },
 ];
 
 // Point-selection constraints.
@@ -129,6 +133,7 @@ const LINE_CONSTRAINTS = [
   { kind: 'parallel', label: 'Parallel' },
   { kind: 'perpendicular', label: 'Perpendicular' },
   { kind: 'equalLength', label: 'Equal Length' },
+  { kind: 'collinear', label: 'Collinear' },
 ];
 
 /** The contextual constraint/dimension controls shown inside the popover. */
@@ -796,6 +801,8 @@ export default function SketchToolbar({ ribbonSlot = null }) {
   const sketchOpen = useSketchStore((s) => s.sketchOpen);
   const startSketch = useFeatureStore((s) => s.startSketch);
   const setHoverPlane = useSketchStore((s) => s.setHoverPlane);
+  const chamferKind = useSketchStore((s) => s.chamferKind);
+  const setChamferKind = useSketchStore((s) => s.setChamferKind);
   const setFacePick = useSketchStore((s) => s.setFacePick);
   const convertPick = useSketchStore((s) => s.convertPick);
   const setConvertPick = useSketchStore((s) => s.setConvertPick);
@@ -840,7 +847,7 @@ export default function SketchToolbar({ ribbonSlot = null }) {
     maxWidth: 'none',
     gap: 2,
     alignItems: 'stretch',
-    padding: '4px 12px',
+    padding: '2px 12px',
     background: CAD.panelBg,
     border: 'none',
     borderBottom: `1px solid ${CAD.border}`,
@@ -912,12 +919,12 @@ export default function SketchToolbar({ ribbonSlot = null }) {
   const rail = !sketchOpen ? closedRail : (
     <div {...railProps}>
       {TOOLS.map((t) => (
-        <Tooltip key={t.value} title={`${t.label} — ${t.hint}`} placement="bottom">
+        <Tooltip key={t.key || t.value} title={`${t.label} — ${t.hint}`} placement="bottom">
           <RibbonButton
-            active={tool === t.value}
+            active={tool === t.value && (!t.kind || chamferKind === t.kind)}
             icon={<t.Icon />}
             label={t.label}
-            onClick={() => setTool(t.value)}
+            onClick={() => { setTool(t.value); if (t.kind) setChamferKind(t.kind); }}
           />
         </Tooltip>
       ))}

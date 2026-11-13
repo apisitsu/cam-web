@@ -382,6 +382,22 @@ export default function MenuBar({
   runRef.current = run;
   const hasFeaturesRef = useRef(false);
   hasFeaturesRef.current = features.length > 0;
+  // Undo / Redo of the feature tree. With a sketch open the sketcher has the
+  // keys for its own history (SketchLayer); typing in a field keeps the browser's.
+  useEffect(() => {
+    const onKey = (e) => {
+      if (!(e.ctrlKey || e.metaKey) || e.altKey) return;
+      const tag = e.target?.tagName;
+      if (tag === 'INPUT' || tag === 'TEXTAREA' || e.target?.isContentEditable) return;
+      if (useSketchStore.getState().sketchOpen) return;
+      const fs = useFeatureStore.getState();
+      if (fs.building) return;
+      if (keyIs(e, 'z') && !e.shiftKey) { e.preventDefault(); fs.undo(); } else if (keyIs(e, 'y') || (keyIs(e, 'z') && e.shiftKey)) { e.preventDefault(); fs.redo(); }
+    };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, []);
+
   useEffect(() => {
     const onKey = (e) => {
       if (!(e.ctrlKey || e.metaKey) || e.altKey || e.shiftKey) return;

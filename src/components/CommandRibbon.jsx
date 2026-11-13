@@ -20,6 +20,7 @@
  */
 import { useEffect, useRef, useState } from 'react';
 import { Segmented, Tooltip } from 'antd';
+import { UndoOutlined, RedoOutlined } from '@ant-design/icons';
 import RibbonButton from './RibbonButton.jsx';
 import BuildPanel, { useHasBuiltPart } from './BuildPanel.jsx';
 import HolePanel from './HolePanel.jsx';
@@ -214,6 +215,11 @@ function FeatureCommands() {
   const rebuild = useFeatureStore((s) => s.rebuild);
   const toggleSuppress = useFeatureStore((s) => s.toggleSuppress);
   const startEdgeTreatment = useFeatureStore((s) => s.startEdgeTreatment);
+  const undo = useFeatureStore((s) => s.undo);
+  const redo = useFeatureStore((s) => s.redo);
+  const canUndo = useFeatureStore((s) => s.past.length > 0);
+  const canRedo = useFeatureStore((s) => s.future.length > 0);
+  const building = useFeatureStore((s) => s.building);
   const treating = useEdgeTreatStore((s) => s.active);
   const selected = features.find((f) => f.id === selectedId);
   const hasPart = useHasBuiltPart();
@@ -281,6 +287,16 @@ function FeatureCommands() {
         tip={hasPart ? 'Bevel the edges you click on the part' : 'Build a part first: a chamfer needs edges'}
       />
       <Sep />
+      <Command
+        icon={<UndoOutlined />} label="Undo" disabled={!canUndo || building}
+        onClick={() => undo()}
+        tip="Take back the last change to the feature tree (Ctrl+Z when no sketch is open)"
+      />
+      <Command
+        icon={<RedoOutlined />} label="Redo" disabled={!canRedo || building}
+        onClick={() => redo()}
+        tip="Put back the change Undo took away (Ctrl+Y)"
+      />
       <Command
         icon={<RebuildIcon />} label="Rebuild" accent={dirty} disabled={!features.length}
         onClick={() => rebuild()}

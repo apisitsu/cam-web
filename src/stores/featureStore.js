@@ -34,6 +34,7 @@ import {
 } from '../engine/solid/featureTree.js';
 import { holePointIds, unusedHoleSites } from '../engine/solid/hole.js';
 import { linkFaceToSolids, planeBasis } from '../engine/sketch/plane.js';
+import { isSketchableFace } from '../engine/mesh/sketchFace.js';
 import { useSketchStore } from './sketchStore.js';
 import { useCamPlanStore, getMesh, getRawMesh } from './camPlanStore.js';
 import { useCamStore } from './camStore.js';
@@ -66,6 +67,12 @@ function closeOpenSketch() {
  * part is swapped.
  */
 const _imports = new Map();
+
+/** How many tree states Undo can go back through. */
+const HISTORY_LIMIT = 100;
+/** Edits to the same field of the same feature closer together than this are one step (typing a number). */
+const COALESCE_MS = 1500;
+let _lastRecord = { key: null, at: 0 };
 
 /**
  * The docked left column's open width, in px.
@@ -129,9 +136,74 @@ export const useFeatureStore = create((set, get) => ({
 
   select(id) { set({ selectedId: id }); },
 
+  // ── Undo / Redo of the tree ───────────────────────────────────────────────
+  // Every change to the list of features — adding, editing, deleting, moving,
+  // suppressing — is a step. The sketcher keeps its own history for what is
+  // drawn; this is the tree's. Features are immutable (an edit makes a new
+  // object), so a step is just the array as it was.
+  past: [],
+  future: [],
+
+  /**
+   * Remember the tree as it is now, before a change. `key` names the change so
+   * that a run of the same edit (one number typed a digit at a time) is one step.
+   */
+  _record(key = null) {
+    const now = Date.now();
+    if (key && key === _lastRecord.key && now - _lastRecord.at < COALESCE_MS) {
+      _lastRecord.at = now;
+      return;
+    }
+    _lastRecord = { key, at: now };
+    set({ past: [...get().past, get().features].slice(-HISTORY_LIMIT), future: [] });
+  },
+
+  /** Take back the last `n` steps recorded without making them undoable — a build that failed and was put back. */
+  _discard(n = 1) {
+    const { past } = get();
+    _lastRecord = { key: null, at: 0 };
+    set({ past: past.slice(0, Math.max(0, past.length - n)) });
+  },
+
+  canUndo() { return get().past.length > 0; },
+  canRedo() { return get().future.length > 0; },
+
+  /** Step back one change to the tree, and rebuild the part to match. */
+  async undo() {
+    const { past, future, features } = get();
+    if (!past.length) return null;
+    _lastRecord = { key: null, at: 0 };
+    const prev = past[past.length - 1];
+    set({
+      past: past.slice(0, -1),
+      future: [...future, features],
+      features: prev,
+      dirty: true,
+      selectedId: prev.some((f) => f.id === get().selectedId) ? get().selectedId : null,
+    });
+    return get().rebuild();
+  },
+
+  /** Step forward again after an undo. */
+  async redo() {
+    const { past, future, features } = get();
+    if (!future.length) return null;
+    _lastRecord = { key: null, at: 0 };
+    const next = future[future.length - 1];
+    set({
+      past: [...past, features],
+      future: future.slice(0, -1),
+      features: next,
+      dirty: true,
+      selectedId: next.some((f) => f.id === get().selectedId) ? get().selectedId : null,
+    });
+    return get().rebuild();
+  },
+
   /** Append a feature and return it. */
   addFeature(kind, props = {}) {
     const feature = createFeature(kind, props);
+    get()._record();
     set({ features: get().features.concat([feature]), dirty: true, selectedId: feature.id });
     return feature;
   },
@@ -147,6 +219,7 @@ export const useFeatureStore = create((set, get) => ({
       return createFeature(f.kind, { ...f, ...patch, id: f.id });
     });
     if (!found) return false;
+    get()._record(`update:${id}:${Object.keys(patch).sort().join(',')}`);
     set({ features, dirty: true });
     return true;
   },
@@ -154,7 +227,9 @@ export const useFeatureStore = create((set, get) => ({
   removeFeature(id) {
     const features = get().features.filter((f) => f.id !== id);
     if (features.length === get().features.length) return false;
-    _imports.delete(id);
+    // An imported mesh is kept (not dropped from `_imports`): Undo can bring its
+    // feature back. `clear` and `load` forget them.
+    get()._record();
     set({
       features,
       dirty: true,
@@ -172,6 +247,7 @@ export const useFeatureStore = create((set, get) => ({
     if (at < 0 || to < 0 || to >= features.length) return false;
     const [f] = features.splice(at, 1);
     features.splice(to, 0, f);
+    get()._record();
     set({ features, dirty: true });
     return true;
   },
@@ -195,6 +271,7 @@ export const useFeatureStore = create((set, get) => ({
     });
     const feature = createFeature('import', { name: name || 'Imported mesh' });
     _imports.set(feature.id, soup);
+    get()._record();
     set({ features: [feature, ...kept], dirty: true });
     return feature;
   },
@@ -258,6 +335,7 @@ export const useFeatureStore = create((set, get) => ({
       return null;
     }
 
+    const snapshot = get().features;
     const feature = get().addFeature(op, {
       ...params,
       sketchId: entry.id,
@@ -269,8 +347,9 @@ export const useFeatureStore = create((set, get) => ({
     const failed = get().errors.find((e) => e.id === feature.id);
     if (failed) {
       // Its own build failed, so the feature describes nothing — drop it rather
-      // than leave a permanently broken entry in the tree.
-      get().removeFeature(feature.id);
+      // than leave a permanently broken entry in the tree, or an Undo step.
+      set({ features: snapshot, selectedId: null });
+      get()._discard(1);
       sketch.setError(`Could not build: ${failed.message}`);
       await get().rebuild();
       return null;
@@ -301,13 +380,15 @@ export const useFeatureStore = create((set, get) => ({
       sketch.setError('Click the points where these holes go — or circles, and their centres are used.');
       return null;
     }
+    const snapshot = get().features;
     const feature = get().addFeature('hole', {
       ...params, pointIds, sketchId: entry.id, name: name || `Hole · ${entry.name}`,
     });
     const analysis = await get().rebuild();
     const failed = get().errors.find((e) => e.id === feature.id);
     if (failed) {
-      get().removeFeature(feature.id);
+      set({ features: snapshot, selectedId: null });
+      get()._discard(1);
       sketch.setError(`Could not make the hole: ${failed.message}`);
       await get().rebuild();
       return null;
@@ -345,6 +426,7 @@ export const useFeatureStore = create((set, get) => ({
       return null;
     }
     const before = editingId != null ? get().features.find((f) => f.id === editingId) : null;
+    const snapshot = get().features;
     let feature;
     if (before) {
       get().updateFeature(editingId, { size, edges });
@@ -358,8 +440,8 @@ export const useFeatureStore = create((set, get) => ({
     const analysis = await get().rebuild();
     const failed = get().errors.find((e) => e.id === feature.id);
     if (failed) {
-      if (before) get().updateFeature(editingId, { size: before.size, edges: before.edges });
-      else get().removeFeature(feature.id);
+      set({ features: snapshot });
+      get()._discard(1);
       await get().rebuild();
       useEdgeTreatStore.getState().setError(`Could not make the ${kind}: ${failed.message}`);
       return null;
@@ -497,6 +579,13 @@ export const useFeatureStore = create((set, get) => ({
     // A face picked on the Sketch page is already in the raw frame: that page
     // draws the part as built (`opts.face`).
     const cam = useCamPlanStore.getState();
+    // A face chosen on a machining page may be one strip of a bore or a fillet;
+    // that is not a face to sketch on (see `isSketchableFace`).
+    if (!opts?.face && cam.selectedFeature?.triangles && getMesh().welded
+      && !isSketchableFace(getMesh().welded, cam.selectedFeature)) {
+      useSketchStore.getState().setError('That is part of a round surface — pick a flat face to sketch on.');
+      return null;
+    }
     const face = opts?.face ?? cam.faceInRawFrame(cam.selectedFeature);
     const keep = usedSketchIds(get().features);
     const id = useSketchStore.getState().sketchOnFace({ ...opts, face, keep });
@@ -533,8 +622,9 @@ export const useFeatureStore = create((set, get) => ({
       seedFeatureIds(f.id);
       if (f.kind === 'import' && importedSoup) _imports.set(f.id, importedSoup);
     }
+    _lastRecord = { key: null, at: 0 };
     set({
-      features, dirty: features.length > 0, steps: [], errors: [], selectedId: null,
+      features, dirty: features.length > 0, steps: [], errors: [], selectedId: null, past: [], future: [],
     });
     return features.length > 0;
   },
@@ -543,8 +633,9 @@ export const useFeatureStore = create((set, get) => ({
   clear() {
     _imports.clear();
     cancelHoleRebuild();
+    _lastRecord = { key: null, at: 0 };
     set({
-      features: [], dirty: false, steps: [], errors: [], selectedId: null,
+      features: [], dirty: false, steps: [], errors: [], selectedId: null, past: [], future: [],
     });
   },
 }));

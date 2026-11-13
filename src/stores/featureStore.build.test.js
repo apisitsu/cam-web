@@ -277,3 +277,70 @@ describe('Chamfer / Fillet from picked edges', () => {
     pick.stop();
   });
 });
+
+describe('Undo / Redo of the feature tree', () => {
+  const fs = () => useFeatureStore.getState();
+
+  it('takes back a build and puts it back, rebuilding the part each time', async () => {
+    rect(0, 0, 40, 20);
+    await build({ depth: 10 });
+    const pick = useEdgeTreatStore.getState();
+    pick.start('chamfer');
+    pick.toggleEdge({ type: 'line', a: [0, 0, 10], b: [40, 0, 10] });
+    pick.setSize(2);
+    await fs().buildEdgeTreatment();
+    expect(fs().features.map((f) => f.kind)).toEqual(['extrude', 'chamfer']);
+
+    let analysis = await fs().undo();
+    expect(fs().features.map((f) => f.kind)).toEqual(['extrude']);
+    nearVolume(analysis.volume, 8000);
+    expect(fs().future).toHaveLength(1);
+
+    analysis = await fs().redo();
+    expect(fs().features.map((f) => f.kind)).toEqual(['extrude', 'chamfer']);
+    nearVolume(analysis.volume, 8000 - 2 * 40);
+  });
+
+  it('counts a number typed digit by digit as one step', async () => {
+    rect(0, 0, 40, 20);
+    await build({ depth: 10 });
+    const id = fs().features[0].id;
+    const steps = fs().past.length;
+    fs().updateFeature(id, { depth: 1 });
+    fs().updateFeature(id, { depth: 12 });
+    fs().updateFeature(id, { depth: 125 });
+    expect(fs().past.length).toBe(steps + 1);
+    await fs().undo();
+    expect(fs().features[0].depth).toBe(10);
+  });
+
+  it('leaves no step behind for a build that failed', async () => {
+    rect(0, 0, 40, 20);
+    await build({ depth: 10 });
+    const steps = fs().past.length;
+    const pick = useEdgeTreatStore.getState();
+    pick.start('fillet');
+    pick.toggleEdge({ type: 'line', a: [0, 0, 30], b: [40, 0, 30] });
+    expect(await fs().buildEdgeTreatment()).toBe(null);
+    expect(fs().past.length).toBe(steps);
+    pick.stop();
+  });
+
+  it('a new change after an undo drops what Redo had', async () => {
+    rect(0, 0, 40, 20);
+    await build({ depth: 10 });
+    const id = fs().features[0].id;
+    fs().toggleSuppress(id);
+    await fs().undo();
+    expect(fs().future).toHaveLength(1);
+    fs().moveFeature(id, 0); // no move: nothing recorded
+    fs().updateFeature(id, { name: 'Base' });
+    expect(fs().future).toHaveLength(0);
+  });
+
+  it('forgets the history when the tree is cleared', () => {
+    fs().clear();
+    expect(fs().past).toEqual([]);
+    expect(fs().future).toEqual([]);
+  });
+});

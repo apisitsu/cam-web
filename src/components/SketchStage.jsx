@@ -48,12 +48,18 @@ function ReferencePlane({ preset, label, half }) {
         }}
       >
         <planeGeometry args={[half * 2, half * 2]} />
+        {/* Pushed back in depth: a face of the part lying on this plane (the
+            bottom of a part drawn on Top, its front on Front) must win, not
+            flicker in triangles with the plane's tint. */}
         <meshBasicMaterial
           color={CAD.accent}
           transparent
           opacity={hover ? 0.3 : 0.07}
           depthWrite={false}
           side={THREE.DoubleSide}
+          polygonOffset
+          polygonOffsetFactor={2}
+          polygonOffsetUnits={2}
         />
       </mesh>
       <Line points={corners} color={CAD.accent} lineWidth={hover ? 2 : 1} transparent opacity={0.6} />

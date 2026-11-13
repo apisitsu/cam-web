@@ -250,3 +250,36 @@ export function meshBoolean(part, tool, op, format = op) {
   result.geometry.dispose();
   return soup;
 }
+
+/**
+ * `part` combined with many solids at once — the pieces of one chamfer or fillet
+ * tool, joined and applied in a single manifold pass. Joining them first and
+ * reading the joined mesh back would not do: written out as float32 and welded,
+ * the seams between hundreds of small pieces no longer close.
+ *
+ * Manifold only; null when it is not loaded or a solid is not closed, and the
+ * caller then booleans the pieces one at a time.
+ */
+export function meshBooleanMany(part, tools, op, format = op) {
+  if (!manifold || !tools?.length) return null;
+  const made = [];
+  const free = () => made.forEach((m) => m.delete());
+  for (const s of [part, ...tools]) {
+    const m = manifoldOf(s);
+    if (!m) { free(); return null; }
+    made.push(m);
+  }
+  const { Manifold } = manifold;
+  const [a, ...rest] = made;
+  const tool = Manifold.union(rest);
+  const result = op === 'add' ? a.add(tool) : op === 'cut' ? a.subtract(tool) : a.intersect(tool);
+  const empty = result.isEmpty();
+  const soup = empty ? null : repairSoup(soupOfManifold(result, format), { tol: 1e-4 });
+  free();
+  tool.delete();
+  result.delete();
+  if (empty) throw new Error(`Nothing is left after ${op} — the two solids do not overlap the way that needs.`);
+  lastEngine = 'manifold';
+  return soup;
+}
+meshBoolean.many = meshBooleanMany;

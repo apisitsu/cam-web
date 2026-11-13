@@ -22,6 +22,11 @@
  * by centre and radius. An edge that is not there any more fails the feature
  * with that reason.
  *
+ * - a **chain** — straight runs and arcs that follow on from one another round a
+ *   flat face (the top edge of a part whose corners are filleted): a section
+ *   extruded along each segment and run on past each joint so the pieces meet
+ *   without a gap. All pieces are joined into one tool first.
+ *
  * Where three treated edges meet at a corner the pieces simply overlap: a
  * chamfered corner comes out mitred, a filleted one with a sharp seam rather
  * than a rolling-ball blend. Stated, not hidden.
@@ -30,6 +35,7 @@
  */
 import { extrudeRegion, revolveRegion } from './extrude.js';
 import { detectSharpEdges } from '../mesh/features.js';
+import { weld } from '../mesh/stl.js';
 import { edgeAtPoint } from '../mesh/pickEdge.js';
 import { fitCircle } from '../mesh/circlePick.js';
 
@@ -240,6 +246,135 @@ function lineTool(soup, ref, kind, size) {
 }
 
 // ---------------------------------------------------------------------------
+// Chains: straight runs and arcs round a flat face
+
+/** Corner key at the weld grid, so a soup and its welded mesh agree. */
+const cornerKey = (p) => `${Math.round(p[0] * 1e4)},${Math.round(p[1] * 1e4)},${Math.round(p[2] * 1e4)}`;
+const pairKey = (a, b) => {
+  const ka = cornerKey(a);
+  const kb = cornerKey(b);
+  return ka < kb ? `${ka}|${kb}` : `${kb}|${ka}`;
+};
+
+/**
+ * Triangles by the edges they have, for a soup or a welded mesh. Kept per mesh:
+ * a hover asks again on every pointer move over the same part.
+ */
+const _edgeTriangles = new WeakMap();
+function edgeTriangles(mesh) {
+  const hit = _edgeTriangles.get(mesh);
+  if (hit) return hit;
+  const map = new Map();
+  _edgeTriangles.set(mesh, map);
+  for (let t = 0; t < mesh.triangleCount; t++) {
+    const tri = triangle(mesh, t);
+    for (let k = 0; k < 3; k++) {
+      const key = pairKey(tri[k], tri[(k + 1) % 3]);
+      let list = map.get(key);
+      if (!list) { list = []; map.set(key, list); }
+      list.push(tri);
+    }
+  }
+  return map;
+}
+
+/** A chain's corners without the closing repeat, and whether it closes. */
+function chainCorners(points, closed) {
+  const pts = points.map((q) => [...q]);
+  if (closed && pts.length > 2 && cornerKey(pts[0]) === cornerKey(pts[pts.length - 1])) pts.pop();
+  return pts;
+}
+
+/**
+ * The two faces at every segment of a chain, with the one they all share — the
+ * flat face the chain runs round — as face 1. Throws if they share none.
+ */
+export function chainFrames(mesh, points, closed) {
+  const pts = chainCorners(points, closed);
+  const byEdge = edgeTriangles(mesh);
+  const n = closed ? pts.length : pts.length - 1;
+  const segs = [];
+  for (let i = 0; i < n; i++) {
+    const a = pts[i];
+    const b = pts[(i + 1) % pts.length];
+    const tris = byEdge.get(pairKey(a, b)) || [];
+    if (tris.length !== 2) throw new Error('that edge is no longer on the part');
+    const d = unit(sub(b, a));
+    const faces = tris.map((tri) => {
+      const w = sub(centroid(tri), a);
+      return { n: normalOf(tri), t: unit(sub(w, scale(d, dot(w, d)))) };
+    });
+    segs.push({ a, b, d, faces });
+  }
+  // The shared face: one of the first segment's two that every segment has.
+  const N = segs[0].faces.map((f) => f.n)
+    .find((cand) => segs.every((sg) => sg.faces.some((f) => dot(f.n, cand) > 0.999)));
+  if (!N) throw new Error('that run of edges does not go round one flat face');
+  return {
+    N,
+    closed,
+    segs: segs.map(({ a, b, d, faces }) => {
+      const [f1, f2] = dot(faces[0].n, N) > 0.999 ? faces : [faces[1], faces[0]];
+      return { a, b, d, n1: f1.n, n2: f2.n, t1: f1.t, t2: f2.t };
+    }),
+  };
+}
+
+/** The sharpest turn a chain may take at a joint and still be one edge. */
+const MAX_JOINT_TURN = (30 * Math.PI) / 180;
+
+/** Angle between two segment directions. */
+const turnOf = (d0, d1) => Math.acos(Math.max(-1, Math.min(1, dot(d0, d1))));
+
+function chainTools(soup, ref, kind, size) {
+  const welded = weld(soup);
+  const chain = edgeAtPoint(detectSharpEdges(welded), ref.seed, 0.5);
+  if (!chain) throw new Error('that run of edges is no longer on the part');
+  const { N, segs, closed } = chainFrames(welded, chain.points, chain.closed);
+  if (ref.n && dot(N, ref.n) < 0.999) throw new Error('that run of edges is no longer on the part');
+
+  const sections = segs.map((sg) => {
+    const u = N;
+    const v = cross(sg.d, u);
+    const to2 = (w) => [dot(w, u), dot(w, v)];
+    const sec = treatmentSection({
+      P: [0, 0], n1: to2(sg.n1), n2: to2(sg.n2), t1: to2(sg.t1), t2: to2(sg.t2),
+    }, kind, size);
+    let reach = 0;
+    for (let i = 0; i < sec.loop.length; i += 2) reach = Math.max(reach, Math.hypot(sec.loop[i], sec.loop[i + 1]));
+    return { ...sec, u, v, reach };
+  });
+  const convex = sections[0].convex;
+  if (sections.some((sc) => sc.convex !== convex)) {
+    throw new Error('that run of edges turns from an outside corner to an inside one — pick the two parts separately');
+  }
+
+  // Each segment's piece runs on past its joints far enough to close the gap the
+  // turn opens between it and the next: reach·tan(turn/2). Where the gap is on
+  // the outside of the turn that is air; on the inside the overlap is a little
+  // deeper than a true rolling sweep, by (1 − cos(turn/2)) — a few thousandths at
+  // the five-degree turns of a faceted fillet.
+  const n = segs.length;
+  const pastJoint = (i) => {
+    const j = (i + 1) % n;
+    const turn = turnOf(segs[i].d, segs[j].d);
+    if (turn > MAX_JOINT_TURN) throw new Error('that run of edges has a sharp corner in it — pick the straight edges either side');
+    return Math.max(sections[i].reach, sections[j].reach) * Math.tan(turn / 2) + 1e-3;
+  };
+  const after = segs.map((_, i) => (!closed && i === n - 1 ? PAST_END : pastJoint(i)));
+  const before = segs.map((_, i) => (!closed && i === 0 ? PAST_END : after[(i + n - 1) % n]));
+
+  const solids = segs.map((sg, i) => {
+    const { loop, u, v } = sections[i];
+    return extrudeRegion({ outer: loop }, {
+      plane: { origin: sub(sg.a, scale(sg.d, before[i])), u, v },
+      depth: len(sub(sg.b, sg.a)) + before[i] + after[i],
+    });
+  });
+  return { solids, merge: convex ? 'cut' : 'add' };
+}
+
+// ---------------------------------------------------------------------------
 // Round edges
 
 const AXIS_VEC = [[1, 0, 0], [0, 1, 0], [0, 0, 1]];
@@ -348,19 +483,27 @@ function circleTool(soup, ref, kind, size) {
 export function edgeTreatmentTools(soup, feature) {
   if (!soup?.triangleCount) throw new Error(`a ${feature.kind} needs a part to work on`);
   if (!feature.edges?.length) throw new Error('no edges are picked');
-  return feature.edges.map((ref) => (ref.type === 'circle'
-    ? circleTool(soup, ref, feature.kind, feature.size)
-    : lineTool(soup, ref, feature.kind, feature.size)));
+  return feature.edges.map((ref) => {
+    if (ref.type === 'chain') return chainTools(soup, ref, feature.kind, feature.size);
+    const { solid, merge } = ref.type === 'circle'
+      ? circleTool(soup, ref, feature.kind, feature.size)
+      : lineTool(soup, ref, feature.kind, feature.size);
+    return { solids: [solid], merge };
+  });
 }
 
 /**
- * Apply a Chamfer or Fillet feature to a part. `meshBoolean` as the tree has it.
+ * Apply a Chamfer or Fillet feature to a part. `meshBoolean` as the tree has it;
+ * when it offers `many` (manifold does), an edge's pieces are joined and applied
+ * in one pass, so a chain of a hundred segments is one boolean with the part.
  */
 export function applyEdgeTreatment(soup, feature, meshBoolean) {
   if (!meshBoolean) throw new Error('no solid boolean is available to cut the part with');
   let out = soup;
-  for (const { solid, merge } of edgeTreatmentTools(soup, feature)) {
-    out = meshBoolean(out, solid, merge, feature.kind);
+  for (const { solids, merge } of edgeTreatmentTools(soup, feature)) {
+    const once = solids.length > 1 ? meshBoolean.many?.(out, solids, merge, feature.kind) : null;
+    if (once) { out = once; continue; }
+    for (const tool of solids) out = meshBoolean(out, tool, merge, feature.kind);
   }
   return out;
 }
@@ -376,6 +519,13 @@ export function parseEdgeRef(raw) {
     if (vec(raw.n1) && vec(raw.n2)) { ref.n1 = [...raw.n1]; ref.n2 = [...raw.n2]; }
     return ref;
   }
+  if (raw?.type === 'chain' && vec(raw.seed) && vec(raw.n)) {
+    const ref = {
+      type: 'chain', seed: [...raw.seed], n: [...raw.n], length: Number(raw.length) || 0, closed: !!raw.closed,
+    };
+    if (Array.isArray(raw.points) && raw.points.every(vec)) ref.points = raw.points.map((q) => [...q]);
+    return ref;
+  }
   if (raw?.type === 'circle' && [0, 1, 2].includes(raw.axis) && vec(raw.center) && raw.radius > 0) {
     return {
       type: 'circle', axis: raw.axis, center: [...raw.center], radius: raw.radius,
@@ -389,6 +539,11 @@ export function sameEdge(a, b) {
   const near = (p, q) => len(sub(p, q)) < 0.01;
   if (a?.type !== b?.type) return false;
   if (a.type === 'circle') return a.axis === b.axis && near(a.center, b.center) && Math.abs(a.radius - b.radius) < 0.01;
+  if (a.type === 'chain') {
+    // Two clicks on one run of edges: same length, and each seed on the other's run.
+    const on = (pts, q) => pts?.some((p, i) => i > 0 && len(sub(q, nearestOnSegment(pts[i - 1], p, q))) < 0.05);
+    return Math.abs(a.length - b.length) < 0.05 && (on(a.points, b.seed) || on(b.points, a.seed));
+  }
   return (near(a.a, b.a) && near(a.b, b.b)) || (near(a.a, b.b) && near(a.b, b.a));
 }
 
@@ -438,6 +593,28 @@ export function pickTreatEdge(welded, point, tolerance, edges) {
   let last = best;
   while (first > 0 && straight(first - 1)) first -= 1;
   while (last + 2 < pts.length && straight(last + 1)) last += 1;
+  // The run is not the whole chain: it carries on round arcs or bends, as the top
+  // edge of a part with filleted corners does — take all of it, as SolidWorks'
+  // tangent propagation would.
+  if (chain.closed || first > 0 || last + 2 < pts.length) {
+    try {
+      const { N, segs } = chainFrames(welded, pts, chain.closed);
+      const joints = chain.closed ? segs.length : segs.length - 1;
+      for (let i = 0; i < joints; i++) {
+        if (turnOf(segs[i].d, segs[(i + 1) % segs.length].d) > MAX_JOINT_TURN) throw new Error('sharp corner');
+      }
+      return {
+        type: 'chain',
+        seed: nearestOnSegment(pts[best], pts[best + 1], point),
+        n: N,
+        length: chain.length,
+        closed: chain.closed,
+        points: pts.map((q) => [...q]),
+      };
+    } catch {
+      // Not round one flat face: fall back to the straight run under the click.
+    }
+  }
   const ref = { type: 'line', a: [...pts[first]], b: [...pts[last + 1]] };
   try {
     const f = lineEdgeFrame(welded, ref);
@@ -449,8 +626,15 @@ export function pickTreatEdge(welded, point, tolerance, edges) {
   }
 }
 
+function nearestOnSegment(a, b, q) {
+  const ab = sub(b, a);
+  const t = Math.max(0, Math.min(1, dot(sub(q, a), ab) / (dot(ab, ab) || 1)));
+  return add(a, scale(ab, t));
+}
+
 /** A short label for a picked edge. */
 export function describeEdgeRef(ref) {
   if (ref.type === 'circle') return `Rim Ø${(2 * ref.radius).toFixed(2)}`;
+  if (ref.type === 'chain') return `Edge chain ${ref.length.toFixed(1)} mm`;
   return `Edge ${len(sub(ref.b, ref.a)).toFixed(1)} mm`;
 }

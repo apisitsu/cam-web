@@ -483,7 +483,12 @@ export function EdgeTreatMarks({ meshVer }) {
   const size = originMarkerSize(bounds);
   const marks = useMemo(() => {
     if (!active) return [];
-    const build = (ref) => (ref.type === 'circle'
+    const bar = (a, b) => edgeMarkerGeometry({
+      a, b, length: Math.hypot(b[0] - a[0], b[1] - a[1], b[2] - a[2]),
+    }, size * 0.015);
+    const build = (ref) => (ref.type === 'chain'
+      ? (ref.points || []).slice(1).map((q, i) => bar(ref.points[i], q))
+      : ref.type === 'circle'
       ? [new THREE.TorusGeometry(ref.radius, Math.max(ref.radius * 0.03, size * 0.015), 8, 96)].map((g) => {
         if (ref.axis === 0) g.rotateY(Math.PI / 2);
         if (ref.axis === 1) g.rotateX(Math.PI / 2);

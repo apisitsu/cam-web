@@ -10,6 +10,7 @@ import { meshBoolean, loadMeshBoolean } from '../../lib/csg.js';
 import { volume, isClosed } from './solidAssert.js';
 import { openEdgeCount } from '../mesh/repair.js';
 import { weld } from '../mesh/stl.js';
+import { analyzeMesh } from '../mesh/analyze.js';
 
 const square = (x0, y0, x1, y1) => [x0, y0, x1, y0, x1, y1, x0, y1];
 const box = (x0, y0, x1, y1, z0, z1) => extrudeRegion(
@@ -176,5 +177,76 @@ describe('picking and storage', () => {
     expect(parseEdgeRef({ type: 'circle', axis: 2, center: [0, 0, 0], radius: 3 })?.radius).toBe(3);
     expect(parseEdgeRef({ type: 'line', a: [0, 0] })).toBe(null);
     expect(parseEdgeRef({ type: 'circle', axis: 4, center: [0, 0, 0], radius: 3 })).toBe(null);
+  });
+});
+
+describe('chains — straight runs and arcs round a flat face', () => {
+  // A 60 × 60 × 15 block with its four upright corners filleted R10: the top
+  // edge is then one run, straight–arc–straight round the top face.
+  const roundedBlock = () => applyEdgeTreatment(
+    box(0, 0, 60, 60, 0, 15),
+    {
+      kind: 'fillet',
+      size: 10,
+      edges: [[0, 0], [60, 0], [60, 60], [0, 60]].map(([x, y]) => ({ type: 'line', a: [x, y, 0], b: [x, y, 15] })),
+    },
+    meshBoolean,
+  );
+
+  it('picks the whole run, not just the straight piece under the click', () => {
+    const part = roundedBlock();
+    const ref = pickTreatEdge(weld(part), [30, 0.05, 14.95], 0.5);
+    expect(ref.type).toBe('chain');
+    expect(ref.closed).toBe(true);
+    expect(ref.n[2]).toBeCloseTo(1, 6);
+    // 4 × 40 straight + a full turn of R10 arcs (faceted, so a hair under 2π·10).
+    near(ref.length, 160 + 2 * Math.PI * 10, 0.5);
+    expect(describeEdgeRef(ref)).toMatch(/^Edge chain/);
+    expect(sameEdge(ref, pickTreatEdge(weld(part), [60, 30, 15], 0.5))).toBe(true);
+  });
+
+  it('chamfers the whole run, closed, and as much as the sweep removes', () => {
+    const part = roundedBlock();
+    const ref = pickTreatEdge(weld(part), [30, 0, 15], 0.5);
+    const out = applyEdgeTreatment(part, { kind: 'chamfer', size: 1.5, edges: [ref] }, meshBoolean);
+    // ½c² swept along the path of its centroid, c/3 in from the outline.
+    near(volume(part) - volume(out), 0.5 * 1.5 ** 2 * (160 + 2 * Math.PI * (10 - 0.5)), 0.5);
+    expect(openEdgeCount(out)).toBe(0);
+    expect(analyzeMesh(out, weld(out)).warnings).toEqual([]);
+  });
+
+  it('fillets the whole run', () => {
+    const part = roundedBlock();
+    const ref = pickTreatEdge(weld(part), [30, 0, 15], 0.5);
+    const out = applyEdgeTreatment(part, { kind: 'fillet', size: 2, edges: [ref] }, meshBoolean);
+    // (1 − π/4)·r² swept along its centroid's path, 0.223·r in from the outline.
+    const inset = (2 * (10 - 3 * Math.PI)) / (3 * (4 - Math.PI));
+    near(volume(part) - volume(out), (1 - Math.PI / 4) * 4 * (160 + 2 * Math.PI * (10 - inset)), 2);
+    expect(analyzeMesh(out, weld(out)).warnings).toEqual([]);
+  });
+
+  it('chamfers the rim of a pocket with rounded corners, turning the other way', () => {
+    // A 60 × 60 × 10 plate with a 30 × 30 through pocket whose corners are R5.
+    const plate = box(-30, -30, 30, 30, 0, 10);
+    const r = 5;
+    const pocketLoop = [];
+    for (const [cx, cy, a0] of [[10, -10, -90], [10, 10, 0], [-10, 10, 90], [-10, -10, 180]]) {
+      for (let k = 0; k <= 18; k++) {
+        const a = ((a0 + (90 * k) / 18) * Math.PI) / 180;
+        pocketLoop.push(cx + r * Math.cos(a), cy + r * Math.sin(a));
+      }
+    }
+    const part = meshBoolean(plate, extrudeRegion({ outer: pocketLoop }, { depth: 12, base: -1 }), 'cut');
+    const ref = pickTreatEdge(weld(part), [0, -15, 10], 0.5);
+    expect(ref.type).toBe('chain');
+    const out = applyEdgeTreatment(part, { kind: 'chamfer', size: 1, edges: [ref] }, meshBoolean);
+    // The centroid's path runs c/3 OUT from the pocket's outline.
+    near(volume(part) - volume(out), 0.5 * (80 + 2 * Math.PI * (5 + 1 / 3)), 0.5);
+    expect(analyzeMesh(out, weld(out)).warnings).toEqual([]);
+  });
+
+  it('keeps a straight edge that meets others at sharp corners a straight edge', () => {
+    const ref = pickTreatEdge(weld(box(0, 0, 40, 20, 0, 10)), [12, 0.1, 9.9], 0.5);
+    expect(ref.type).toBe('line');
   });
 });

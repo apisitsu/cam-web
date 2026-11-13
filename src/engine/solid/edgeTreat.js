@@ -353,8 +353,12 @@ export function circleEdgeFrame(soup, ref) {
   };
 }
 
-/** How deep a round tool cuts into the wall it re-cuts, mm. */
-const SKIN = 0.01;
+/**
+ * How deep a round tool cuts into the wall it re-cuts, mm: two microns. Thinner
+ * than this and the tool's wall and the part's start to read as the same surface
+ * to the boolean, which then leaves more cracks rather than fewer.
+ */
+const SKIN = 0.002;
 
 function circleTool(soup, ref, kind, size) {
   const f = circleEdgeFrame(soup, ref);
@@ -363,7 +367,7 @@ function circleTool(soup, ref, kind, size) {
   // along a ring, and the mesh boolean leaves that ring full of cracks. So on an
   // outside rim the tool carries on down the wall, a skin deep, and the part's
   // wall is replaced by the tool's — whose join to the chamfer is made exactly,
-  // by the revolve. The skin is far below anything a machine holds.
+  // by the revolve. The skin (`SKIN`) is far below anything a machine holds.
   // A rim's faces are square, so either treatment leaves the wall `size` from
   // the edge; the run is measured on from there.
   const run = (f.open ? f.run + size : f.run - SKIN) - size;

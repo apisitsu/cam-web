@@ -7,10 +7,11 @@
  * invisible in a table of numbers.
  *
  * The geometry is built from the **soup** (three unshared corners per triangle)
- * rather than the welded mesh, so `computeVertexNormals` gives one normal per
- * facet and the part shades flat. That is honest for an STL — the facets really
- * are the model — and welding first would smooth genuine sharp edges into
- * rounded mush.
+ * rather than the welded mesh, and shaded with crease normals (`creaseNormals`):
+ * facets less than 30° apart blend, so a bore, a boss or a fillet reads as one
+ * round surface instead of a stack of flat strips, while a real edge stays sharp.
+ * Averaging every normal at a corner, as welding would, rounds the edges into
+ * mush.
  *
  * Positions are read from the module-level mesh cache keyed on the scalar
  * `meshVer`, never passed as props, for the same reason `StockMesh` does it:
@@ -34,6 +35,7 @@ import { pickTreatEdge } from '../engine/solid/edgeTreat.js';
 import { featureAtPoint } from '../engine/mesh/pickEdge.js';
 import { circlesAt, nearestCircle } from '../engine/mesh/circlePick.js';
 import { originMarkerSize, rotaryAxisLength } from '../engine/view/originMarker.js';
+import { creaseNormals } from '../engine/view/creaseNormals.js';
 import { CLICK_SLOP } from './SketchStage.jsx';
 import { CAD } from '../theme.js';
 
@@ -50,12 +52,12 @@ const pickFor = (welded, event, point) => measurePick(
   event.camera?.zoom ? 8 / event.camera.zoom : undefined,
 );
 
-/** Flat-shaded geometry for a soup, one normal per facet (see the note at the top). */
+/** Geometry for a soup, round where it is round and sharp at edges (see the note at the top). */
 function soupGeometry(soup) {
   if (!soup || soup.triangleCount === 0) return null;
   const g = new THREE.BufferGeometry();
   g.setAttribute('position', new THREE.BufferAttribute(soup.positions, 3));
-  g.computeVertexNormals();
+  g.setAttribute('normal', new THREE.BufferAttribute(creaseNormals(soup), 3));
   g.computeBoundingSphere();
   return g;
 }

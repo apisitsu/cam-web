@@ -127,10 +127,10 @@ describe('applyEdgeTreatment — round edges', () => {
     expect(f.open).toBe(true);
     const before = volume(part);
     const out = applyEdgeTreatment(part, { kind: 'chamfer', size: 1, edges: [rim] }, meshBoolean);
-    // A ring of triangle ½·1·1 at a mean radius of 5 + 1/3, and the 0.01 mm skin
-    // re-cut down the 9 mm of wall below it and 1 mm past.
+    // A ring of triangle ½·1·1 at a mean radius of 5 + 1/3, and the 0.002 mm
+    // skin re-cut down the 9 mm of wall below it and 1 mm past.
     const chamfer = 0.5 * 2 * Math.PI * (5 + 1 / 3);
-    const skin = 2 * Math.PI * 5 * 0.01 * 10;
+    const skin = 2 * Math.PI * 5 * 0.002 * 10;
     near(before - volume(out), chamfer + skin, 0.4);
     // The mesh boolean leaves a few cracks where a cone crosses a flat face —
     // the Hole Wizard's own chamfer does the same — but not a ring of them.
@@ -144,9 +144,9 @@ describe('applyEdgeTreatment — round edges', () => {
     const before = volume(boss);
     const out = applyEdgeTreatment(boss, { kind: 'fillet', size: 2, edges: [rim] }, meshBoolean);
     const ringArea = (1 - Math.PI / 4) * 4;
-    // The removed ring's section sits between radius 7 and 8, plus the 0.01 mm
+    // The removed ring's section sits between radius 7 and 8, plus the 0.002 mm
     // skin down the 8 mm of wall below the fillet and 2 mm past its foot.
-    const skin = 2 * Math.PI * 8 * 0.01 * 10;
+    const skin = 2 * Math.PI * 8 * 0.002 * 10;
     expect(before - volume(out)).toBeGreaterThan(ringArea * 2 * Math.PI * 7 + skin * 0.9);
     expect(before - volume(out)).toBeLessThan(ringArea * 2 * Math.PI * 8 + skin * 1.1);
   });

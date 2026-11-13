@@ -11,6 +11,7 @@
  * classes, just a HEADER, a LAYER table and ENTITIES. Pure — takes a sketch,
  * returns a string.
  */
+import { curveOf } from './curves.js';
 
 /** DXF group code + value, one per line. */
 const g = (code, value) => `${code}\n${value}\n`;
@@ -86,6 +87,18 @@ export function sketchToDxf(sk, { includePoints = false, includeConstruction = t
         + g(10, num(c.x)) + g(20, num(c.y)) + g(30, '0') + g(40, num(e.r))
         + g(50, num(normDeg(Math.atan2(s.y - c.y, s.x - c.x) * DEG)))
         + g(51, num(normDeg(Math.atan2(en.y - c.y, en.x - c.x) * DEG)));
+    } else if (e.type === 'ellipse' || e.type === 'spline') {
+      // R12 has no ellipse or spline that every reader takes: written as the
+      // short LINEs it is drawn with.
+      const c = curveOf(sk, e);
+      if (!c) continue;
+      const n = c.points.length / 2;
+      for (let i = 0; i < (c.closed ? n : n - 1); i++) {
+        const j = (i + 1) % n;
+        out += g(0, 'LINE') + g(8, layerOf(e))
+          + g(10, num(c.points[i * 2])) + g(20, num(c.points[i * 2 + 1])) + g(30, '0')
+          + g(11, num(c.points[j * 2])) + g(21, num(c.points[j * 2 + 1])) + g(31, '0');
+      }
     } else if (e.type === 'point' && includePoints) {
       out += g(0, 'POINT') + g(8, layerOf(e))
         + g(10, num(e.x)) + g(20, num(e.y)) + g(30, '0');
@@ -99,7 +112,7 @@ export function sketchToDxf(sk, { includePoints = false, includeConstruction = t
 export function sketchHasGeometry(sk) {
   if (!sk?.entities) return false;
   for (const e of sk.entities.values()) {
-    if (e.type === 'line' || e.type === 'circle' || e.type === 'arc') return true;
+    if (['line', 'circle', 'arc', 'ellipse', 'spline'].includes(e.type)) return true;
   }
   return false;
 }

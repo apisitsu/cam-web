@@ -19,6 +19,7 @@ import { relationGlyphs } from '../engine/sketch/relationGlyphs.js';
 import { polygonPreview, slotPreview, axisDistance } from '../engine/sketch/shapes.js';
 import { circleThrough3, leavingDirection } from '../engine/sketch/drawTools.js';
 import { tessellateArc, CHORD_TOL } from '../engine/sketch/loops.js';
+import { curveOf, splinePoints, ellipsePoints } from '../engine/sketch/curves.js';
 import { planeMatrix } from '../engine/sketch/plane.js';
 import { keyIs } from '../engine/view/viewKeys.js';
 import { CAD } from '../theme.js';
@@ -433,11 +434,12 @@ export default function SketchLayer() {
   const openContextMenu = useSketchStore((s) => s.openContextMenu);
   const closeContextMenu = useSketchStore((s) => s.closeContextMenu);
 
-  const { points, lines, circles, arcs } = useMemo(() => {
+  const { points, lines, circles, arcs, curves } = useMemo(() => {
     const pts = [];
     const lns = [];
     const circs = [];
     const ars = [];
+    const crvs = [];
     for (const e of sk.entities.values()) if (e.type === 'point') pts.push(e);
     for (const e of sk.entities.values()) {
       if (e.type === 'line') {
@@ -447,6 +449,14 @@ export default function SketchLayer() {
       } else if (e.type === 'circle') {
         const c = sk.entities.get(e.center);
         if (c) circs.push({ id: e.id, cx: c.x, cy: c.y, r: e.r, construction: !!e.construction });
+      } else if (e.type === 'ellipse' || e.type === 'spline') {
+        const c = curveOf(sk, e);
+        if (c) {
+          const ring = [];
+          for (let i = 0; i < c.points.length; i += 2) ring.push([c.points[i], c.points[i + 1], Z]);
+          if (c.closed) ring.push(ring[0]);
+          crvs.push({ id: e.id, ring, construction: !!e.construction });
+        }
       } else if (e.type === 'arc') {
         const c = sk.entities.get(e.center);
         const s = sk.entities.get(e.start);
@@ -460,7 +470,9 @@ export default function SketchLayer() {
         }
       }
     }
-    return { points: pts, lines: lns, circles: circs, arcs: ars };
+    return {
+      points: pts, lines: lns, circles: circs, arcs: ars, curves: crvs,
+    };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [sk, version]);
 
@@ -627,8 +639,27 @@ export default function SketchLayer() {
   // Rubber-band preview from the pending point(s) to the live (snapped) cursor.
   const anchor = pending != null ? sk.entities.get(pending) : null;
   const arcStart = pending2 != null ? sk.entities.get(pending2) : null;
+  const splinePts = useSketchStore((s) => s.splinePts);
   const preview = useMemo(() => {
     if (!anchor || !tip) return null;
+    if (tool === 'spline') {
+      const pts = splinePts.map((id) => sk.entities.get(id)).filter(Boolean).map((p) => [p.x, p.y]);
+      const flat = splinePoints([...pts, [tip.x, tip.y]]);
+      const out = [];
+      for (let i = 0; i < flat.length; i += 2) out.push([flat[i], flat[i + 1], Z]);
+      return out.length >= 2 ? out : null;
+    }
+    if (tool === 'ellipse') {
+      if (!arcStart) return [[anchor.x, anchor.y, Z], [tip.x, tip.y, Z]];
+      const ax = arcStart.x - anchor.x; const ay = arcStart.y - anchor.y;
+      const l = Math.hypot(ax, ay) || 1;
+      const rb = Math.abs(((tip.x - anchor.x) * -ay + (tip.y - anchor.y) * ax) / l);
+      const flat = ellipsePoints(anchor, arcStart, Math.max(rb, 1e-3));
+      const out = [];
+      for (let i = 0; i < flat.length; i += 2) out.push([flat[i], flat[i + 1], Z]);
+      if (out.length) out.push(out[0]);
+      return out.length ? out : null;
+    }
     if (tool === 'line') {
       return [[anchor.x, anchor.y, Z], [tip.x, tip.y, Z]];
     }
@@ -700,7 +731,7 @@ export default function SketchLayer() {
     }
     return null;
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [anchor, arcStart, tip, tool, polygonSides, pendingFrom]);
+  }, [anchor, arcStart, tip, tool, polygonSides, pendingFrom, splinePts]);
 
   // The whole layer is drawn in sketch coordinates and then placed by the active
   // sketch's plane, so nothing below this line had to learn about planes: local
@@ -988,6 +1019,28 @@ export default function SketchLayer() {
               if (!selecting) return;
               e.stopPropagation();
               toggleSelect(a.id);
+            }}
+          />
+        );
+      })}
+
+      {curves.map((c) => {
+        const isSel = selected.has(c.id);
+        const isHover = picking && !isSel && hoverId === c.id;
+        return (
+          <Line
+            key={c.id}
+            points={c.ring}
+            color={isSel ? SELECTED : isHover ? HOVER : c.construction ? CONSTRUCTION : baseGeom}
+            lineWidth={isSel ? 4 : isHover ? 3 : c.construction ? 1.5 : 2}
+            dashed={c.construction}
+            dashSize={c.construction ? 0.9 : undefined}
+            gapSize={c.construction ? 0.6 : undefined}
+            raycast={selecting ? undefined : noRaycast}
+            onClick={(e) => {
+              if (!selecting) return;
+              e.stopPropagation();
+              toggleSelect(c.id);
             }}
           />
         );

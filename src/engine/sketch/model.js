@@ -34,6 +34,10 @@ export const ENTITY_KINDS = {
   line: { refs: 2, refTypes: ['point', 'point'], ownParams: 0 },
   circle: { refs: 1, refTypes: ['point'], ownParams: 1 },
   arc: { refs: 3, refTypes: ['point', 'point', 'point'], ownParams: 3 },
+  // Drawn through solver points; only the minor radius is the ellipse's own
+  // (and is not solved). A spline has as many points as were clicked.
+  ellipse: { refs: 2, refTypes: ['point', 'point'], ownParams: 0 },
+  spline: { refs: null, ownParams: 0 },
 };
 
 /** DOF removed by an arc's built-in rim coupling (arc_rules): 2 per endpoint. */
@@ -157,6 +161,23 @@ export function addCircle(sk, center, r) {
 export function addCircleXY(sk, cx, cy, r) {
   const center = addPoint(sk, cx, cy);
   return { circle: addCircle(sk, center, r), center };
+}
+
+/** An ellipse round `center`, its major axis ending at point `major`, minor radius `rb`. */
+export function addEllipse(sk, center, major, rb) {
+  requireEntity(sk, center, 'point');
+  requireEntity(sk, major, 'point');
+  const id = sk.nextId++;
+  sk.entities.set(id, { id, type: 'ellipse', center, major, rb });
+  return id;
+}
+
+/** A spline through point ids `pts` in order; `closed` runs it back to the first. */
+export function addSpline(sk, pts, closed = false) {
+  pts.forEach((p) => requireEntity(sk, p, 'point'));
+  const id = sk.nextId++;
+  sk.entities.set(id, { id, type: 'spline', pts: pts.slice(), closed: !!closed });
+  return id;
 }
 
 /**

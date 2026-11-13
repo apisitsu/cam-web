@@ -7,6 +7,7 @@
  * everything here is testable under plain Node.
  */
 import { addPoint, addLine, addCircle, addArc, addConstraint } from './model.js';
+import { curveRefs, curveOf as polyCurveOf } from './curves.js';
 
 const dist2 = (ax, ay, bx, by) => (ax - bx) ** 2 + (ay - by) ** 2;
 
@@ -158,6 +159,7 @@ function dependents(sk, id) {
     if (e.type === 'line' && (e.p1 === id || e.p2 === id)) out.push(e.id);
     else if (e.type === 'circle' && e.center === id) out.push(e.id);
     else if (e.type === 'arc' && (e.center === id || e.start === id || e.end === id)) out.push(e.id);
+    else if ((e.type === 'ellipse' || e.type === 'spline') && curveRefs(e).includes(id)) out.push(e.id);
   }
   return out;
 }
@@ -168,6 +170,7 @@ function refPoints(e) {
   if (e.type === 'line') return [e.p1, e.p2];
   if (e.type === 'circle') return [e.center];
   if (e.type === 'arc') return [e.center, e.start, e.end];
+  if (e.type === 'ellipse' || e.type === 'spline') return curveRefs(e);
   return [];
 }
 
@@ -1349,6 +1352,7 @@ export function entitiesInBox(sk, x0, y0, x1, y1, { crossing = false } = {}) {
     if (e.type === 'line') { anchored.add(e.p1); anchored.add(e.p2); }
     else if (e.type === 'circle') anchored.add(e.center);
     else if (e.type === 'arc') { anchored.add(e.center); anchored.add(e.start); anchored.add(e.end); }
+    else if (e.type === 'ellipse' || e.type === 'spline') curveRefs(e).forEach((id) => anchored.add(id));
   }
   const out = [];
   for (const e of sk.entities.values()) {
@@ -1371,6 +1375,15 @@ export function entitiesInBox(sk, x0, y0, x1, y1, { crossing = false } = {}) {
       const enclosed = bx0 >= xmin && bx1 <= xmax && by0 >= ymin && by1 <= ymax;
       const touches = bx0 <= xmax && bx1 >= xmin && by0 <= ymax && by1 >= ymin;
       if (enclosed || (crossing && touches)) out.push(e.id);
+    } else if (e.type === 'ellipse' || e.type === 'spline') {
+      const c = polyCurveOf(sk, e);
+      if (!c) continue;
+      let all = true;
+      let any = false;
+      for (let i = 0; i < c.points.length; i += 2) {
+        if (inBox(c.points[i], c.points[i + 1])) any = true; else all = false;
+      }
+      if (all || (crossing && any)) out.push(e.id);
     }
   }
   return out;

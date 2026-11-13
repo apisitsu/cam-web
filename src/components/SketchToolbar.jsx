@@ -46,6 +46,8 @@ const RectIcon = skGlyph(<rect x="4.5" y="6.5" width="15" height="11" />);
 const SlotIcon = skGlyph(<path d="M8.5 7.5h7a4.5 4.5 0 0 1 0 9h-7a4.5 4.5 0 0 1 0-9z" />);
 const PolygonIcon = skGlyph(<path d="M12 4l7 4.2v7.6L12 20l-7-4.2V8.2z" />);
 const CircleIcon = skGlyph(<circle cx="12" cy="12" r="7.5" />);
+const EllipseIcon = skGlyph(<><ellipse cx="12" cy="12" rx="9" ry="5.5" transform="rotate(-25 12 12)" /><circle cx="12" cy="12" r="1.4" fill="currentColor" /></>);
+const SplineIcon = skGlyph(<><path d="M3 17c3-9 6-9 9-4s6 5 9-6" /><circle cx="3" cy="17" r="1.6" fill="currentColor" /><circle cx="12" cy="13" r="1.6" fill="currentColor" /><circle cx="21" cy="7" r="1.6" fill="currentColor" /></>);
 const ArcIcon = skGlyph(<><path d="M4 18A14 14 0 0 1 18 4" /><circle cx="4" cy="18" r="1.8" fill="currentColor" /><circle cx="18" cy="4" r="1.8" fill="currentColor" /></>);
 const DimIcon = glyph(<><path d="M4 7v10M20 7v10M4 12h16" /><path d="M7 9l-3 3 3 3M17 9l3 3-3 3" /></>);
 // Center Rectangle: a rectangle with its centre and a dashed diagonal.
@@ -105,6 +107,8 @@ const TOOLS = [
   { value: 'slot', label: 'Slot', Icon: SlotIcon, hint: 'Click the two ends of the slot axis, then a point setting the radius · the flanks stay tangent to the caps' },
   { value: 'polygon', label: 'Polygon', Icon: PolygonIcon, hint: 'Click the centre, then a corner (sets size and rotation) · pick the number of sides on the rail' },
   { value: 'circle', label: 'Circle', Icon: CircleIcon, hint: 'Click centre, then a point on the rim' },
+  { value: 'ellipse', label: 'Ellipse', Icon: EllipseIcon, hint: 'Click the centre, then the end of the major axis (size and angle), then a point off it for the minor radius' },
+  { value: 'spline', label: 'Spline', Icon: SplineIcon, hint: 'Click the points it runs through · click the last point again (or double-click) to finish · click the first point to close it · Esc keeps what is drawn' },
   { value: 'arc', label: 'Arc', Icon: ArcIcon, hint: 'Click centre, start, then end (sweeps CCW) · Esc cancels' },
   { value: 'arc3', label: '3-Point Arc', Icon: Arc3Icon, hint: 'Click the two ends, then a point the arc passes through' },
   { value: 'tangentArc', label: 'Tangent Arc', Icon: TangentArcIcon, hint: 'Click the end of a line or arc, then where the arc should end · it leaves tangent and stays tangent' },

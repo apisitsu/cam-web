@@ -260,6 +260,7 @@ describe('serialize / deserialize', () => {
 describe('the kind tables stay coherent', () => {
   it('gives every entity kind a ref count matching its refTypes', () => {
     for (const [kind, spec] of Object.entries(ENTITY_KINDS)) {
+      if (spec.refs === null) continue; // a spline: as many points as were clicked
       const refTypes = spec.refTypes ?? [];
       // eslint-disable-next-line jest/valid-expect
       expect(refTypes.length, `${kind} refs`).toBe(spec.refs);

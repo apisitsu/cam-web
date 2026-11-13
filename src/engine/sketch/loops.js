@@ -31,6 +31,7 @@
  */
 // `reversed` is the same flat-polyline reverse `sliceLoops` needs; one copy.
 import { normalizeLoops, loopArea, reversed as reversePoints } from '../mesh/slice.js';
+import { curveOf } from './curves.js';
 
 const TAU = Math.PI * 2;
 
@@ -296,6 +297,18 @@ function buildGraph(sk, { chordTol, weldTol }) {
       if (!c || !(e.r > 0)) continue;
       const points = tessellateArc(c.x, c.y, e.r, 0, TAU, chordTol);
       curves.push({ id: e.id, points, closed: true });
+    } else if (e.type === 'ellipse' || e.type === 'spline') {
+      const c = curveOf(sk, e);
+      if (!c) continue;
+      // A ring is handed over with its first point repeated at the end, as a
+      // tessellated circle is; an open spline's ends are its two points, welded.
+      const points = c.closed ? [...c.points, c.points[0], c.points[1]] : c.points.slice();
+      if (!c.closed) {
+        const a = at2(e.pts[0]); const b = at2(e.pts[e.pts.length - 1]);
+        points[0] = a.x; points[1] = a.y;
+        points[points.length - 2] = b.x; points[points.length - 1] = b.y;
+      }
+      curves.push({ id: e.id, points, closed: c.closed });
     }
   }
 

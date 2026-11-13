@@ -16,7 +16,9 @@ import { create } from 'zustand';
 import * as Comlink from 'comlink';
 import {
   createSketch, addPoint, addLine, addCircle, addArc, addConstraint, dof, serialize, deserialize,
+  addEllipse, addSpline,
 } from '../engine/sketch/model.js';
+import { hitTestCurve } from '../engine/sketch/curves.js';
 import {
   getOrCreatePoint, hitTestPoint, hitTestLine, hitTestCircle, hitTestArc,
   deleteEntity, removeConstraint, chamfer as chamferEdit, fillet as filletEdit,
@@ -132,7 +134,7 @@ const faceSketchName = (plane) => `Face ${planeLabel(plane)}`;
 /** The sketch entity at (x, y), by the order a click picks them in. */
 function entityAt(sk, x, y, tol) {
   return hitTestPoint(sk, x, y, tol) ?? hitTestLine(sk, x, y, tol)
-    ?? hitTestCircle(sk, x, y, tol) ?? hitTestArc(sk, x, y, tol);
+    ?? hitTestCircle(sk, x, y, tol) ?? hitTestArc(sk, x, y, tol) ?? hitTestCurve(sk, x, y, tol);
 }
 
 // Projecting a mesh's edges is not per-frame work; it holds until the part or plane changes.
@@ -180,6 +182,7 @@ export const useSketchStore = create((set, get) => ({
   selection: [], // selected entity ids — points, lines, circles, and/or arcs (mixed)
   selectedDims: [], // indices into sk.constraints of dimensions selected in the viewport (Delete removes them)
   contextMenu: null, // { x, y } screen position of an open right-click menu, or null
+  splinePts: [], // the points clicked so far for a spline being drawn
   showRelations: true, // draw the relation badges (— | ∥ ⊥ = ◎) beside the geometry
   hoverPlane: null, // reference-plane preset whose start button is under the pointer — the viewport lights that plane
   dimensionPending: null, // { kind, refs, label, current } set on a dimension-mode empty-click → shows the inline value input
@@ -465,7 +468,7 @@ export const useSketchStore = create((set, get) => ({
 
   setTool(tool) {
     set({
-      tool, pending: null, pending2: null, pendingFrom: null, convertPick: false, textPending: null, cursor: null, snap: null, axisSnap: null, lineAngle: null, hoverId: null, error: null, dimensionPending: null, editingConstraint: null, offsetPending: false, linearPatternPending: false, circularPatternPending: false, mirrorPending: false, partRefHover: null, facePick: false, boxSelect: null, _boxStart: null, selectedDims: [], contextMenu: null,
+      tool, pending: null, pending2: null, pendingFrom: null, convertPick: false, textPending: null, cursor: null, snap: null, axisSnap: null, lineAngle: null, hoverId: null, error: null, dimensionPending: null, editingConstraint: null, offsetPending: false, linearPatternPending: false, circularPatternPending: false, mirrorPending: false, partRefHover: null, facePick: false, boxSelect: null, _boxStart: null, selectedDims: [], contextMenu: null, splinePts: [],
     });
   },
 
@@ -601,7 +604,8 @@ export const useSketchStore = create((set, get) => ({
     // the pairwise scan is O(n²) and means nothing to select / dimension / trim.
     const placing = tool === 'point' || tool === 'line' || tool === 'rectangle'
       || tool === 'circle' || tool === 'arc' || tool === 'slot' || tool === 'polygon'
-      || tool === 'centerRect' || tool === 'arc3' || tool === 'tangentArc' || tool === 'text';
+      || tool === 'centerRect' || tool === 'arc3' || tool === 'tangentArc' || tool === 'text'
+      || tool === 'ellipse' || tool === 'spline';
     if (!snap && placing) {
       const xn = nearestIntersection(sk, x, y, tol);
       if (xn) snap = { x: xn.x, y: xn.y, intersection: true, of: xn.ids };
@@ -719,10 +723,20 @@ export const useSketchStore = create((set, get) => ({
     set({ cursor: null, snap: null, axisSnap: null, lineAngle: null, hoverId: null });
   },
 
+  /** Make the spline from the points clicked so far. */
+  _finishSpline(closed) {
+    const { sk, splinePts } = get();
+    get()._snapshot();
+    addSpline(sk, splinePts, closed);
+  },
+
   /** Escape: drop the in-progress draw (line/rectangle/circle/arc) without committing it. */
   cancelPending() {
-    if (get().pending != null || get().pending2 != null) {
-      set({ pending: null, pending2: null, axisSnap: null, lineAngle: null });
+    if (get().pending != null || get().pending2 != null || get().splinePts.length) {
+      // A spline with two points or more is kept as far as it was drawn.
+      if (get().splinePts.length >= 2) get()._finishSpline(false);
+      set({ pending: null, pending2: null, axisSnap: null, lineAngle: null, splinePts: [] });
+      get()._bump();
     }
     set({
       offsetPending: false, linearPatternPending: false, circularPatternPending: false, mirrorPending: false,
@@ -869,6 +883,46 @@ export const useSketchStore = create((set, get) => ({
         get()._bump();
         if (tangentKind || hvKind || relKind) get().solve();
       }
+    } else if (tool === 'ellipse') {
+      // Ellipse — centre, then the end of the major axis (size and rotation),
+      // then a point whose distance off that axis is the minor radius.
+      const { pending, pending2 } = get();
+      if (pending == null) {
+        set({ pending: getOrCreatePoint(sk, x, y, tol) });
+      } else if (pending2 == null) {
+        const m = getOrCreatePoint(sk, x, y, tol);
+        if (m === pending) set({ error: 'The axis end landed on the centre — click further out.' });
+        else set({ pending2: m, error: null });
+      } else {
+        const c = sk.entities.get(pending);
+        const m = sk.entities.get(pending2);
+        const rb = axisDistance(x, y, c, m);
+        if (rb > 1e-6) {
+          get()._snapshot();
+          addEllipse(sk, pending, pending2, rb);
+        } else {
+          set({ error: 'The third click sets the minor radius — click off the major axis.' });
+        }
+        set({ pending: null, pending2: null });
+        get()._bump();
+        return;
+      }
+    } else if (tool === 'spline') {
+      // Spline — click its points in order. Click the last one again (or
+      // double-click) to finish it open; click the first one to close it.
+      const pts = get().splinePts;
+      const p = getOrCreatePoint(sk, x, y, tol);
+      if (pts.length && p === pts[pts.length - 1]) {
+        if (pts.length >= 2) get()._finishSpline(false);
+        set({ splinePts: [], pending: null });
+      } else if (pts.length >= 3 && p === pts[0]) {
+        get()._finishSpline(true);
+        set({ splinePts: [], pending: null });
+      } else {
+        set({ splinePts: [...pts, p], pending: p });
+      }
+      get()._bump();
+      return;
     } else if (tool === 'circle') {
       // Circle tool: first click sets the centre (held in `pending`, same as the
       // line tool); second click sets the radius from the distance to the centre.
@@ -1814,7 +1868,7 @@ export const useSketchStore = create((set, get) => ({
     const { sk, selection } = get();
     const geom = selection.filter((id) => {
       const t = sk.entities.get(id)?.type;
-      return t === 'line' || t === 'circle' || t === 'arc';
+      return t === 'line' || t === 'circle' || t === 'arc' || t === 'ellipse' || t === 'spline';
     });
     if (!geom.length) { set({ error: 'Select lines/circles/arcs to toggle construction' }); return; }
     get()._snapshot();

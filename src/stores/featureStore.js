@@ -30,7 +30,7 @@
  */
 import { create } from 'zustand';
 import {
-  createFeature, parseFeatures, rebuildFeatures, needsMeshBoolean, seedFeatureIds,
+  createFeature, parseFeatures, rebuildFeatures, needsMeshBoolean, seedFeatureIds, featureSketchIds,
 } from '../engine/solid/featureTree.js';
 import { holePointIds, unusedHoleSites } from '../engine/solid/hole.js';
 import { openFaceRef } from '../engine/solid/shell.js';
@@ -44,7 +44,7 @@ import { useMeasureStore } from './measureStore.js';
 
 const MAX_FOLLOW_PASSES = 3; // two is the normal case; the limit is for sketches that chase each other
 
-const usedSketchIds = (features) => features.map((f) => f.sketchId).filter((id) => id != null);
+const usedSketchIds = (features) => features.flatMap(featureSketchIds);
 
 /** A set view rather than `normalTo`, which turns to the far side if already square. */
 function lookSquareAt(plane) {
@@ -729,7 +729,7 @@ useSketchStore.subscribe((state) => {
     _last = { version: state.version, activeId: state.activeId, planes };
     return;
   }
-  const used = new Set(features.map((f) => f.sketchId).filter((id) => id != null));
+  const used = new Set(usedSketchIds(features));
   const editedUsed = state.activeId === _last.activeId && used.has(state.activeId);
   const moved = [...used].some((id) => _last.planes.has(id) && planes.get(id) !== _last.planes.get(id));
   _last = { version: state.version, activeId: state.activeId, planes };

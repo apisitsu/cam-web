@@ -45,7 +45,7 @@
  */
 import { sketchRegions } from '../sketch/loops.js';
 import { combineRegions } from './regionBoolean.js';
-import { buildSolid } from './extrude.js';
+import { buildSolid, mergeSoups } from './extrude.js';
 import { resolvePlaneRef, lineFrame, planeBasis } from '../sketch/plane.js';
 import { centerlines } from '../sketch/model.js';
 import {
@@ -57,6 +57,7 @@ import {
   PATTERN_TYPES, patternTransforms, transformSoup, transformHole,
 } from './pattern.js';
 import { shellSolid, parseOpenFace } from './shell.js';
+import { sweepSolid, loftSolid } from './sweep.js';
 
 /**
  * How far an extrude runs. Blind is the depth typed; Through All is past the far
@@ -132,7 +133,15 @@ export const FEATURE_KINDS = {
   fillet: { label: 'Fillet', needsSketch: false },
   pattern: { label: 'Pattern', needsSketch: false },
   shell: { label: 'Shell', needsSketch: false },
+  sweep: { label: 'Sweep', needsSketch: true },
+  loft: { label: 'Loft', needsSketch: true },
 };
+
+/** Every sketch a feature is built from: its own, a sweep's path, a loft's profiles. */
+export function featureSketchIds(f) {
+  const ids = [f.sketchId, f.pathSketchId, ...(f.sketchIds || [])];
+  return [...new Set(ids.filter((id) => id != null))];
+}
 
 /** Chamfer and fillet work on edges of the part, not on a sketch. */
 export const isEdgeTreatment = (f) => f?.kind === 'chamfer' || f?.kind === 'fillet';
@@ -179,6 +188,18 @@ export function createFeature(kind, props = {}) {
       merge: 'cut',
       size: positive(props.size, 1),
       edges: (Array.isArray(props.edges) ? props.edges : []).map(parseEdgeRef).filter(Boolean),
+    };
+  }
+  if (kind === 'sweep' || kind === 'loft') {
+    const ids = (Array.isArray(props.sketchIds) ? props.sketchIds : []).filter(Number.isFinite);
+    return {
+      ...base,
+      merge: MERGE_MODES[props.merge] ? props.merge : 'add',
+      // Sweep: the profile sketch and the path sketch. Loft: the profiles in order
+      // (`sketchId` is the first, so the rest of the app finds one sketch to show).
+      sketchId: kind === 'loft' ? (ids[0] ?? null) : (Number.isFinite(props.sketchId) ? props.sketchId : null),
+      pathSketchId: kind === 'sweep' && Number.isFinite(props.pathSketchId) ? props.pathSketchId : null,
+      sketchIds: kind === 'loft' ? ids : [],
     };
   }
   if (kind === 'shell') {
@@ -285,6 +306,7 @@ function makeFeatureSolid(feature, {
     }
     return soup;
   }
+  if (feature.kind === 'loft') return makeLoft(feature, { sketchOf, refBounds, planes, used });
   const entry = sketchOf?.(feature.sketchId);
   if (!entry?.doc) throw new Error('its sketch is gone');
 
@@ -296,6 +318,7 @@ function makeFeatureSolid(feature, {
   if (plane !== entry.plane) planes?.set(feature.sketchId, plane);
 
   if (feature.kind === 'hole') return makeHoles(feature, entry.doc, plane, partBounds);
+  if (feature.kind === 'sweep') return makeSweep(feature, entry.doc, plane, { sketchOf, refBounds, planes, used });
 
   const found = sketchRegions(entry.doc);
   let regions = found.regions;
@@ -322,6 +345,40 @@ function makeFeatureSolid(feature, {
     return revolveAboutLine(regions, entry.doc, feature.axisLine, shape);
   }
   return buildSolid(regions, shape);
+}
+
+/** A sketch for a sweep or loft, on the plane it sits on now. */
+function placedSketch(id, { sketchOf, refBounds, planes, used }, what) {
+  const entry = sketchOf?.(id);
+  if (!entry?.doc) throw new Error(`its ${what} sketch is gone`);
+  used?.add(id);
+  const plane = resolvePlaneRef(entry.plane, refBounds);
+  if (plane !== entry.plane) planes?.set(id, plane);
+  return { doc: entry.doc, plane };
+}
+
+/** Sweep each closed profile of the feature's sketch along its path sketch's open chain. */
+function makeSweep(feature, doc, plane, ctx) {
+  if (feature.pathSketchId == null) throw new Error('pick the sketch with the path to sweep along');
+  if (feature.pathSketchId === feature.sketchId) throw new Error('the path must be in a sketch of its own');
+  const path = placedSketch(feature.pathSketchId, ctx, 'path');
+  const chain = sketchRegions(path.doc).open[0];
+  if (!chain) throw new Error('the path sketch has no open line or arc chain to sweep along');
+  const { regions } = sketchRegions(doc);
+  if (!regions.length) throw new Error('its profile sketch does not enclose a closed profile');
+  return mergeSoups(regions.map((r) => sweepSolid(r, plane, chain.points, path.plane)), 'sweep');
+}
+
+/** Loft through the biggest closed profile of each of the feature's sketches, in order. */
+function makeLoft(feature, ctx) {
+  if (feature.sketchIds.length < 2) throw new Error('pick two profile sketches or more, in order');
+  const profiles = feature.sketchIds.map((id, i) => {
+    const { doc, plane } = placedSketch(id, ctx, `profile ${i + 1}`);
+    const { regions } = sketchRegions(doc);
+    if (!regions.length) throw new Error(`profile ${i + 1} does not enclose a closed profile`);
+    return { outer: regions[0].outer, plane };
+  });
+  return loftSolid(profiles);
 }
 
 /**
@@ -580,6 +637,8 @@ export function describeFeature(f, sketchName) {
     const size = f.kind === 'fillet' ? `R${f.size}` : `${f.size} mm`;
     return `${f.kind === 'fillet' ? 'Fillet' : 'Chamfer'} ${size} · ${n} edge${n === 1 ? '' : 's'}`;
   }
+  if (f.kind === 'sweep') return `Sweep${sketchName ? ` · ${sketchName}` : ''}${f.merge === 'cut' ? ' · cut' : ''}`;
+  if (f.kind === 'loft') return `Loft through ${f.sketchIds.length} profiles${f.merge === 'cut' ? ' · cut' : ''}`;
   if (f.kind === 'shell') {
     const n = f.openFaces.length;
     return `Shell ${f.thickness} mm · ${n ? `${n} face${n === 1 ? '' : 's'} open` : 'closed'}`;

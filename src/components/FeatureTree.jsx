@@ -32,11 +32,14 @@ import {
   SketchIcon, FeatureIcon, LinkIcon,
 } from './TreeIcons.jsx';
 import { useSketchStore } from '../stores/sketchStore.js';
-import { describeFeature, END_CONDITIONS, isEdgeTreatment } from '../engine/solid/featureTree.js';
+import {
+  describeFeature, END_CONDITIONS, isEdgeTreatment, featureSketchIds,
+} from '../engine/solid/featureTree.js';
 import { THREADS } from '../engine/solid/hole.js';
 import { planeLabel } from '../engine/sketch/plane.js';
 import RevolveAxis, { axisValueOf, axisFromValue } from './RevolveAxis.jsx';
 import { PatternFields } from './PatternPanel.jsx';
+import { SweepLoftFields } from './SweepLoftPanel.jsx';
 import { CAD } from '../theme.js';
 
 const { Text } = Typography;
@@ -108,6 +111,15 @@ function FeatureEditor({ feature }) {
           {`${n} edge${n === 1 ? '' : 's'}…`}
         </Button>
       </Space>
+    );
+  }
+  if (feature.kind === 'sweep' || feature.kind === 'loft') {
+    return (
+      <SweepLoftFields
+        value={feature}
+        onChange={(next) => update(feature.id, next)}
+        sketches={useSketchStore.getState().sketches}
+      />
     );
   }
   if (feature.kind === 'shell') {
@@ -289,7 +301,7 @@ export default function FeatureTree({ embedded = false }) {
   const [collapsed, setCollapsed] = useState({});
 
   const errorOf = (id) => errors.find((e) => e.id === id);
-  const usedSketchIds = new Set(features.map((f) => f.sketchId).filter(Boolean));
+  const usedSketchIds = new Set(features.flatMap(featureSketchIds));
   const spare = sketches.filter((s) => !usedSketchIds.has(s.id));
 
   // Standalone, it still collapses itself; embedded in `LeftColumn` the column

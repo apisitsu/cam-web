@@ -78,6 +78,15 @@ export function FilletIcon({ inverse = false }) {
   );
 }
 
+/** A solid bent along a path. */
+export function SweepIcon({ inverse = false }) {
+  return (
+    <svg {...base} stroke={ink(inverse)} strokeWidth="1.4" strokeLinejoin="round">
+      <path d="M2 14V8a6 6 0 0 1 6-6h6v4H8a2 2 0 0 0-2 2v6z" fill={fillOf(inverse)} />
+    </svg>
+  );
+}
+
 /** A box hollowed out, open at the top. */
 export function ShellIcon({ inverse = false }) {
   return (
@@ -137,5 +146,6 @@ export function FeatureIcon({ kind, inverse = false }) {
   if (kind === 'fillet') return <FilletIcon inverse={inverse} />;
   if (kind === 'pattern') return <PatternIcon inverse={inverse} />;
   if (kind === 'shell') return <ShellIcon inverse={inverse} />;
+  if (kind === 'sweep' || kind === 'loft') return <SweepIcon inverse={inverse} />;
   return <ExtrudeIcon inverse={inverse} />;
 }

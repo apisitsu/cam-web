@@ -25,6 +25,7 @@ import BuildPanel, { useHasBuiltPart } from './BuildPanel.jsx';
 import HolePanel from './HolePanel.jsx';
 import PatternPanel from './PatternPanel.jsx';
 import ShellPanel from './ShellPanel.jsx';
+import SweepLoftPanel from './SweepLoftPanel.jsx';
 import { glyph, INK } from './glyph.jsx';
 import { useCamStore } from '../stores/camStore.js';
 import { useCamPlanStore } from '../stores/camPlanStore.js';
@@ -138,6 +139,17 @@ const MirrorIcon = glyph(<>
   <path d="M12 2v20" stroke={INK.sketch} strokeDasharray="3 2" />
   <path d="M3 8l6-2v12l-6-2z" fill={INK.body} />
   <path d="M21 8l-6-2v12l6-2z" fill={INK.bodyTop} />
+</>);
+// A square carried along a bend; two outlines blended into one solid.
+const SweepIcon = glyph(<>
+  <path d="M4 20V11a7 7 0 0 1 7-7h9" stroke={INK.go} strokeDasharray="2.5 2" />
+  <path d="M2 17h5v5H2z" fill={INK.sketchSoft} stroke={INK.sketch} />
+  <path d="M17 1.5h5v5h-5z" fill={INK.body} />
+</>);
+const LoftIcon = glyph(<>
+  <path d="M3 19l4-14h10l4 14z" fill={INK.body} />
+  <path d="M3 19h18" stroke={INK.sketch} strokeWidth="2.2" />
+  <path d="M7 5h10" stroke={INK.sketch} strokeWidth="2.2" />
 </>);
 // A block hollowed out, its top open.
 const ShellIcon = glyph(<>
@@ -308,6 +320,19 @@ function FeatureCommands() {
         onClick={() => startEdgeTreatment('chamfer')}
         tip={hasPart ? 'Bevel the edges you click on the part' : 'Build a part first: a chamfer needs edges'}
       />
+      {[['sweep', SweepIcon, 'Sweep', 'Carry a closed profile along a path sketch — boss or cut'],
+        ['loft', LoftIcon, 'Loft', 'Blend two or more profile sketches into one solid — boss or cut'],
+      ].map(([kind, Icon, label, tip]) => (
+        <SweepLoftPanel
+          key={kind}
+          kind={kind}
+          trigger={(
+            <Tooltip title={tip} placement="bottom">
+              <RibbonButton icon={<Icon />} label={label} />
+            </Tooltip>
+          )}
+        />
+      ))}
       <ShellPanel
         trigger={(
           <Tooltip title={hasPart ? 'Hollow the part to a wall thickness, leaving the faces you click open' : 'Build a part first: a shell hollows it'} placement="bottom">

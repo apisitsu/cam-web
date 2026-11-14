@@ -577,10 +577,8 @@ function ChamferInput() {
  * (`offsetPending`) and this asks for the distance, matching how Chamfer and
  * Dimension take their values. Negative flips the side.
  */
-const geomCount = (s) => s.selection.filter((id) => {
-  const t = s.sk.entities.get(id)?.type;
-  return t === 'line' || t === 'circle' || t === 'arc';
-}).length;
+const GEOM_TYPES = ['line', 'circle', 'arc', 'ellipse', 'spline'];
+const geomCount = (s) => s.selection.filter((id) => GEOM_TYPES.includes(s.sk.entities.get(id)?.type)).length;
 
 /** How many entities the open panel will act on, or the prompt to pick some. */
 function PickPrompt({ count, empty = 'Click the geometry in the sketch' }) {
@@ -831,7 +829,7 @@ export default function SketchToolbar({ ribbonSlot = null }) {
   const activeHint = TOOLS.find((t) => t.value === tool)?.hint;
   // Enablement for the sketch-modify tools, from the current selection.
   const selectedTypes = selection.map((id) => sk.entities.get(id)?.type);
-  const geomSelected = selectedTypes.some((t) => t === 'line' || t === 'circle' || t === 'arc');
+  const geomSelected = selectedTypes.some((t) => GEOM_TYPES.includes(t));
 
   // Each `RibbonButton` opts back into pointer events itself, after the floating
   // rail container below turns them off — see that div's comment for why.

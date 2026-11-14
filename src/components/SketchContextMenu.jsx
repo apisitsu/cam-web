@@ -31,7 +31,7 @@ export default function SketchContextMenu() {
 
   const hasConstructible = selection.some((id) => {
     const t = sk.entities.get(id)?.type;
-    return t === 'line' || t === 'circle' || t === 'arc';
+    return ['line', 'circle', 'arc', 'ellipse', 'spline'].includes(t);
   });
 
   const relations = relationsFor(sk, selection);

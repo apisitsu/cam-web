@@ -5,7 +5,8 @@
  * engine so the format layer stays DOM-free.
  */
 import { useCamStore } from '../stores/camStore.js';
-import { useCamPlanStore, getMesh } from '../stores/camPlanStore.js';
+import { useCamPlanStore, getMesh, getRawMesh } from '../stores/camPlanStore.js';
+import { meshToStep, meshToStlBinary } from '../engine/mesh/step.js';
 import { useSketchStore } from '../stores/sketchStore.js';
 import { useFeatureStore } from '../stores/featureStore.js';
 import { serialize as serializeSketch } from '../engine/sketch/model.js';
@@ -199,6 +200,32 @@ export async function exportSketchDxf() {
   return saveTextFile(`${base}.dxf`, sketchToDxf(sk), {
     description: 'DXF drawing',
     accept: { 'application/dxf': ['.dxf'] },
+  });
+}
+
+/** The part as built or imported, and the name to save it under. */
+function partToExport() {
+  const { welded } = getRawMesh();
+  if (!welded?.triangleCount) throw new Error('There is no part to export yet — build or open one first.');
+  const base = (useCamStore.getState().fileName || 'part').replace(/\.[^.\\/]*$/, '') || 'part';
+  return { welded, base };
+}
+
+/** Save the part as a STEP solid (faceted: flat faces, straight edges). */
+export async function exportPartStep() {
+  const { welded, base } = partToExport();
+  return saveTextFile(`${base}.step`, meshToStep(welded, { name: base }), {
+    description: 'STEP model',
+    accept: { 'application/step': ['.step', '.stp'] },
+  });
+}
+
+/** Save the part as a binary STL. */
+export async function exportPartStl() {
+  const { welded, base } = partToExport();
+  return saveTextFile(`${base}.stl`, meshToStlBinary(welded, base), {
+    description: 'STL mesh',
+    accept: { 'model/stl': ['.stl'] },
   });
 }
 

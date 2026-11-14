@@ -71,6 +71,9 @@ export const CONSTRAINT_KINDS = {
   radius: { refTypes: ['circle'], value: true, dof: 1 },
   arcRadius: { refTypes: ['arc'], value: true, dof: 1 }, // radius of a partial arc
   diameter: { refTypes: ['circle'], value: true, dof: 1 }, // Ø of a circle (SW default dim)
+  // An ellipse's minor radius. Not a solver unknown (the ellipse's points are),
+  // so it removes none: `syncCurves` sets the radius to it after every edit.
+  ellipseMinor: { refTypes: ['ellipse'], value: true, dof: 0 },
   // Equal radius between two circles/arcs (any mix). A ref position accepting more
   // than one entity type is written as an array of allowed types.
   equalRadius: { refTypes: [['circle', 'arc'], ['circle', 'arc']], value: false, dof: 1 },

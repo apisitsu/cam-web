@@ -35,8 +35,9 @@ import { useMachineStore } from '../stores/machineStore.js';
 import { useLibraryStore } from '../stores/libraryStore.js';
 import {
   saveProject, saveProjectAs, canPickSaveLocation, currentProjectFileName, openProjectFile, openProgramFile,
-  exportSketchDxf,
+  exportSketchDxf, exportPartStep, exportPartStl,
 } from '../lib/projectIO.js';
+import { getRawMesh } from '../stores/camPlanStore.js';
 import { keyIs } from '../engine/view/viewKeys.js';
 import { CAD } from '../theme.js';
 
@@ -101,11 +102,11 @@ const withShortcuts = (items) => items.map((top) => ({
  *
  * @param {{libraryOpen:boolean, hasProgram:boolean, sketching:boolean,
  *   hasSelection:boolean, view:string, treeOpen:boolean, canRestore:boolean,
- *   hasFace:boolean, hasFeatures:boolean}} ctx
+ *   hasFace:boolean, hasFeatures:boolean, hasPart:boolean}} ctx
  */
 export function buildMenuItems(ctx) {
   const {
-    libraryOpen, hasProgram, sketching, hasSelection, view, treeOpen, canRestore, hasFace, hasFeatures, showRelations,
+    libraryOpen, hasProgram, sketching, hasSelection, view, treeOpen, canRestore, hasFace, hasFeatures, showRelations, hasPart,
   } = ctx;
   return withShortcuts([
     {
@@ -120,6 +121,8 @@ export function buildMenuItems(ctx) {
         { type: 'divider' },
         { key: 'import-dxf', label: 'Import DXF…', disabled: !sketching },
         { key: 'export-dxf', label: 'Export sketch as DXF', disabled: !sketching },
+        { key: 'export-step', label: 'Export part as STEP', disabled: !hasPart },
+        { key: 'export-stl', label: 'Export part as STL', disabled: !hasPart },
         { type: 'divider' },
         { key: 'library', label: libraryOpen ? 'Library ✓' : 'Library…' },
         { key: 'export', label: 'Export G-code', disabled: !hasProgram },
@@ -254,6 +257,7 @@ export default function MenuBar({
   const rebuild = useFeatureStore((s) => s.rebuild);
   const sketchOnFace = useFeatureStore((s) => s.sketchOnFace);
   const face = useCamPlanStore((s) => s.selectedFeature);
+  const meshVer = useCamPlanStore((s) => s.meshVer);
 
   const canRestore = useStdStore((s) => !!s.undo);
   const checkStd = useStdStore((s) => s.check);
@@ -282,6 +286,7 @@ export default function MenuBar({
     canRestore,
     hasFace: !!(face?.normal && face?.centroid),
     hasFeatures: features.length > 0,
+    hasPart: meshVer >= 0 && Boolean(getRawMesh().welded?.triangleCount),
   });
 
   const guarded = (fn) => async () => {
@@ -332,6 +337,8 @@ export default function MenuBar({
     if (key === 'open') { fileInput.current?.click(); return; }
     if (key === 'open-project') { projectInput.current?.click(); return; }
     if (key === 'export-dxf') { guarded(exportSketchDxf)(); return; }
+    if (key === 'export-step') { announced(async () => { const n = await exportPartStep(); return n && `Saved ${n}`; }); return; }
+    if (key === 'export-stl') { announced(async () => { const n = await exportPartStl(); return n && `Saved ${n}`; }); return; }
     if (key === 'library') { onToggleLibrary(); return; }
     if (key === 'export') { onExportGcode(); return; }
     if (key === 'undo') { undo(); return; }

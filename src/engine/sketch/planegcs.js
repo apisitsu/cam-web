@@ -164,6 +164,8 @@ export function toPlanegcs(sk) {
       case 'tangentArcArc':
         prims.push({ id: cid(), type: 'tangent_aa', a1_id: a, a2_id: b });
         break;
+      case 'ellipseMinor':
+        break; // not the solver's: `syncCurves` applies it
       default:
         throw new Error(`no planegcs mapping for constraint ${c.kind}`);
     }

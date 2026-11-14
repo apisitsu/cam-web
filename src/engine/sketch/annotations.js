@@ -154,6 +154,22 @@ export function dimensionAnnotations(sk, { z: Z = 0 } = {}) {
       labels.push({
         key: `b${k++}`, ci, text: `R${fmtDim(c.value)}`, pos: at,
       });
+    } else if (c.kind === 'ellipseMinor') {
+      // A spoke from the centre out along the minor axis.
+      const el = P(c.refs[0]);
+      const ctr = el && P(el.center);
+      const m = el && P(el.major);
+      if (!ctr || !m) return;
+      const ra = Math.hypot(m.x - ctr.x, m.y - ctr.y) || 1;
+      const vx = -(m.y - ctr.y) / ra; const vy = (m.x - ctr.x) / ra;
+      const rim = [ctr.x + vx * el.rb, ctr.y + vy * el.rb, Z];
+      segs.push({ key: `s${k++}`, pts: [[ctr.x, ctr.y, Z], rim] });
+      if (ox || oy) segs.push({ key: `s${k++}`, pts: [rim, [rim[0] + ox, rim[1] + oy, Z]] });
+      arrow(rim, [vx, vy]);
+      labels.push({
+        key: `b${k++}`, ci, text: `R${fmtDim(c.value)}`,
+        pos: [ctr.x + vx * el.rb * 0.5 + ox, ctr.y + vy * el.rb * 0.5 + oy, Z],
+      });
     } else if (c.kind === 'diameter') {
       const circ = P(c.refs[0]);
       const ctr = circ && P(circ.center);

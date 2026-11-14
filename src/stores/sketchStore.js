@@ -18,13 +18,15 @@ import {
   createSketch, addPoint, addLine, addCircle, addArc, addConstraint, dof, serialize, deserialize,
   addEllipse, addSpline,
 } from '../engine/sketch/model.js';
-import { hitTestCurve } from '../engine/sketch/curves.js';
+import {
+  hitTestCurve, syncCurves, curveParamNear, isCurve,
+} from '../engine/sketch/curves.js';
 import {
   getOrCreatePoint, hitTestPoint, hitTestLine, hitTestCircle, hitTestArc,
   deleteEntity, removeConstraint, chamfer as chamferEdit, fillet as filletEdit,
   filletLineArc as filletLineArcEdit, filletArcArc as filletArcArcEdit,
   filletCircleCircle as filletCircleCircleEdit, linesShareCorner,
-  trimLine, trimCircle, trimArc, mirror as mirrorEdit, sketchAxisLine, patternSeeds, seedPolar, offsetChain,
+  trimLine, trimCircle, trimArc, trimCurve, mirror as mirrorEdit, sketchAxisLine, patternSeeds, seedPolar, offsetChain,
   distancePointToLine, farEndpointFromLine, nearestRimPoint, nearestTangent,
   nearestIntersection, nearestQuadrant, nearestMidpoint, entitiesInBox, angleGuide,
   measureConstraint, lineArcMeet, arcArcMeet, angleSpec, interiorAngleToModel,
@@ -175,6 +177,7 @@ export const useSketchStore = create((set, get) => ({
   axisSnap: null, // { x, y, deg } line-tool angle lock to the nearest 45° axis, or null
   lineAngle: null, // ° the line rubber-band currently points at (readout while drawing a line)
   chamferKind: 'C', // 'C' straight chamfer | 'R' rounded fillet — which the Chamfer tool applies
+  dimPick: null, // { x, y } of the last pick with the dimension tool — which axis of an ellipse is meant
   chamferPick: null, // { x, y } of the last chamfer/fillet pick — picks the corner when two curves meet at more than one
   chamferPicks: {}, // entity id → { x, y } it was picked at — decides which half of a circle survives an auto-trim fillet
   dimensionAxis: 'aligned', // 'aligned' true distance | 'x' horizontal (dX) | 'y' vertical (dY) — SW's dimension orientation
@@ -215,6 +218,9 @@ export const useSketchStore = create((set, get) => ({
    * solid built from it (unused part references dropped on close).
    */
   _bump(reason = null) {
+    // Trimmed curve ends and ellipse minor radii follow their curves; the
+    // solver does not know them.
+    syncCurves(get().sk);
     set({ version: get().version + 1, dofState: dof(get().sk), bumpReason: reason });
   },
 
@@ -1164,11 +1170,13 @@ export const useSketchStore = create((set, get) => ({
       const lineHit = hitTestLine(sk, x, y, tol);
       const circleHit = lineHit == null ? hitTestCircle(sk, x, y, tol) : null;
       const arcHit = lineHit == null && circleHit == null ? hitTestArc(sk, x, y, tol) : null;
-      if (lineHit == null && circleHit == null && arcHit == null) return;
+      const curveHit = lineHit == null && circleHit == null && arcHit == null ? hitTestCurve(sk, x, y, tol) : null;
+      if (lineHit == null && circleHit == null && arcHit == null && curveHit == null) return;
       get()._snapshot();
       const res = lineHit != null ? trimLine(sk, lineHit, x, y)
         : circleHit != null ? trimCircle(sk, circleHit, x, y)
-        : trimArc(sk, arcHit, x, y);
+        : arcHit != null ? trimArc(sk, arcHit, x, y)
+        : trimCurve(sk, curveHit, x, y);
       if (res == null) { get()._undoSnapshot(); return; }
       set({ selection: [], error: null });
       get()._bump();
@@ -1198,7 +1206,11 @@ export const useSketchStore = create((set, get) => ({
       // selection — except in dimension mode, where an empty click with a
       // dimensionable selection asks the view to prompt for a value.
       const hit = entityAt(sk, x, y, tol);
-      if (hit != null) { get().toggleSelect(hit); return; }
+      if (hit != null) {
+        if (tool === 'dimension') set({ dimPick: { x, y } });
+        get().toggleSelect(hit);
+        return;
+      }
       if (tool === 'dimension') {
         // A part edge counts as a pick until two things are chosen; after that a
         // click anywhere, on an edge too, is where the dimension goes.
@@ -1413,6 +1425,17 @@ export const useSketchStore = create((set, get) => ({
     if (ents.length === 1 && ents[0].type === 'arc') {
       return { kind: 'arcRadius', refs: [selection[0]], label: 'Radius', current: ents[0].r };
     }
+    if (ents.length === 1 && ents[0].type === 'ellipse') {
+      // The half-axis nearer where the ellipse was picked: the major one is the
+      // distance from the centre to its end point, the minor one its own value.
+      const e = ents[0];
+      const pick = get().dimPick;
+      const t = pick ? curveParamNear(sk, e, pick.x, pick.y) : 0;
+      if (Math.abs(Math.sin(t)) > Math.abs(Math.cos(t))) {
+        return { kind: 'ellipseMinor', refs: [e.id], label: 'Minor radius', current: e.rb };
+      }
+      return { kind: 'distance', refs: [e.center, e.major], label: 'Major radius', current: pdist(e.center, e.major) };
+    }
     // Point + line (either pick order) → perpendicular distance. This is what
     // dimensions a point (e.g. the origin) to a line.
     const pForLine = ents.find((e) => e.type === 'point');
@@ -1513,7 +1536,7 @@ export const useSketchStore = create((set, get) => ({
     const c = get().sk.constraints[index];
     if (!c || c.value == null) return;
     const angular = c.kind === 'angle';
-    const LABELS = { distance: 'Distance', distanceX: 'Horizontal', distanceY: 'Vertical', pointLineDistance: 'Distance', radius: 'Radius', arcRadius: 'Radius', diameter: 'Diameter', angle: 'Angle', lockX: 'Lock X', lockY: 'Lock Y' };
+    const LABELS = { distance: 'Distance', distanceX: 'Horizontal', distanceY: 'Vertical', pointLineDistance: 'Distance', radius: 'Radius', arcRadius: 'Radius', diameter: 'Diameter', ellipseMinor: 'Minor radius', angle: 'Angle', lockX: 'Lock X', lockY: 'Lock Y' };
     // For an angle, seed the interior corner angle (what's shown) and carry the
     // conversion so applyEditConstraint stores the right planegcs value.
     const asp = angular ? angleSpec(get().sk, c.refs[0], c.refs[1]) : null;
@@ -1981,10 +2004,10 @@ export const useSketchStore = create((set, get) => ({
   offset(dist) {
     const { sk, selection } = get();
     const geom = selection.filter((id) => {
-      const t = sk.entities.get(id)?.type;
-      return t === 'line' || t === 'circle' || t === 'arc';
+      const e = sk.entities.get(id);
+      return e?.type === 'line' || e?.type === 'circle' || e?.type === 'arc' || isCurve(e);
     });
-    if (!geom.length) { set({ error: 'Select lines/circles/arcs to offset' }); return; }
+    if (!geom.length) { set({ error: 'Select lines/circles/arcs/ellipses/splines to offset' }); return; }
     if (!(Number.isFinite(dist) && dist !== 0)) { set({ error: 'Offset needs a non-zero distance' }); return; }
     get()._snapshot();
     // `offsetChain`, not one `offsetEntity` per selection: offsetting a profile

@@ -270,8 +270,11 @@ describe('the kind tables stay coherent', () => {
   it('gives every constraint kind a positive DOF cost and real ref types', () => {
     const known = new Set(Object.keys(ENTITY_KINDS));
     for (const [kind, spec] of Object.entries(CONSTRAINT_KINDS)) {
+      // An ellipse's minor radius is no solver unknown, so its dimension removes none.
       // eslint-disable-next-line jest/valid-expect
-      expect(spec.dof, `${kind} dof`).toBeGreaterThan(0);
+      if (kind === 'ellipseMinor') expect(spec.dof).toBe(0);
+      // eslint-disable-next-line jest/valid-expect
+      else expect(spec.dof, `${kind} dof`).toBeGreaterThan(0);
       // eslint-disable-next-line jest/valid-expect
       expect(spec.refTypes.length, `${kind} refs`).toBeGreaterThan(0);
       for (const t of spec.refTypes) {

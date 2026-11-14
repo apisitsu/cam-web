@@ -140,6 +140,7 @@ export default function BuildPanel({ trigger, preset }) {
   const [combine, setCombine] = useState('none');
   const [merge, setMerge] = useState('new');
   const [busy, setBusy] = useState(false);
+  const [open, setOpen] = useState(false);
   const hasPart = useHasBuiltPart();
 
   const active = sketches.find((s) => s.id === activeId) || sketches[0];
@@ -174,7 +175,8 @@ export default function BuildPanel({ trigger, preset }) {
         : {
           op, depth, end, reverse, draft,
         };
-      await build({ ...shape, combine: combineOp, merge: mergeOp });
+      const built = await build({ ...shape, combine: combineOp, merge: mergeOp });
+      if (built) setOpen(false);
     } finally {
       setBusy(false);
     }
@@ -337,7 +339,7 @@ export default function BuildPanel({ trigger, preset }) {
   );
 
   return (
-    <Popover trigger="click" placement="bottomLeft" content={content}>
+    <Popover trigger="click" placement="bottomLeft" content={content} open={open} onOpenChange={setOpen}>
       {trigger}
     </Popover>
   );

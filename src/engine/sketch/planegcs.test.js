@@ -16,7 +16,7 @@ import { describe, it, expect } from 'vitest';
 import {
   // eslint-disable-next-line no-unused-vars
   createSketch, addPoint, addLine, addLineXY, addCircle, addCircleXY, addArc,
-  addConstraint, CONSTRAINT_KINDS,
+  addConstraint, CONSTRAINT_KINDS, addEllipse,
 } from './model.js';
 import { toPlanegcs } from './planegcs.js';
 
@@ -263,7 +263,11 @@ describe('toPlanegcs — constraints', () => {
         // Distinct entities per slot: a constraint between an entity and itself
         // is not what the mapping is being checked for.
         const pool = {
-          point: [r.p1, r.p2, r.p3], line: [r.l1, r.l2], circle: [r.c1, r.c2], arc: [r.arc, r.arc2],
+          point: [r.p1, r.p2, r.p3],
+          line: [r.l1, r.l2],
+          circle: [r.c1, r.c2],
+          arc: [r.arc, r.arc2],
+          ellipse: [addEllipse(r.sk, r.p1, r.p2, 1)],
         }[type];
         const pick = pool.find((id) => !used.has(id)) ?? sample(r, type) ?? pool[i % pool.length];
         used.add(pick);

@@ -6,8 +6,13 @@
  * Screen→sketch coordinate mapping and event handling live in the view layer;
  * everything here is testable under plain Node.
  */
-import { addPoint, addLine, addCircle, addArc, addConstraint } from './model.js';
-import { curveRefs, curveOf as polyCurveOf } from './curves.js';
+import {
+  addPoint, addLine, addCircle, addArc, addConstraint, addSpline,
+} from './model.js';
+import {
+  curveRefs, curveOf as polyCurveOf, isCurve, curveCrossings, curveParamNear, curveSpan,
+  curveIsClosed, curvePeriod, curveEnds, curveAt, curveTangent, offsetCurvePoints,
+} from './curves.js';
 
 const dist2 = (ax, ay, bx, by) => (ax - bx) ** 2 + (ay - by) ** 2;
 
@@ -231,6 +236,10 @@ export function measureConstraint(sk, kind, refs) {
   if (kind === 'diameter') {
     const c = P(refs[0]);
     return c && c.type === 'circle' ? c.r * 2 : null;
+  }
+  if (kind === 'ellipseMinor') {
+    const c = P(refs[0]);
+    return c && c.type === 'ellipse' ? c.rb : null;
   }
   if (kind === 'lockX') {
     const p = P(refs[0]);
@@ -1172,6 +1181,11 @@ export function trimLine(sk, lineId, x, y) {
         if (!interior(t)) continue;
         if (arcSpanContains(sk, e, a.x + abx * t, a.y + aby * t)) cuts.push(t);
       }
+    } else if (isCurve(e)) {
+      for (const p of curveCrossings(sk, e, l)) {
+        const t = ((p.x - a.x) * abx + (p.y - a.y) * aby) / len2;
+        if (interior(t)) cuts.push(t);
+      }
     }
   }
   cuts.sort((p, q) => p - q);
@@ -1186,7 +1200,9 @@ export function trimLine(sk, lineId, x, y) {
   const t0 = bounds[i];
   const t1 = bounds[i + 1];
 
-  const at = (t) => addPoint(sk, a.x + abx * t, a.y + aby * t);
+  // Where a trimmed curve already ends at the cut, the line ends on that same
+  // point, so the two stay joined as the curve changes.
+  const at = (t) => curveEndAt(sk, a.x + abx * t, a.y + aby * t) ?? addPoint(sk, a.x + abx * t, a.y + aby * t);
   const keepLow = t0 > 1e-9; // segment [0, t0] survives
   const keepHigh = t1 < 1 - 1e-9; // segment [t1, 1] survives
   if (!keepLow && !keepHigh) return null; // defensive — cuts guarantee one side
@@ -1259,6 +1275,8 @@ export function circleIntersections(sk, cx, cy, r, selfId) {
       for (const p of circleCircleInts(cx, cy, r, oc.x, oc.y, e.r)) {
         if (arcSpanContains(sk, e, p.x, p.y)) out.push(p);
       }
+    } else if (isCurve(e)) {
+      for (const p of curveCrossings(sk, e, { type: 'circle', cx, cy, r })) out.push({ x: p.x, y: p.y });
     }
   }
   return out;
@@ -1284,6 +1302,12 @@ function curveOf(sk, e) {
  * segments respect their endpoints, arcs their swept span. 0–2 points.
  */
 export function entityIntersections(sk, e1, e2) {
+  if (isCurve(e1) || isCurve(e2)) {
+    const [cv, other] = isCurve(e1) ? [e1, e2] : [e2, e1];
+    if (!other) return [];
+    const arcHas = other.type === 'arc' ? (x, y) => arcSpanContains(sk, other, x, y) : null;
+    return curveCrossings(sk, cv, other, arcHas).map((p) => ({ x: p.x, y: p.y }));
+  }
   const c1 = curveOf(sk, e1);
   const c2 = curveOf(sk, e2);
   if (!c1 || !c2) return [];
@@ -1670,6 +1694,116 @@ export function trimArc(sk, arcId, x, y) {
   return { arc: arcId, added };
 }
 
+const SAME_POINT = 1e-7;
+
+/** The point at (x, y) that ends a trimmed curve, or null. */
+function curveEndAt(sk, x, y) {
+  for (const e of sk.entities.values()) {
+    if (!isCurve(e) || !e.range || !e.ends) continue;
+    for (const id of e.ends) {
+      const p = sk.entities.get(id);
+      if (p && Math.abs(p.x - x) <= SAME_POINT && Math.abs(p.y - y) <= SAME_POINT) return id;
+    }
+  }
+  return null;
+}
+
+/** The point at (x, y) that ends a line, or null. */
+function lineEndAt(sk, x, y) {
+  for (const e of sk.entities.values()) {
+    if (e.type !== 'line') continue;
+    for (const id of [e.p1, e.p2]) {
+      const p = sk.entities.get(id);
+      if (p && Math.abs(p.x - x) <= SAME_POINT && Math.abs(p.y - y) <= SAME_POINT) return id;
+    }
+  }
+  return null;
+}
+
+/**
+ * Trim an **ellipse or spline** at its crossings with other geometry — the
+ * curve analogue of `trimCircle` (a ring needs two crossings and becomes the
+ * piece the click is not on) and `trimLine` (an open curve loses the piece
+ * under the click: shortened at an end, split in two in the middle). The curve
+ * keeps its defining points; what it still covers is its `range`, and the new
+ * `ends` are sketch points at the cuts that lines can join. Returns
+ * `{ curve, added }` or null when nothing crosses it.
+ */
+export function trimCurve(sk, curveId, x, y) {
+  const e = sk.entities.get(curveId);
+  if (!isCurve(e)) return null;
+  const [t0, t1] = curveSpan(sk, e);
+  const closed = curveIsClosed(e);
+  const period = curvePeriod(sk, e);
+  // Crossings as parameters within the curve's own span.
+  const cuts = [];
+  for (const o of sk.entities.values()) {
+    if (o.id === curveId || o.type === 'point') continue;
+    const arcHas = o.type === 'arc' ? (px, py) => arcSpanContains(sk, o, px, py) : null;
+    for (const p of curveCrossings(sk, e, o, arcHas)) {
+      let t = p.t;
+      if (closed) t = ((t - t0) % period + period) % period + t0;
+      if (closed || (t > t0 + 1e-7 && t < t1 - 1e-7)) cuts.push(t);
+    }
+  }
+  cuts.sort((p, q) => p - q);
+  const uniq = cuts.filter((t, i) => i === 0 || t - cuts[i - 1] > 1e-7);
+  if (closed && uniq.length >= 2 && uniq[0] + period - uniq[uniq.length - 1] < 1e-7) uniq.pop();
+  let tc = curveParamNear(sk, e, x, y);
+  // A line already cut at the crossing ends on a point there: the curve ends
+  // on that one, so the two stay joined.
+  const pt = (t) => {
+    const p = curveAt(sk, e, t);
+    return lineEndAt(sk, p.x, p.y) ?? addPoint(sk, p.x, p.y);
+  };
+
+  if (closed) {
+    if (uniq.length < 2) return null;
+    tc = ((tc - t0) % period + period) % period + t0;
+    // The removed piece runs from the crossing before the click to the one
+    // after; what is kept runs on from there round to the first.
+    let k = uniq.findIndex((t) => t > tc);
+    if (k < 0) k = 0;
+    const hi = uniq[k];
+    const lo = k === 0 ? uniq[uniq.length - 1] - period : uniq[k - 1];
+    e.range = [hi, lo + period];
+    e.ends = [pt(hi), pt(lo + period)];
+    return { curve: curveId, added: null };
+  }
+
+  if (!uniq.length) return null;
+  tc = Math.max(t0, Math.min(t1, tc));
+  const bounds = [t0, ...uniq, t1];
+  let i = 0;
+  while (i < bounds.length - 1 && tc > bounds[i + 1]) i++;
+  const c0 = bounds[i];
+  const c1 = bounds[i + 1];
+  const keepLow = c0 > t0 + 1e-9;
+  const keepHigh = c1 < t1 - 1e-9;
+  if (!keepLow && !keepHigh) return null;
+  const [endA, endB] = curveEnds(e);
+  let added = null;
+  if (keepHigh) {
+    const copy = { ...e, range: [c1, t1], ends: [pt(c1), endB] };
+    if (e.type === 'spline') copy.pts = e.pts.slice();
+    delete copy.id;
+    added = sk.nextId++;
+    sk.entities.set(added, { ...copy, id: added });
+  }
+  if (keepLow) {
+    e.range = [t0, c0];
+    e.ends = [endA, pt(c0)];
+  } else {
+    // The low side goes: the curve becomes what the copy would have been.
+    sk.entities.set(curveId, { ...sk.entities.get(added), id: curveId });
+    sk.entities.delete(added);
+    added = null;
+  }
+  removeIfOrphan(sk, endA);
+  removeIfOrphan(sk, endB);
+  return { curve: curveId, added };
+}
+
 /**
  * Axis-aligned XY bounds of the drawn sketch geometry as { min:[x,y,z],
  * max:[x,y,z] } (z = 0 — the sketch lies on the machine XY plane), or null when
@@ -1710,6 +1844,9 @@ export function sketchBounds(sk) {
       for (const ext of [0, Math.PI / 2, Math.PI, 3 * Math.PI / 2]) {
         if (normAngle(ext - a0) <= sp) acc(c.x + e.r * Math.cos(ext), c.y + e.r * Math.sin(ext));
       }
+    } else if (isCurve(e)) {
+      const c = polyCurveOf(sk, e);
+      for (let i = 0; c && i < c.points.length; i += 2) acc(c.points[i], c.points[i + 1]);
     }
   }
   if (!has) return null;
@@ -1850,6 +1987,18 @@ export function mirror(sk, ids, axisLineId) {
     else if (e.type === 'line') { if (!ownImage(e.p1, e.p2)) nid = addLine(sk, mp(e.p1), mp(e.p2)); }
     else if (e.type === 'circle') { if (!ownImage(e.center)) { nid = addCircle(sk, mp(e.center), e.r); radiusLinks.push([id, nid]); } }
     else if (e.type === 'arc') { nid = addArc(sk, mp(e.center), mp(e.end), mp(e.start), e.r); radiusLinks.push([id, nid]); } // swap → CCW
+    else if (e.type === 'ellipse') {
+      // Reflection runs the ellipse the other way round: angle t goes to −t.
+      nid = sk.nextId++;
+      const rec = { id: nid, type: 'ellipse', center: mp(e.center), major: mp(e.major), rb: e.rb };
+      if (e.range) { rec.range = [-e.range[1], -e.range[0]]; rec.ends = [mp(e.ends[1]), mp(e.ends[0])]; }
+      sk.entities.set(nid, rec);
+    } else if (e.type === 'spline') {
+      nid = sk.nextId++;
+      const rec = { id: nid, type: 'spline', pts: e.pts.map(mp), closed: !!e.closed };
+      if (e.range) { rec.range = e.range.slice(); rec.ends = e.ends.map(mp); }
+      sk.entities.set(nid, rec);
+    }
     if (nid != null) {
       if (e.construction) sk.entities.get(nid).construction = true;
       created.push(nid);
@@ -1925,6 +2074,12 @@ export function offsetEntity(sk, id, dist) {
     const ns = addPoint(sk, c.x + nr * Math.cos(a0), c.y + nr * Math.sin(a0));
     const ne = addPoint(sk, c.x + nr * Math.cos(a1), c.y + nr * Math.sin(a1));
     nid = addArc(sk, nc, ns, ne, nr);
+  } else if (isCurve(e)) {
+    // The offset of an ellipse or spline is neither; it is drawn as a spline
+    // through points sampled off the true offset.
+    const off = offsetCurvePoints(sk, e, dist);
+    if (!off) return null;
+    nid = addSpline(sk, off.pts.map(([px, py]) => addPoint(sk, px, py)), off.closed);
   }
   if (nid != null && e.construction) sk.entities.get(nid).construction = true;
   return nid;
@@ -1935,13 +2090,28 @@ function chainEnds(e) {
   if (!e) return null;
   if (e.type === 'line') return [e.p1, e.p2];
   if (e.type === 'arc') return [e.start, e.end];
+  if (isCurve(e)) return curveEnds(e);
   return null;
 }
 
 /** Replace one endpoint of an offset entity, keeping the entity's own field names. */
 function setChainEnd(e, which, pointId) {
   if (e.type === 'line') { if (which === 0) e.p1 = pointId; else e.p2 = pointId; return; }
-  if (e.type === 'arc') { if (which === 0) e.start = pointId; else e.end = pointId; }
+  if (e.type === 'arc') { if (which === 0) e.start = pointId; else e.end = pointId; return; }
+  // An offset curve is always a plain open spline: its ends are its end points.
+  if (e.type === 'spline' && !e.range) e.pts[which === 0 ? 0 : e.pts.length - 1] = pointId;
+}
+
+/**
+ * A curve's end as a line for `offsetJoin`: through the end point along the
+ * curve's direction there. `which` is 0 for the start, 1 for the end.
+ */
+function curveEndLine(sk, e, which) {
+  const [t0, t1] = curveSpan(sk, e);
+  const t = which === 0 ? t0 : t1;
+  const p = curveAt(sk, e, t);
+  const d = curveTangent(sk, e, t);
+  return p && d ? [p, { x: p.x + d.x, y: p.y + d.y }] : null;
 }
 
 /**
@@ -1959,7 +2129,7 @@ function setChainEnd(e, which, pointId) {
  * no longer reaches), and the caller then leaves the two ends where the plain
  * offset put them rather than inventing a corner.
  */
-function offsetJoin(sk, eA, eB, corner) {
+function offsetJoin(sk, eA, eB, corner, ai = 0, bi = 0) {
   const pick = (cands) => {
     let best = null;
     let bestD = Infinity;
@@ -1969,6 +2139,29 @@ function offsetJoin(sk, eA, eB, corner) {
     }
     return best;
   };
+  // A curve meets its neighbour along the line its end leaves by. Where the two
+  // offsets already meet — a curve run tangent into its neighbour — that is
+  // where they join.
+  if (isCurve(eA) || isCurve(eB)) {
+    const endOf = (e, w) => {
+      if (isCurve(e)) return curveEndLine(sk, e, w);
+      if (e.type !== 'line') return null;
+      const p = [sk.entities.get(e.p1), sk.entities.get(e.p2)];
+      return w === 0 ? p : [p[1], p[0]];
+    };
+    const LA = endOf(eA, ai);
+    const LB = endOf(eB, bi);
+    if (!LA || !LB) return null;
+    const [a, b] = LA; const [c, d] = LB;
+    const mid = { x: (a.x + c.x) / 2, y: (a.y + c.y) / 2 };
+    if (Math.hypot(a.x - c.x, a.y - c.y) < 1e-6) return mid;
+    const rx = b.x - a.x; const ry = b.y - a.y;
+    const sx = d.x - c.x; const sy = d.y - c.y;
+    const den = rx * sy - ry * sx;
+    if (Math.abs(den) < 1e-12) return mid;
+    const t = ((c.x - a.x) * sy - (c.y - a.y) * sx) / den;
+    return { x: a.x + t * rx, y: a.y + t * ry };
+  }
   if (eA.type === 'line' && eB.type === 'line') {
     const a = sk.entities.get(eA.p1);
     const b = sk.entities.get(eA.p2);
@@ -2143,7 +2336,7 @@ export function offsetChain(sk, ids, dist) {
       const corner = sk.entities.get(endsA[ai]);
       const eA = sk.entities.get(created[i]);
       const eB = sk.entities.get(created[j]);
-      const meet = offsetJoin(sk, eA, eB, corner);
+      const meet = offsetJoin(sk, eA, eB, corner, ai, bi);
       if (!meet) continue;          // nothing sensible to meet at: leave both
 
       // One shared point at the meeting place, replacing the two the offsets
@@ -2231,7 +2424,7 @@ export function projectOnto(offset, dir) {
 export function patternSeeds(sk, ids) {
   return ids.filter((id) => {
     const e = sk.entities.get(id);
-    return e && !e.origin && !e.ref && ['point', 'line', 'circle', 'arc'].includes(e.type);
+    return e && !e.origin && !e.ref && ['point', 'line', 'circle', 'arc', 'ellipse', 'spline'].includes(e.type);
   });
 }
 
@@ -2245,7 +2438,8 @@ export function seedPolar(sk, seeds, center) {
   const e = P(seeds[0]);
   if (!e || !center) return null;
   let anchor = e;
-  if (e.type === 'circle' || e.type === 'arc') anchor = P(e.center);
+  if (e.type === 'circle' || e.type === 'arc' || e.type === 'ellipse') anchor = P(e.center);
+  else if (e.type === 'spline') anchor = P(e.pts[0]);
   else if (e.type === 'line') anchor = { x: (P(e.p1).x + P(e.p2).x) / 2, y: (P(e.p1).y + P(e.p2).y) / 2 };
   const dx = anchor.x - center.x;
   const dy = anchor.y - center.y;
@@ -2295,6 +2489,7 @@ export function snapshotEntities(sk, ids) {
     const e = sk.entities.get(id);
     const refFields = e && POINT_REFS[e.type];
     if (refFields) for (const f of refFields) selected.add(e[f]);
+    if (isCurve(e)) for (const p of curveRefs(e)) selected.add(p);
   }
 
   const entities = [];
@@ -2306,7 +2501,8 @@ export function snapshotEntities(sk, ids) {
     const e = sk.entities.get(id);
     if (!e || e.type === 'point') continue;
     const rec = { local: assign(id), type: e.type, construction: !!e.construction };
-    if (e.type === 'line') { rec.p1 = localOf.get(e.p1); rec.p2 = localOf.get(e.p2); } else if (e.type === 'circle') { rec.center = localOf.get(e.center); rec.r = e.r; } else if (e.type === 'arc') { rec.center = localOf.get(e.center); rec.start = localOf.get(e.start); rec.end = localOf.get(e.end); rec.r = e.r; }
+    if (e.type === 'line') { rec.p1 = localOf.get(e.p1); rec.p2 = localOf.get(e.p2); } else if (e.type === 'circle') { rec.center = localOf.get(e.center); rec.r = e.r; } else if (e.type === 'arc') { rec.center = localOf.get(e.center); rec.start = localOf.get(e.start); rec.end = localOf.get(e.end); rec.r = e.r; } else if (e.type === 'ellipse') { rec.center = localOf.get(e.center); rec.major = localOf.get(e.major); rec.rb = e.rb; } else if (e.type === 'spline') { rec.pts = e.pts.map((p) => localOf.get(p)); rec.closed = !!e.closed; }
+    if (isCurve(e) && e.range) { rec.range = e.range.slice(); rec.ends = e.ends.map((p) => localOf.get(p)); }
     entities.push(rec);
   }
 
@@ -2339,7 +2535,7 @@ export function hydrateSnapshot(sk, snapshot, transform) {
   const real = new Map(); // local id -> real sketch id
   const created = [];
   const stampConstruction = (id, construction) => { if (construction) sk.entities.get(id).construction = true; };
-  const anchored = new Set(snapshot.entities.flatMap((e) => [e.p1, e.p2, e.center, e.start, e.end]));
+  const anchored = new Set(snapshot.entities.flatMap((e) => [e.p1, e.p2, e.center, e.start, e.end, e.major, ...(e.pts || []), ...(e.ends || [])]));
   for (const e of snapshot.entities) {
     if (e.type !== 'point') continue;
     const t = transform(e.x, e.y);
@@ -2353,6 +2549,14 @@ export function hydrateSnapshot(sk, snapshot, transform) {
     if (e.type === 'line') id = addLine(sk, real.get(e.p1), real.get(e.p2));
     else if (e.type === 'circle') id = addCircle(sk, real.get(e.center), e.r);
     else if (e.type === 'arc') id = addArc(sk, real.get(e.center), real.get(e.start), real.get(e.end), e.r);
+    else if (e.type === 'ellipse' || e.type === 'spline') {
+      id = sk.nextId++;
+      const rec = e.type === 'ellipse'
+        ? { id, type: 'ellipse', center: real.get(e.center), major: real.get(e.major), rb: e.rb }
+        : { id, type: 'spline', pts: e.pts.map((p) => real.get(p)), closed: !!e.closed };
+      if (e.range) { rec.range = e.range.slice(); rec.ends = e.ends.map((p) => real.get(p)); }
+      sk.entities.set(id, rec);
+    }
     if (id == null) continue;
     stampConstruction(id, e.construction);
     real.set(e.local, id);

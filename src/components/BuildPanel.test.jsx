@@ -112,6 +112,19 @@ describe('BuildPanel — one named feature from the Ribbon', () => {
     expect(build).toHaveBeenCalledWith(expect.objectContaining({ op: 'extrude', merge: 'add' }));
   });
 
+  it('closes once the build has worked, and stays open when it has not', async () => {
+    withPart(true);
+    const pop = () => [...document.querySelectorAll('.ant-popover')].at(-1);
+    build.mockResolvedValueOnce(null);
+    await open(panel({ name: 'Extruded Boss/Base', op: 'extrude', cut: false }));
+    await pressBuild();
+    expect(pop().className).not.toMatch(/ant-popover-hidden|-leave/);
+    build.mockResolvedValueOnce({ ok: true });
+    await pressBuild();
+    // Closing: hidden, or still on its way out (jsdom never ends the animation).
+    expect(pop().className).toMatch(/ant-popover-hidden|-leave/);
+  });
+
   it('makes a boss the first body when the tree is empty', async () => {
     withPart(false);
     await open(panel({ name: 'Extruded Boss/Base', op: 'extrude', cut: false }));

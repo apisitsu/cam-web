@@ -31,7 +31,7 @@
  */
 // `reversed` is the same flat-polyline reverse `sliceLoops` needs; one copy.
 import { normalizeLoops, loopArea, reversed as reversePoints } from '../mesh/slice.js';
-import { curveOf } from './curves.js';
+import { curveOf, curveEnds } from './curves.js';
 
 const TAU = Math.PI * 2;
 
@@ -160,18 +160,35 @@ function segCross(ax, ay, bx, by, cx, cy, dx, dy) {
  * pieces keep the id of the entity they came from, so a caller can still say
  * which geometry formed a loop.
  *
- * O(curves²) on segment pairs. A hand-drawn profile is tens of curves and a few
- * hundred segments; the cost that matters is bounded by the chord tolerance,
- * which is the same thing that bounds the drawing's accuracy.
+ * Segment pairs are only tried where the two curves' boxes overlap, and then
+ * only for the segments of one inside the other's box: a sketch of hundreds of
+ * curves mostly has pairs nowhere near each other, and testing them segment by
+ * segment was seconds of work for no crossing.
  */
 function arrangeCurves(curves, tol) {
   // splits[i] = list of { seg, t } cut points along curve i
   const splits = curves.map(() => []);
+  const box = curves.map(({ points: q }) => {
+    let x0 = Infinity; let y0 = Infinity; let x1 = -Infinity; let y1 = -Infinity;
+    for (let k = 0; k < q.length; k += 2) {
+      if (q[k] < x0) x0 = q[k];
+      if (q[k] > x1) x1 = q[k];
+      if (q[k + 1] < y0) y0 = q[k + 1];
+      if (q[k + 1] > y1) y1 = q[k + 1];
+    }
+    const m = tol + 1e-9;
+    return [x0 - m, y0 - m, x1 + m, y1 + m];
+  });
   for (let i = 0; i < curves.length; i++) {
+    const bi = box[i];
     for (let j = i + 1; j < curves.length; j++) {
+      const bj = box[j];
+      if (bi[0] > bj[2] || bj[0] > bi[2] || bi[1] > bj[3] || bj[1] > bi[3]) continue;
       const A = curves[i].points;
       const B = curves[j].points;
       for (let a = 0; a + 3 < A.length; a += 2) {
+        if (Math.max(A[a], A[a + 2]) < bj[0] || Math.min(A[a], A[a + 2]) > bj[2]
+          || Math.max(A[a + 1], A[a + 3]) < bj[1] || Math.min(A[a + 1], A[a + 3]) > bj[3]) continue;
         for (let b = 0; b + 3 < B.length; b += 2) {
           const hit = segCross(
             A[a], A[a + 1], A[a + 2], A[a + 3],
@@ -301,10 +318,11 @@ function buildGraph(sk, { chordTol, weldTol }) {
       const c = curveOf(sk, e);
       if (!c) continue;
       // A ring is handed over with its first point repeated at the end, as a
-      // tessellated circle is; an open spline's ends are its two points, welded.
+      // tessellated circle is; an open curve's ends are its end points, welded.
       const points = c.closed ? [...c.points, c.points[0], c.points[1]] : c.points.slice();
-      if (!c.closed) {
-        const a = at2(e.pts[0]); const b = at2(e.pts[e.pts.length - 1]);
+      const ends = curveEnds(e);
+      if (!c.closed && ends) {
+        const a = at2(ends[0]); const b = at2(ends[1]);
         points[0] = a.x; points[1] = a.y;
         points[points.length - 2] = b.x; points[points.length - 1] = b.y;
       }

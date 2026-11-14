@@ -137,6 +137,7 @@ export function curveEvaluator(sk, e) {
     if (k >= n) return [2 * xy[n - 1][0] - xy[n - 2][0], 2 * xy[n - 1][1] - xy[n - 2][1]];
     return xy[k];
   };
+  const handles = splineHandles(sk, e);
   return (t) => {
     let i = Math.floor(t);
     let f = t - i;
@@ -144,9 +145,67 @@ export function curveEvaluator(sk, e) {
     else if (i >= spans) { i = spans - 1; f = 1; } else if (i < 0) { i = 0; f = 0; }
     if (f === 0) return { x: at(i)[0], y: at(i)[1] };
     if (f === 1) return { x: at(i + 1)[0], y: at(i + 1)[1] };
-    const [x, y] = spanPoint(at(i - 1), at(i), at(i + 1), at(i + 2), f);
+    const h0 = handles.get(i % n); const h1 = handles.get((i + 1) % n);
+    const [x, y] = h0 || h1
+      ? hermiteSpan(at(i - 1), at(i), at(i + 1), at(i + 2), h0, h1, f)
+      : spanPoint(at(i - 1), at(i), at(i + 1), at(i + 2), f);
     return { x, y };
   };
+}
+
+/** Centripetal knot spacing between two points. */
+const knotGap = (a, b) => Math.max(Math.sqrt(Math.hypot(b[0] - a[0], b[1] - a[1])), 1e-9);
+
+/**
+ * The span p1→p2 of the same curve as `spanPoint`, written as a cubic Hermite
+ * from its end tangents, so a tangent can be turned to a given direction `h1`
+ * (at p1) or `h2` (at p2) while keeping its length. With neither, the same
+ * curve exactly: the centripetal span is that cubic.
+ */
+function hermiteSpan(p0, p1, p2, p3, h1, h2, f) {
+  const d01 = knotGap(p0, p1); const d12 = knotGap(p1, p2); const d23 = knotGap(p2, p3);
+  const m = (a, b, c, dab, dbc) => [0, 1].map((k) => (
+    (b[k] - a[k]) / dab - (c[k] - a[k]) / (dab + dbc) + (c[k] - b[k]) / dbc) * d12);
+  let m1 = m(p0, p1, p2, d01, d12);
+  let m2 = m(p1, p2, p3, d12, d23);
+  const turn = (v, h) => {
+    if (!h) return v;
+    const l = Math.hypot(v[0], v[1]) || Math.hypot(p2[0] - p1[0], p2[1] - p1[1]);
+    const s = v[0] * h[0] + v[1] * h[1] < 0 ? -1 : 1;
+    return [h[0] * l * s, h[1] * l * s];
+  };
+  m1 = turn(m1, h1); m2 = turn(m2, h2);
+  const f2 = f * f; const f3 = f2 * f;
+  const a = 2 * f3 - 3 * f2 + 1; const b = f3 - 2 * f2 + f; const c = -2 * f3 + 3 * f2; const d = f3 - f2;
+  return [0, 1].map((k) => a * p1[k] + b * m1[k] + c * p2[k] + d * m2[k]);
+}
+
+/**
+ * The tangent directions a spline is held to at its through-points: where a
+ * Tangent relation joins a line or an arc to one of its points other than its
+ * two ends, the spline takes the other's direction there (as a SolidWorks
+ * spline handle does). Point index → unit [x, y].
+ */
+export function splineHandles(sk, e) {
+  const out = new Map();
+  for (const c of sk.constraints) {
+    if (c.kind !== 'tangentSpline' || c.refs[1] !== e.id) continue;
+    const j = splineJoint(sk, c.refs[0], e.id);
+    if (!j || j.index == null) continue;
+    const o = sk.entities.get(c.refs[0]);
+    const p = sk.entities.get(j.s);
+    let d = null;
+    if (o.type === 'line') {
+      const a = sk.entities.get(o.p1); const b = sk.entities.get(o.p2);
+      d = [b.x - a.x, b.y - a.y];
+    } else if (o.type === 'arc') {
+      const cc = sk.entities.get(o.center);
+      d = [-(p.y - cc.y), p.x - cc.x];
+    }
+    const l = d && Math.hypot(d[0], d[1]);
+    if (l > 0) out.set(j.index, [d[0] / l, d[1] / l]);
+  }
+  return out;
 }
 
 /** Point of curve `e` at parameter `t`, or null when its points are missing. */
@@ -179,6 +238,7 @@ const polyCache = new WeakMap();
 
 function curveKey(sk, e) {
   let k = `${e.rb}|${e.closed}|${e.range}|`;
+  if (e.type === 'spline') for (const [i, h] of splineHandles(sk, e)) k += `h${i}:${h[0]},${h[1]};`;
   for (const id of e.type === 'ellipse' ? [e.center, e.major] : e.pts) {
     const p = sk.entities.get(id);
     k += p ? `${p.x},${p.y};` : 'x;';
@@ -237,6 +297,11 @@ export const curveRefs = (e) => {
 export function syncCurves(sk) {
   let moved = false;
   for (const c of sk.constraints) {
+    if (c.kind === 'splineLength') {
+      const s = sk.entities.get(c.refs[0]);
+      if (s) { c.value = curveLength(sk, s); c.driven = true; }
+      continue;
+    }
     if (c.kind !== 'ellipseMinor') continue;
     const e = sk.entities.get(c.refs[0]);
     if (!e) continue;
@@ -253,6 +318,22 @@ export function syncCurves(sk) {
     });
   }
   return moved;
+}
+
+/** Length of an ellipse or spline, along the polyline it is drawn with (finer for the measure). */
+export function curveLength(sk, e) {
+  const f = curveEvaluator(sk, e);
+  if (!f) return 0;
+  const [t0, t1] = curveSpan(sk, e);
+  const steps = Math.max(64, Math.ceil((t1 - t0) * (e.type === 'ellipse' ? 200 : 96)));
+  let len = 0;
+  let prev = f(t0);
+  for (let i = 1; i <= steps; i++) {
+    const p = f(t0 + ((t1 - t0) * i) / steps);
+    len += Math.hypot(p.x - prev.x, p.y - prev.y);
+    prev = p;
+  }
+  return len;
 }
 
 /** Parameter on curve `e` nearest (x, y), from its drawn polyline. */
@@ -469,9 +550,10 @@ export function hitTestCurve(sk, x, y, tol = 1e-6) {
  * ends: `{ s, n, end, nb, center }` — the spline's end point `s` and the point
  * next to it `n` (the spline leaves `s` straight towards `n`, so tangency there
  * is `n` on the other's tangent), the other's end `end` that meets `s`, and for
- * a spline `nb` (its point next to `end`) or for an arc its `center`. Null when
- * no drawn end of the spline touches an end of the other (a trimmed end is not
- * a drawn one: the curve does not leave it towards a point).
+ * a spline `nb` (its point next to `end`) or for an arc its `center`. Failing a
+ * drawn end (a trimmed end is not one: the curve does not leave it towards a
+ * point), one of its inner points with `index` set: on the line, or where the
+ * arc ends (`end` null when the line only passes through it). Null for none.
  */
 export function splineJoint(sk, otherId, splineId, tol = 1e-4) {
   const E = (id) => sk.entities.get(id);
@@ -499,6 +581,30 @@ export function splineJoint(sk, otherId, splineId, tol = 1e-4) {
       const d = a.s === b.end ? 0 : Math.hypot(p.x - q.x, p.y - q.y);
       if (d <= bestD) { bestD = d; best = { ...a, ...b }; }
     }
+  }
+  if (best || o.type === 'spline') return best;
+  // A point inside the spline, which the line passes through or the arc ends on:
+  // there the spline is turned to the other (`splineHandles`).
+  const inner = sp.closed ? sp.pts.map((_, i) => i) : sp.pts.map((_, i) => i).slice(1, -1);
+  for (const i of inner) {
+    const p = E(sp.pts[i]);
+    if (!p) continue;
+    let d = Infinity;
+    let end = null;
+    for (const b of others) {
+      const q = E(b.end);
+      if (!q) continue;
+      const dd = sp.pts[i] === b.end ? 0 : Math.hypot(p.x - q.x, p.y - q.y);
+      if (dd < d) { d = dd; end = b; }
+    }
+    if (o.type === 'line' && d > tol) {
+      const a = E(o.p1); const b = E(o.p2);
+      const dx = b.x - a.x; const dy = b.y - a.y;
+      const l2 = dx * dx + dy * dy;
+      const s = l2 > 0 ? ((p.x - a.x) * dx + (p.y - a.y) * dy) / l2 : -1;
+      if (s > 1e-6 && s < 1 - 1e-6) { d = Math.abs((p.x - a.x) * dy - (p.y - a.y) * dx) / Math.sqrt(l2); end = { end: null }; }
+    }
+    if (d <= bestD) { bestD = d; best = { s: sp.pts[i], index: i, ...end }; }
   }
   return best;
 }

@@ -7,7 +7,7 @@ import {
 import { createRequire } from 'node:module';
 import { createSolver } from './planegcs.js';
 import {
-  createSketch, addPoint, addLine, addArc, addEllipse, addSpline, addConstraint,
+  createSketch, addPoint, addLine, addArc, addCircle, addEllipse, addSpline, addConstraint,
 } from './model.js';
 import { curveAt, curveTangent } from './curves.js';
 import { relationsFor } from './relations.js';
@@ -84,10 +84,62 @@ describe('Tangent with curves', () => {
     expect(relationsFor(sk, [sp2, sp]).map((r) => r.key)).toContain('tangent');
   });
 
+  it('turns a spline to a line at one of its inner points, leaving far spans alone', () => {
+    const sk = createSketch();
+    const ids = [[0, 0], [10, 8], [20, 0], [30, 8], [40, 0]].map(([x, y]) => addPoint(sk, x, y, true));
+    const sp = addSpline(sk, ids);
+    const far = curveAt(sk, P(sk, sp), 3.5);
+    const l = addLine(sk, addPoint(sk, 0, 4, true), addPoint(sk, 20, 12, true)); // through (10, 8), slope 0.4
+    expect(relationsFor(sk, [l, sp]).map((r) => r.key)).toContain('tangent');
+    addConstraint(sk, 'tangentSpline', [l, sp]);
+    expect(solver.solve(sk).success).toBe(true);
+    const t = curveTangent(sk, P(sk, sp), 1);
+    expect(t.y / t.x).toBeCloseTo(0.4, 4); // the line's slope, where it was level
+    expect(curveAt(sk, P(sk, sp), 1).y).toBeCloseTo(8, 9); // still through its point
+    const after = curveAt(sk, P(sk, sp), 3.5);
+    expect(after.x).toBeCloseTo(far.x, 9);
+    expect(after.y).toBeCloseTo(far.y, 9);
+  });
+
+  it('rolls a circle onto an ellipse until they touch', () => {
+    const sk = createSketch();
+    const e = addEllipse(sk, addPoint(sk, 0, 0, true), addPoint(sk, 20, 0, true), 10);
+    const c = addCircle(sk, addPoint(sk, 0, 18), 5);
+    expect(relationsFor(sk, [c, e]).map((r) => r.key)).toContain('tangent');
+    addConstraint(sk, 'tangentEllipseCurve', [c, e]);
+    expect(solver.solve(sk).success).toBe(true);
+    const cc = P(sk, P(sk, c).center);
+    let gap = Infinity;
+    for (let i = 0; i < 7200; i++) {
+      const p = curveAt(sk, P(sk, e), (2 * Math.PI * i) / 7200);
+      gap = Math.min(gap, Math.abs(Math.hypot(p.x - cc.x, p.y - cc.y) - P(sk, c).r));
+    }
+    expect(gap).toBeLessThan(1e-3);
+    // Touching from outside: the centre is a radius off the ellipse, not inside it.
+    expect(Math.hypot(cc.x / 20, cc.y / P(sk, e).rb)).toBeGreaterThan(1);
+  });
+
   it('offers no spline Tangent where the two do not meet at an end', () => {
     const sk = createSketch();
     const sp = addSpline(sk, [addPoint(sk, 0, 0), addPoint(sk, 10, 8), addPoint(sk, 20, 0)]);
     const l = addLine(sk, addPoint(sk, 0, 20), addPoint(sk, 20, 20));
     expect(relationsFor(sk, [l, sp]).map((r) => r.key)).not.toContain('tangent');
+  });
+});
+
+describe('spline length', () => {
+  it('reports the length as a driven dimension that follows the spline', async () => {
+    const { syncCurves, curveLength } = await import('./curves.js');
+    const sk = createSketch();
+    const a = addPoint(sk, 0, 0); const b = addPoint(sk, 10, 0);
+    const sp = addSpline(sk, [a, b]); // two points: a straight span, 10 long
+    addConstraint(sk, 'splineLength', [sp], 1);
+    syncCurves(sk);
+    expect(sk.constraints[0].driven).toBe(true);
+    expect(sk.constraints[0].value).toBeCloseTo(10, 6);
+    P(sk, b).x = 20;
+    syncCurves(sk);
+    expect(sk.constraints[0].value).toBeCloseTo(curveLength(sk, P(sk, sp)), 9);
+    expect(sk.constraints[0].value).toBeCloseTo(20, 6);
   });
 });

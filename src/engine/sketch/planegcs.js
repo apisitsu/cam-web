@@ -196,6 +196,8 @@ export function toPlanegcs(sk) {
       case 'tangentArcArc':
         prims.push({ id: cid(), type: 'tangent_aa', a1_id: a, a2_id: b });
         break;
+      case 'splineLength':
+        break; // a reference only: `syncCurves` reads it
       case 'ellipseMinor':
         // A round ellipse is not the solver's: `syncCurves` applies it then.
         if (solvedEllipse(c.refs[0])) {
@@ -207,12 +209,54 @@ export function toPlanegcs(sk) {
       case 'tangentEllipse':
         if (solvedEllipse(c.refs[1])) prims.push({ id: cid(), type: 'tangent_le', l_id: a, e_id: b });
         break;
+      case 'tangentEllipseCurve': {
+        // A circle or arc touching an ellipse: a point of contact on both, where
+        // their directions agree (angle 0) or run opposite (π), whichever they
+        // are nearer now. The point is the solver's own, started where the
+        // two come closest.
+        const el = sk.entities.get(c.refs[1]);
+        const cu = sk.entities.get(c.refs[0]);
+        const f = el && ellipseFocus(sk, el);
+        const cc = cu && sk.entities.get(cu.center);
+        if (!f || !cc) break;
+        const ce = sk.entities.get(el.center); const m = sk.entities.get(el.major);
+        const ra = Math.hypot(m.x - ce.x, m.y - ce.y);
+        const ux = (m.x - ce.x) / ra; const uy = (m.y - ce.y) / ra;
+        let best = null;
+        for (let k = 0; k < 720; k++) {
+          const t = (Math.PI * k) / 360;
+          const x = ce.x + ra * Math.cos(t) * ux - el.rb * Math.sin(t) * uy;
+          const y = ce.y + ra * Math.cos(t) * uy + el.rb * Math.sin(t) * ux;
+          const gap = Math.abs(Math.hypot(x - cc.x, y - cc.y) - cu.r);
+          if (!best || gap < best.gap) best = { gap, x, y, t };
+        }
+        const te = [-ra * Math.sin(best.t) * ux - el.rb * Math.cos(best.t) * uy, -ra * Math.sin(best.t) * uy + el.rb * Math.cos(best.t) * ux];
+        const tc = [-(best.y - cc.y), best.x - cc.x];
+        const pid = `tp${n}`;
+        prims.push({ id: pid, type: 'point', x: best.x, y: best.y, fixed: false });
+        prims.push({ id: cid(), type: 'point_on_ellipse', p_id: pid, e_id: b });
+        prims.push(cu.type === 'arc'
+          ? { id: cid(), type: 'point_on_arc', p_id: pid, a_id: a }
+          : { id: cid(), type: 'point_on_circle', p_id: pid, c_id: a });
+        prims.push({
+          id: cid(), type: 'angle_via_point', crv1_id: b, crv2_id: a, p_id: pid,
+          angle: te[0] * tc[0] + te[1] * tc[1] >= 0 ? 0 : Math.PI,
+        });
+        break;
+      }
       case 'tangentSpline': {
         // At the spline's drawn end it leaves straight for the point next to it,
         // so tangency is that point on the other's tangent there.
         const j = splineJoint(sk, c.refs[0], c.refs[1]);
         const other = sk.entities.get(c.refs[0]);
         if (!j) break;
+        if (j.index != null) {
+          // An inner point: the spline turns to the other there by itself
+          // (`splineHandles`); the solver keeps the point on it.
+          if (j.end != null) break; // already one point with the other's end
+          if (other.type === 'line') prims.push({ id: cid(), type: 'point_on_line_pl', p_id: sid(j.s), l_id: a });
+          break;
+        }
         if (other.type === 'line') {
           prims.push({ id: cid(), type: 'point_on_line_pl', p_id: sid(j.n), l_id: a });
         } else if (other.type === 'arc') {

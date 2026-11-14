@@ -35,11 +35,17 @@ export default function SketchContextMenu() {
   });
 
   const relations = relationsFor(sk, selection);
+  // One point: it can pierce where another sketch passes through this plane.
+  const pierces = selection.length === 1 ? useSketchStore.getState().pierceChoices(selection[0]).slice(0, 4) : [];
+  const relationItems = [
+    ...relations.map((r) => ({ key: `rel:${r.key}`, label: r.label })),
+    ...pierces.map((p, i) => ({ key: `pierce:${i}`, label: `Pierce · ${p.sketchName}` })),
+  ];
   const items = [
-    ...(relations.length ? [{
+    ...(relationItems.length ? [{
       type: 'group',
       label: 'Add Relation',
-      children: relations.map((r) => ({ key: `rel:${r.key}`, label: r.label })),
+      children: relationItems,
     }, { type: 'divider' }] : []),
     {
       key: 'construction',
@@ -63,6 +69,9 @@ export default function SketchContextMenu() {
     else if (key.startsWith('rel:')) {
       const r = relations.find((x) => `rel:${x.key}` === key);
       if (r) applyRelation(r.constraints);
+    } else if (key.startsWith('pierce:')) {
+      const p = pierces[Number(key.slice(7))];
+      if (p) useSketchStore.getState().pierce(selection[0], p);
     }
     close();
   };

@@ -111,7 +111,11 @@ export function pickPartRef(refs, x, y, tol) {
     return best;
   };
   const corner = nearest(refs.points, (p) => Math.hypot(p.x - x, p.y - y));
-  if (corner) return { kind: 'point', x: corner.x, y: corner.y };
+  if (corner) {
+    return corner.pierce
+      ? { kind: 'point', x: corner.x, y: corner.y, pierce: corner.pierce }
+      : { kind: 'point', x: corner.x, y: corner.y };
+  }
   const circle = nearest(refs.circles, (c) => {
     const off = Math.hypot(c.x - x, c.y - y);
     return Math.min(off, Math.abs(off - c.r));
@@ -132,7 +136,12 @@ function refPoint(sk, x, y) {
 
 /** Put a picked reference into the sketch, reusing one already there. @returns the entity id */
 export function placePartRef(sk, ref) {
-  if (ref.kind === 'point') return refPoint(sk, ref.x, ref.y);
+  if (ref.kind === 'point') {
+    const id = refPoint(sk, ref.x, ref.y);
+    // A pierce point remembers what it pierces, to follow it (`pierce.js`).
+    if (ref.pierce) sk.entities.get(id).pierce = { ...ref.pierce };
+    return id;
+  }
   const p1 = refPoint(sk, ref.a.x, ref.a.y);
   const p2 = refPoint(sk, ref.b.x, ref.b.y);
   for (const e of sk.entities.values()) {

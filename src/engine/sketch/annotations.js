@@ -17,6 +17,7 @@
 import {
   angleGeometry, axisDimensionGeometry, dimensionLockDir, projectOnto,
 } from './edit.js';
+import { curveOf } from './curves.js';
 
 const TWO_PI = Math.PI * 2;
 const normAngle = (a) => ((a % TWO_PI) + TWO_PI) % TWO_PI;
@@ -153,6 +154,17 @@ export function dimensionAnnotations(sk, { z: Z = 0 } = {}) {
       arrow(rim, [u, u]);
       labels.push({
         key: `b${k++}`, ci, text: `R${fmtDim(c.value)}`, pos: at,
+      });
+    } else if (c.kind === 'splineLength') {
+      // A reference length, in brackets as a driven dimension reads, beside the
+      // spline's middle.
+      const sp = P(c.refs[0]);
+      const poly = sp && curveOf(sk, sp);
+      if (!poly) return;
+      const mid = Math.floor(poly.points.length / 4) * 2;
+      labels.push({
+        key: `b${k++}`, ci, text: `(L${fmtDim(c.value)})`,
+        pos: [poly.points[mid] + ox, poly.points[mid + 1] + oy, Z],
       });
     } else if (c.kind === 'ellipseMinor') {
       // A spoke from the centre out along the minor axis.

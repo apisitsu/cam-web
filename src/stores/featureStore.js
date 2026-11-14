@@ -541,6 +541,8 @@ export const useFeatureStore = create((set, get) => ({
     }
     set({ building: true });
     try {
+      // A profile pierced by a path is moved to where the path is now first.
+      await useSketchStore.getState().followPierceRefs();
       const sketch = useSketchStore.getState();
       const meshBefore = getRawMesh().welded;
       const planesBefore = new Map(sketch.sketches.map((s) => [s.id, s.plane]));

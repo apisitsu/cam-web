@@ -11,7 +11,7 @@ import {
 } from './model.js';
 import {
   curveRefs, curveOf as polyCurveOf, isCurve, curveCrossings, curveParamNear, curveSpan,
-  curveIsClosed, curvePeriod, curveEnds, curveAt, curveTangent, offsetCurvePoints,
+  curveIsClosed, curvePeriod, curveEnds, curveAt, curveTangent, offsetCurvePoints, curveLength,
 } from './curves.js';
 
 const dist2 = (ax, ay, bx, by) => (ax - bx) ** 2 + (ay - by) ** 2;
@@ -236,6 +236,10 @@ export function measureConstraint(sk, kind, refs) {
   if (kind === 'diameter') {
     const c = P(refs[0]);
     return c && c.type === 'circle' ? c.r * 2 : null;
+  }
+  if (kind === 'splineLength') {
+    const c = P(refs[0]);
+    return c && c.type === 'spline' ? curveLength(sk, c) : null;
   }
   if (kind === 'ellipseMinor') {
     const c = P(refs[0]);

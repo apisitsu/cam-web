@@ -75,6 +75,9 @@ export function relationsFor(sk, selection) {
   if (n === 2 && lines.length === 1 && ellipses.length === 1) {
     add('tangent', 'Tangent', [['tangentEllipse', [lines[0], ellipses[0]]]]);
   }
+  if (n === 2 && curves.length === 1 && ellipses.length === 1) {
+    add('tangent', 'Tangent', [['tangentEllipseCurve', [curves[0], ellipses[0]]]]);
+  }
   if (n === 2 && splines.length >= 1) {
     const sp = splines[splines.length - 1];
     const other = selection.find((id) => id !== sp);

@@ -75,6 +75,10 @@ export const CONSTRAINT_KINDS = {
   ellipseMinor: { refTypes: ['ellipse'], value: true, dof: 1 },
   // A line touching an ellipse.
   tangentEllipse: { refTypes: ['line', 'ellipse'], value: false, dof: 1 },
+  // A spline's length — reported only (always driven): its points set it.
+  splineLength: { refTypes: ['spline'], value: true, dof: 1 },
+  // A circle or arc touching an ellipse.
+  tangentEllipseCurve: { refTypes: [['circle', 'arc'], 'ellipse'], value: false, dof: 1 },
   // A line, arc or spline running smoothly into a spline at one of its ends.
   tangentSpline: { refTypes: [['line', 'arc', 'spline'], 'spline'], value: false, dof: 1 },
   // Equal radius between two circles/arcs (any mix). A ref position accepting more

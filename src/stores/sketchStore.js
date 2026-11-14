@@ -19,7 +19,7 @@ import {
   addEllipse, addSpline,
 } from '../engine/sketch/model.js';
 import {
-  hitTestCurve, syncCurves, curveParamNear, isCurve,
+  hitTestCurve, syncCurves, curveParamNear, isCurve, curveLength,
 } from '../engine/sketch/curves.js';
 import {
   getOrCreatePoint, hitTestPoint, hitTestLine, hitTestCircle, hitTestArc,
@@ -48,6 +48,7 @@ import { combineRegions } from '../engine/solid/regionBoolean.js';
 import {
   partReferences, pickPartRef, placePartRef, dropUnusedPartRefs, followPartRefs,
 } from '../engine/sketch/partRefs.js';
+import { piercePoints, followPierces } from '../engine/sketch/pierce.js';
 import { useCamPlanStore, getRawMesh, registerSketchSource } from './camPlanStore.js';
 
 const DEG = Math.PI / 180;
@@ -319,6 +320,8 @@ export const useSketchStore = create((set, get) => ({
   openSketch(id) {
     if (id !== get().activeId && !get().setActiveSketch(id)) return false;
     set({ sketchOpen: true });
+    // Its pierce points go to where what they pierce is now.
+    get().followPierceRefs();
     return true;
   },
 
@@ -1249,6 +1252,8 @@ export const useSketchStore = create((set, get) => ({
         }
         // Empty click with a dimensionable selection → open the inline input;
         // otherwise clear (a click on nothing with nothing to dimension).
+        // A reference dimension has nothing to type: it goes straight on.
+        if (spec?.reference) { get().dimension(spec.current); return; }
         set(spec ? { dimensionPending: spec } : { selection: [] });
         return;
       }
@@ -1256,9 +1261,66 @@ export const useSketchStore = create((set, get) => ({
     }
   },
 
-  /** The part's edges on the open sketch's plane. */
+  /**
+   * The part's edges on the open sketch's plane, and the spots where the other
+   * sketches pass through it (Pierce).
+   */
   partRefs() {
-    return partRefsFor(get().activeSketch().plane);
+    const refs = partRefsFor(get().activeSketch().plane);
+    const pierce = piercePoints(get()._stash(), get().activeId);
+    return pierce.length ? { ...refs, points: [...refs.points, ...pierce] } : refs;
+  },
+
+  /** Where other sketches pass through this one's plane, nearest `pointId` first (for the Pierce menu). */
+  pierceChoices(pointId) {
+    const p = get().sk.entities.get(pointId);
+    if (!p || p.type !== 'point' || p.ref || p.origin) return [];
+    return piercePoints(get()._stash(), get().activeId)
+      .sort((a, b) => Math.hypot(a.x - p.x, a.y - p.y) - Math.hypot(b.x - p.x, b.y - p.y));
+  },
+
+  /** Pierce: tie point `pointId` to where another sketch's geometry crosses this plane. */
+  pierce(pointId, spot) {
+    const { sk } = get();
+    get()._snapshot();
+    const ref = placePartRef(sk, { kind: 'point', x: spot.x, y: spot.y, pierce: spot.pierce });
+    try {
+      addConstraint(sk, 'coincident', [pointId, ref]);
+    } catch (e) {
+      get()._undoSnapshot();
+      set({ error: String(e?.message || e) });
+      return;
+    }
+    set({ selection: [], error: null });
+    get()._bump();
+    get().solve({ revertOnConflict: true });
+  },
+
+  /**
+   * Move every sketch's pierce points to where what they pierce is now, and
+   * re-solve the sketches that moved — before a rebuild, so what is built is
+   * where the path is. Returns the ids that moved.
+   */
+  async followPierceRefs() {
+    const moved = [];
+    for (const entry of get()._stash()) {
+      const { moved: did } = followPierces(get()._stash(), entry.id);
+      if (!did) continue;
+      moved.push(entry.id);
+      let doc = entry.doc;
+      try {
+        const res = await worker().solve(serialize(entry.doc));
+        doc = deserialize(res.sketch);
+      } catch (e) {
+        set({ error: String(e?.message || e) });
+      }
+      set({
+        sketches: get().sketches.map((s) => (s.id === entry.id ? { ...s, doc } : s)),
+        ...(get().activeId === entry.id ? { sk: doc } : {}),
+      });
+      get()._bump();
+    }
+    return moved;
   },
 
   /**
@@ -1437,6 +1499,13 @@ export const useSketchStore = create((set, get) => ({
     if (ents.length === 1 && ents[0].type === 'arc') {
       return { kind: 'arcRadius', refs: [selection[0]], label: 'Radius', current: ents[0].r };
     }
+    if (ents.length === 1 && ents[0].type === 'spline') {
+      // Its points set a spline: its length is reported, not driven (as SolidWorks
+      // makes it a driven dimension).
+      return {
+        kind: 'splineLength', refs: [ents[0].id], label: 'Length (reference)', current: curveLength(sk, ents[0]), reference: true,
+      };
+    }
     if (ents.length === 1 && ents[0].type === 'ellipse') {
       // The half-axis nearer where the ellipse was picked: the major one is the
       // distance from the centre to its end point, the minor one its own value.
@@ -1521,7 +1590,8 @@ export const useSketchStore = create((set, get) => ({
     get()._snapshot();
     let idx;
     try {
-      idx = addConstraint(sk, spec.kind, spec.refs, modelValue);
+      idx = addConstraint(sk, spec.kind, spec.refs, spec.reference ? spec.current : modelValue);
+      if (spec.reference) sk.constraints[idx].driven = true;
     } catch (e) {
       get()._undoSnapshot();
       set({ error: String(e?.message || e) });

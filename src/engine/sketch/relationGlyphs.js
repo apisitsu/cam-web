@@ -27,6 +27,7 @@ const SYMBOL = {
   tangentArc: 'T',
   tangentArcArc: 'T',
   tangentEllipse: 'T',
+  tangentEllipseCurve: 'T',
   tangentSpline: 'T',
   midpoint: 'M',
   symmetric: '><',

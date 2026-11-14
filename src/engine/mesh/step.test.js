@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import { meshToStep, meshToStlBinary, stepReal } from './step.js';
-import { box, tube } from './fixtures.js';
+import { box, tube, revolveOutline } from './fixtures.js';
 import { weld, parseSTL } from './stl.js';
 
 /** The DATA section as `id → { type, body }`. */
@@ -60,15 +60,26 @@ describe('STEP export', () => {
     const text = meshToStep(mesh);
     const ents = entities(text);
     expect(closedShell(ents)).toBe(true);
-    // Inside and outside, each in pieces of no more than half a turn.
-    expect(count(ents, 'CYLINDRICAL_SURFACE')).toBe(6);
-    expect(count(ents, 'CIRCLE')).toBeGreaterThanOrEqual(12);
-    expect(count(ents, 'ADVANCED_FACE')).toBe(8);
+    // Inside and outside, each in its two half turns.
+    expect(count(ents, 'CYLINDRICAL_SURFACE')).toBe(4);
+    expect(count(ents, 'CIRCLE')).toBe(8);
+    expect(count(ents, 'ADVANCED_FACE')).toBe(6);
     const radii = [...ents.values()].filter((e) => e.type === 'CYLINDRICAL_SURFACE').map((e) => Number(e.body.split(',').pop()));
     expect(new Set(radii.map((r) => Math.round(r))).size).toBe(2);
     const flat = entities(meshToStep(mesh, { cylinders: false }));
     expect(count(flat, 'CYLINDRICAL_SURFACE')).toBe(0);
     expect(count(flat, 'ADVANCED_FACE')).toBe(130);
+  });
+
+  it('writes a tapered wall as a cone, its narrow end the placement', () => {
+    const frustum = revolveOutline([{ z: 0, r: 0 }, { z: 0, r: 10 }, { z: 20, r: 5 }, { z: 20, r: 0 }], 64);
+    const ents = entities(meshToStep(weld(frustum)));
+    expect(closedShell(ents)).toBe(true);
+    const cones = [...ents.values()].filter((e) => e.type === 'CONICAL_SURFACE');
+    expect(cones).toHaveLength(2);
+    const [r, semi] = cones[0].body.split(',').slice(-2).map(Number);
+    expect(r).toBeCloseTo(5, 3);
+    expect(semi).toBeCloseTo(Math.atan(5 / 20), 4);
   });
 
   it('writes reals the way STEP reads them', () => {

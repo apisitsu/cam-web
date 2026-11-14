@@ -39,12 +39,17 @@ export function planarFaces(mesh, angTol = 1e-6, distTol = 1e-5) {
   const { positions: P, indices: I, triangleCount: T } = mesh;
   const normal = new Float64Array(T * 3);
   const dist = new Float64Array(T);
+  // A triangle with no area (its corners in a line, as a boolean leaves along
+  // a seam) has no plane of its own: it goes with whichever face is beside it.
+  const flat0 = new Uint8Array(T);
   for (let t = 0; t < T; t++) {
     const a = I[t * 3] * 3; const b = I[t * 3 + 1] * 3; const c = I[t * 3 + 2] * 3;
     const ux = P[b] - P[a]; const uy = P[b + 1] - P[a + 1]; const uz = P[b + 2] - P[a + 2];
     const vx = P[c] - P[a]; const vy = P[c + 1] - P[a + 1]; const vz = P[c + 2] - P[a + 2];
     let nx = uy * vz - uz * vy; let ny = uz * vx - ux * vz; let nz = ux * vy - uy * vx;
     const l = Math.hypot(nx, ny, nz) || 1;
+    const e2 = Math.max(ux * ux + uy * uy + uz * uz, vx * vx + vy * vy + vz * vz);
+    if (l <= 1e-9 * e2) flat0[t] = 1;
     nx /= l; ny /= l; nz /= l;
     normal[t * 3] = nx; normal[t * 3 + 1] = ny; normal[t * 3 + 2] = nz;
     dist[t] = nx * P[a] + ny * P[a + 1] + nz * P[a + 2];
@@ -62,7 +67,7 @@ export function planarFaces(mesh, angTol = 1e-6, distTol = 1e-5) {
   const faceOf = new Int32Array(T).fill(-1);
   const faces = [];
   for (let s = 0; s < T; s++) {
-    if (faceOf[s] >= 0) continue;
+    if (faceOf[s] >= 0 || flat0[s]) continue;
     const f = faces.length;
     const n = [normal[s * 3], normal[s * 3 + 1], normal[s * 3 + 2]];
     const d = dist[s];
@@ -77,6 +82,7 @@ export function planarFaces(mesh, angTol = 1e-6, distTol = 1e-5) {
         if (!list || list.length !== 2) continue;
         for (const o of list) {
           if (faceOf[o] >= 0) continue;
+          if (flat0[o]) { faceOf[o] = f; tris.push(o); continue; }
           const dot = normal[o * 3] * n[0] + normal[o * 3 + 1] * n[1] + normal[o * 3 + 2] * n[2];
           if (dot < 1 - angTol || Math.abs(dist[o] - d) > distTol) continue;
           faceOf[o] = f;
@@ -85,6 +91,12 @@ export function planarFaces(mesh, angTol = 1e-6, distTol = 1e-5) {
       }
     }
     faces.push({ tris, normal: n, d });
+  }
+  // Any with no face beside them (only others like them) make one of their own.
+  for (let s = 0; s < T; s++) {
+    if (faceOf[s] >= 0) continue;
+    faceOf[s] = faces.length;
+    faces.push({ tris: [s], normal: [normal[s * 3], normal[s * 3 + 1], normal[s * 3 + 2]], d: dist[s] });
   }
   let closed = true;
   for (const list of edgeTris.values()) if (list.length !== 2) { closed = false; break; }
@@ -209,13 +221,18 @@ function fitCircle(pts) {
 
 /**
  * The round walls of the mesh: runs of narrow flat faces (strips) that lie on
- * one cylinder — a drilled hole, a boss, a fillet along a straight edge. Each
- * is cut into pieces of at most half a turn, so every piece is bounded by two
- * straight lines along the axis and two circular arcs.
+ * one surface of revolution between two circles — a drilled hole or a boss
+ * (cylinder), a countersink, a chamfered or drafted hole (cone), and each band
+ * of a rounded rim or a ball corner (written as the cone through its two
+ * circles). A strip is a four-cornered face whose two edges across the run are
+ * parallel chords of the two circles; neighbours share the edges along it.
+ * Each run is cut at the same two half turns about its axis, so two runs that
+ * share a circle cut it at the same points and share its arcs.
  *
  * `loops[f]` are face f's boundary loops (already thinned). Returns the pieces
- * (`{ faces, axis, centre, r, ref }`), the faces they take over, and for every
- * mesh edge along a rim the arc it is part of (`{ verts, centre, axis, r }`).
+ * (`{ faces, axis, a: {centre, r}, b: {centre, r} }`), the faces they take
+ * over, and for every mesh edge along a rim the arc it is part of
+ * (`{ verts, centre, axis, r }`).
  */
 export function findCylinders(mesh, faces, loops) {
   const P = mesh.positions;
@@ -229,28 +246,29 @@ export function findCylinders(mesh, faces, loops) {
   const quad = (fi) => (loops[fi].length === 1 && loops[fi][0].length === 4 ? loops[fi][0] : null);
   const parallel = (a, b) => vlen(vcross(a, b)) < 1e-4 * vlen(a) * vlen(b);
   const COS_MAX = Math.cos(Math.PI / 4);
+  // The two edges either side of edge i of quad q (its rims, if i runs along).
+  const rimsOk = (q, i) => parallel(vsub(V(q[i]), V(q[(i + 3) % 4])), vsub(V(q[(i + 2) % 4]), V(q[(i + 1) % 4])));
 
-  // Links between strips: an edge two quads share, running the same way as the
-  // edge across from it in each, with the faces at a shallow angle.
-  const links = new Map(); // face → [{ to, a, b }]
+  const links = new Map(); // face → [{ to, a, b, i }]
   faces.forEach((f, fi) => {
     const q = quad(fi);
     if (!q) return;
     for (let i = 0; i < 4; i++) {
       const a = q[i]; const b = q[(i + 1) % 4];
-      const e = vsub(V(b), V(a));
-      if (!parallel(e, vsub(V(q[(i + 3) % 4]), V(q[(i + 2) % 4])))) continue;
+      if (!rimsOk(q, i)) continue;
       const nj = (owner.get(edgeKey(a, b)) || []).find((x) => x !== fi);
       if (nj == null || nj < fi) continue;
       const r = quad(nj);
       if (!r) continue;
       const j = r.findIndex((v, k) => edgeKey(v, r[(k + 1) % 4]) === edgeKey(a, b));
-      if (j < 0 || !parallel(e, vsub(V(r[(j + 3) % 4]), V(r[(j + 2) % 4])))) continue;
+      if (j < 0 || !rimsOk(r, j)) continue;
       const c = vdot(f.normal, faces[nj].normal);
       if (c < COS_MAX || c > 1 - 1e-9) continue;
-      for (const [x, y] of [[fi, nj], [nj, fi]]) {
+      for (const [x, y, k] of [[fi, nj, i], [nj, fi, j]]) {
         const l = links.get(x);
-        const link = { to: y, a, b };
+        const link = {
+          to: y, a, b, i: k,
+        };
         if (l) l.push(link); else links.set(x, [link]);
       }
     }
@@ -259,10 +277,12 @@ export function findCylinders(mesh, faces, loops) {
   const pieces = [];
   const taken = new Set();
   const arcOf = new Map();
+  const arcByVerts = new Map();
   const seen = new Set();
+  let run = 0;
   for (const start of links.keys()) {
     if (seen.has(start)) continue;
-    // The run this strip is in, in order: walk one way to an end (or all round).
+    run += 1;
     const comp = [];
     const stack = [start];
     seen.add(start);
@@ -271,14 +291,14 @@ export function findCylinders(mesh, faces, loops) {
       comp.push(f);
       for (const l of links.get(f)) if (!seen.has(l.to)) { seen.add(l.to); stack.push(l.to); }
     }
-    if (comp.some((f) => links.get(f).length > 2)) continue; // not a single run
-    const d0 = vunit(vsub(V(links.get(start)[0].b), V(links.get(start)[0].a)));
-    if (comp.some((f) => links.get(f).some((l) => !parallel(vsub(V(l.b), V(l.a)), d0)))) continue;
+    // A single run: two links at most, and on opposite sides of the strip.
+    if (comp.some((f) => links.get(f).length > 2
+      || (links.get(f).length === 2 && (links.get(f)[0].i + 2) % 4 !== links.get(f)[1].i))) continue;
     const ring = comp.every((f) => links.get(f).length === 2);
     const first = ring ? start : comp.find((f) => links.get(f).length === 1);
     if (first == null) continue;
     const order = [first];
-    const gens = []; // the shared generator edges, between consecutive strips
+    const gens = [];
     let prev = null;
     let cur = first;
     while (order.length < comp.length) {
@@ -290,96 +310,184 @@ export function findCylinders(mesh, faces, loops) {
       order.push(cur);
     }
     if (order.length !== comp.length) continue;
-    // Close the generators: a ring's last shared edge, or a run's two free ends.
-    const freeGen = (f, used) => {
-      const q = quad(f);
-      for (let i = 0; i < 4; i++) {
-        const a = q[i]; const b = q[(i + 1) % 4];
-        if (!parallel(vsub(V(b), V(a)), d0)) continue;
-        if (used.some(([x, y]) => edgeKey(x, y) === edgeKey(a, b))) continue;
-        return [a, b];
-      }
-      return null;
-    };
+    // The edges along the run: the shared ones, closed by a ring's last or a
+    // run's two outer ones (across each end strip from its link).
+    const across = (f, link) => { const q = quad(f); return [q[(link.i + 2) % 4], q[(link.i + 3) % 4]]; };
     let G;
     if (ring) {
       const last = links.get(order[order.length - 1]).find((l) => l.to === first);
       if (!last) continue;
       G = [[last.a, last.b], ...gens, [last.a, last.b]];
     } else {
-      const g0 = freeGen(order[0], gens);
-      const gN = freeGen(order[order.length - 1], gens);
-      if (!g0 || !gN) continue;
-      G = [g0, ...gens, gN];
+      const l0 = links.get(order[0])[0];
+      const lN = links.get(order[order.length - 1]).find((l) => l.to === order[order.length - 2]);
+      G = [across(order[0], l0), ...gens, across(order[order.length - 1], lN)];
     }
-    // Each generator edge as low/high end along the axis.
-    const lohi = G.map(([a, b]) => (vdot(V(a), d0) <= vdot(V(b), d0) ? [a, b] : [b, a]));
-    const h0 = vdot(V(lohi[0][0]), d0); const h1 = vdot(V(lohi[0][1]), d0);
-    // The cross-section: generator lines as points in the plane square to the axis.
-    const e1 = vunit(Math.abs(d0[0]) < 0.9 ? vcross(d0, [1, 0, 0]) : vcross(d0, [0, 1, 0]));
-    const e2 = vcross(d0, e1);
-    const pt = (v) => [vdot(V(v), e1), vdot(V(v), e2)];
-    const pts = lohi.map(([lo]) => pt(lo));
-    const m = Math.floor(pts.length / 2);
-    // A rough circle from the middle three finds the run on it; a least-squares
-    // circle through all of that run is the one written (three neighbouring
-    // points alone are thrown off by float32 rounding).
-    const rough = pts.length >= 3 ? circle3(pts[Math.max(0, m - 1)], pts[m], pts[Math.min(pts.length - 1, m + 1)]) : null;
-    if (!rough || !(rough.r > 1e-3) || rough.r > 1e5) continue;
-    const level = (i) => Math.abs(vdot(V(lohi[i][0]), d0) - h0) <= 1e-3 && Math.abs(vdot(V(lohi[i][1]), d0) - h1) <= 1e-3;
-    const near = (circ, t) => (p) => Math.abs(Math.hypot(p[0] - circ.x, p[1] - circ.y) - circ.r) <= t;
-    const roughOn = near(rough, 1e-3 + 0.02 * rough.r);
-    const okRough = lohi.map(([, top], i) => roughOn(pts[i]) && roughOn(pt(top)) && level(i));
-    let lo = m; let hi = m;
+    // Line up the ends: side 0 of every edge on one rim, side 1 on the other.
+    // Strip k joins G[k] to G[k+1]; the rim edge from G[k][0] goes to one of G[k+1].
+    const sides = [G[0].slice()];
+    for (let k = 0; k + 1 < G.length; k++) {
+      const q = quad(order[Math.min(k, order.length - 1)]);
+      const [x] = sides[k];
+      const nextG = G[k + 1];
+      const joined = (u, w) => q.some((v, i) => edgeKey(v, q[(i + 1) % 4]) === edgeKey(u, w));
+      sides.push(joined(x, nextG[0]) ? nextG.slice() : [nextG[1], nextG[0]]);
+    }
+    // The axis: square to the plane of rim 0, from three of its points well apart.
+    const rim0 = sides.map((s) => V(s[0]));
+    const rim1 = sides.map((s) => V(s[1]));
+    const mIdx = Math.floor(rim0.length / 2);
+    const i0 = Math.max(0, mIdx - 1); const i2 = Math.min(rim0.length - 1, mIdx + 1);
+    let d = vunit(vcross(vsub(rim0[mIdx], rim0[i0]), vsub(rim0[i2], rim0[mIdx])));
+    if (!(vlen(vcross(vsub(rim0[mIdx], rim0[i0]), vsub(rim0[i2], rim0[mIdx]))) > 0)) continue;
+    // One way round for every run, so runs on one axis agree about angles.
+    const big = [0, 1, 2].reduce((m, k) => (Math.abs(d[k]) > Math.abs(d[m]) + 1e-9 ? k : m), 0);
+    if (d[big] < 0) d = d.map((v) => -v);
+    const e1 = vunit(Math.abs(d[0]) < 0.9 ? vcross(d, [1, 0, 0]) : vcross(d, [0, 1, 0]));
+    const e2 = vcross(d, e1);
+    const in2 = (p) => [vdot(p, e1), vdot(p, e2)];
+    const h = (p) => vdot(p, d);
+    // Rough circles from the middle three to find the run that is on them…
+    const rough0 = circle3(in2(rim0[i0]), in2(rim0[mIdx]), in2(rim0[i2]));
+    const rough1 = circle3(in2(rim1[i0]), in2(rim1[mIdx]), in2(rim1[i2]));
+    if (!rough0 || !rough1 || !(rough0.r > 1e-3) || !(rough1.r > 1e-3) || rough0.r > 1e5 || rough1.r > 1e5) continue;
+    const h0 = h(rim0[mIdx]); const h1 = h(rim1[mIdx]);
+    if (Math.abs(h1 - h0) < 1e-6) continue; // a flat ring: that is a plane
+    const nearC = (c, t) => (p) => Math.abs(Math.hypot(in2(p)[0] - c.x, in2(p)[1] - c.y) - c.r) <= t;
+    const on0 = nearC(rough0, 1e-3 + 0.02 * rough0.r); const on1 = nearC(rough1, 1e-3 + 0.02 * rough1.r);
+    const okRough = sides.map((s, i) => on0(rim0[i]) && on1(rim1[i])
+      && Math.abs(h(rim0[i]) - h0) <= 1e-3 && Math.abs(h(rim1[i]) - h1) <= 1e-3);
+    let lo = mIdx; let hi = mIdx;
     while (lo > 0 && okRough[lo - 1]) lo--;
     while (hi < okRough.length - 1 && okRough[hi + 1]) hi++;
-    if (!okRough[m] || hi - lo < 2) continue;
-    const c = fitCircle(pts.slice(lo, hi + 1));
-    if (!c || !(c.r > 1e-3) || c.r > 1e5) continue;
-    const on = near(c, 1e-3 + 1e-5 * c.r);
-    for (let i = lo; i <= hi; i++) if (!on(pts[i]) || !on(pt(lohi[i][1]))) { lo = -1; break; }
-    if (lo < 0) continue;
+    if (!okRough[mIdx] || hi - lo < 2) continue;
     if (ring && (lo !== 0 || hi !== okRough.length - 1)) continue;
-    // Pieces of at most half a turn.
-    const ang = (i) => Math.atan2(pts[i][1] - c.y, pts[i][0] - c.x);
-    const cuts = [lo];
-    let sweep = 0;
-    for (let i = lo; i < hi; i++) {
-      let s = ang(i + 1) - ang(i);
+    // …then the circles through all of it, which must share one axis.
+    const c0 = fitCircle(rim0.slice(lo, hi + 1).map(in2));
+    const c1 = fitCircle(rim1.slice(lo, hi + 1).map(in2));
+    if (!c0 || !c1) continue;
+    const tol = 1e-3 + 1e-5 * Math.max(c0.r, c1.r);
+    if (Math.hypot(c0.x - c1.x, c0.y - c1.y) > tol) continue;
+    const t0 = nearC(c0, tol); const t1 = nearC(c1, tol);
+    let good = true;
+    for (let i = lo; i <= hi && good; i++) good = t0(rim0[i]) && t1(rim1[i]);
+    if (!good) continue;
+    const cx = (c0.x + c1.x) / 2; const cy = (c0.y + c1.y) / 2;
+    const at = (hh) => [0, 1, 2].map((k) => cx * e1[k] + cy * e2[k] + hh * d[k]);
+    // Cut at half turns from e1, as every run on this axis does.
+    const half = (i) => {
+      const p = in2(rim0[i]);
+      // Turned off the axes by an odd amount: a facet corner sits on 0° or 90°
+      // often, and there rounding would cut one ring a corner off from the next.
+      const a = Math.atan2(p[1] - cy, p[0] - cx) - 0.1234567;
+      return Math.floor(((a + 4 * Math.PI) % (2 * Math.PI)) / Math.PI);
+    };
+    // Where a half turn falls between edges i − 1 and i, the cut goes on the
+    // one past it counter-clockwise — the same edge whichever way a run is walked.
+    const angleOf = (i) => { const p = in2(rim0[i]); return Math.atan2(p[1] - cy, p[0] - cx); };
+    const cutAt = (i) => {
+      let s = angleOf(i) - angleOf(i - 1);
       while (s > Math.PI) s -= 2 * Math.PI;
       while (s < -Math.PI) s += 2 * Math.PI;
-      if (sweep + Math.abs(s) > Math.PI - 1e-6) { cuts.push(i); sweep = 0; }
-      sweep += Math.abs(s);
-    }
-    if (cuts[cuts.length - 1] !== hi) cuts.push(hi);
-    if (ring && cuts.length < 3) cuts.splice(1, 0, lo + Math.floor((hi - lo) / 2));
-    const axisAt = (h) => [0, 1, 2].map((k) => c.x * e1[k] + c.y * e2[k] + h * d0[k]);
-    for (let k = 0; k + 1 < cuts.length; k++) {
-      const [i0, i1] = [cuts[k], cuts[k + 1]];
-      if (i1 - i0 < 1) continue;
-      const strips = order.slice(i0, i1);
-      const arcs = [0, 1].map((side) => ({
-        verts: lohi.slice(i0, i1 + 1).map((g) => g[side]),
-        centre: axisAt(side ? h1 : h0),
-        axis: d0,
-        r: c.r,
-      }));
-      for (const arc of arcs) {
-        for (let i = 0; i + 1 < arc.verts.length; i++) arcOf.set(edgeKey(arc.verts[i], arc.verts[i + 1]), arc);
+      return s > 0 ? i : i - 1;
+    };
+    if (ring) {
+      // Start the ring at a half turn, so its pieces end where a ring
+      // beside it on the same circle ends its own.
+      const n = order.length;
+      let s0 = 0;
+      for (let i = 1; i < n; i++) if (half(i) !== half(i - 1)) { s0 = cutAt(i); break; }
+      if (s0) {
+        const rot = (arr) => arr.slice(s0, n).concat(arr.slice(0, s0));
+        order.splice(0, n, ...rot(order));
+        const sd = sides.slice(s0, n).concat(sides.slice(0, s0 + 1));
+        sides.splice(0, sides.length, ...sd);
+        rim0.splice(0, rim0.length, ...sides.map((x) => V(x[0])));
+        rim1.splice(0, rim1.length, ...sides.map((x) => V(x[1])));
       }
+    }
+    const cuts = [lo];
+    for (let i = lo + 1; i <= hi; i++) {
+      if (half(i) === half(i - 1)) continue;
+      const c = cutAt(i);
+      if (c > cuts[cuts.length - 1] && c < hi) cuts.push(c);
+    }
+    cuts.push(hi);
+    const rimArc = (verts, centre, r) => {
+      const key = (verts[0] < verts[verts.length - 1] ? verts : verts.slice().reverse()).join(',');
+      let arc = arcByVerts.get(key);
+      if (!arc) {
+        arc = {
+          verts, centre, axis: d, r, runs: new Set(),
+        };
+        arcByVerts.set(key, arc);
+      }
+      arc.runs.add(run);
+      for (let i = 0; i + 1 < verts.length; i++) {
+        const k = edgeKey(verts[i], verts[i + 1]);
+        const had = arcOf.get(k);
+        if (had && had !== arc) had.clash = true;
+        arcOf.set(k, arc);
+      }
+      return arc;
+    };
+    for (let k = 0; k + 1 < cuts.length; k++) {
+      const [i0c, i1c] = [cuts[k], cuts[k + 1]];
+      if (i1c - i0c < 1) continue;
+      const strips = order.slice(i0c, i1c);
+      const cA = at(h0); const cB = at(h1);
+      rimArc(sides.slice(i0c, i1c + 1).map((s) => s[0]), cA, c0.r);
+      rimArc(sides.slice(i0c, i1c + 1).map((s) => s[1]), cB, c1.r);
       strips.forEach((f) => taken.add(f));
       pieces.push({
-        faces: strips, axis: d0, centre: axisAt(h0), r: c.r,
+        faces: strips, axis: d, a: { centre: cA, r: c0.r }, b: { centre: cB, r: c1.r }, run,
       });
     }
   }
-  return { pieces, taken, arcOf };
+
+  // Every arc must be met whole by each face along it: a piece does that by
+  // construction, a flat face only if it runs the whole arc (a hole's top
+  // face does; the flat strips of a run left out do not). A run whose arcs
+  // fail is left out too, which can fail its neighbours' arcs in turn.
+  const dropped = new Set();
+  for (let changed = true; changed;) {
+    changed = false;
+    const arcs = new Set(arcOf.values());
+    for (const arc of arcs) {
+      if ([...arc.runs].every((r) => dropped.has(r))) continue;
+      const need = arc.verts.length - 1;
+      const tally = new Map();
+      for (let i = 0; i < need; i++) {
+        for (const f of owner.get(edgeKey(arc.verts[i], arc.verts[i + 1])) || []) {
+          if (taken.has(f)) continue;
+          tally.set(f, (tally.get(f) || 0) + 1);
+        }
+      }
+      if (!arc.clash && [...tally.values()].every((c) => c === need)) continue;
+      for (const r of arc.runs) {
+        if (dropped.has(r)) continue;
+        dropped.add(r);
+        changed = true;
+        for (const pc of pieces) if (pc.run === r) pc.faces.forEach((f) => taken.delete(f));
+      }
+    }
+  }
+  const kept = pieces.filter((pc) => !dropped.has(pc.run));
+  for (const [k, arc] of [...arcOf]) if ([...arc.runs].every((r) => dropped.has(r))) arcOf.delete(k);
+  for (const arc of new Set(arcOf.values())) {
+    if ([...arc.runs].some((r) => dropped.has(r))) {
+      // Shared with a run left out: that run's strips are flat now, so the
+      // arc cannot stand — which the loop above has already caught.
+      return { pieces: [], taken: new Set(), arcOf: new Map() };
+    }
+  }
+  return { pieces: kept, taken, arcOf };
 }
 
 /**
  * The mesh as a STEP file. `mesh` is welded; closed (every edge on two
  * triangles) it is written as a solid, otherwise as its surfaces. `name` names
- * the product. Round walls go as true cylinders (`findCylinders`) unless
+ * the product. Round walls go as true cylinders and cones (`findCylinders`) unless
  * `cylinders` is false; should their edges not pair up, the file is written
  * all flat instead.
  *
@@ -531,10 +639,20 @@ export function meshToStep(mesh, { name = 'part', date = new Date(), cylinders =
     // towards it in a hole.
     const f0 = faces[pc.faces[0]];
     const q = v3(P, mesh.indices[f0.tris[0] * 3]);
-    const radial = vsub(vsub(q, pc.centre), pc.axis.map((v) => v * vdot(vsub(q, pc.centre), pc.axis)));
+    const radial = vsub(vsub(q, pc.a.centre), pc.axis.map((v) => v * vdot(vsub(q, pc.a.centre), pc.axis)));
     const same = vdot(radial, f0.normal) > 0;
     const ref = vunit(radial);
-    const surf = add(`CYLINDRICAL_SURFACE('',#${place(pc.centre, pc.axis, ref)},${stepReal(pc.r, 6)})`);
+    // A cylinder where the two circles are one size, else the cone through them,
+    // placed at its narrow end and opening along its axis.
+    let surf;
+    if (Math.abs(pc.a.r - pc.b.r) <= 1e-3 + 1e-5 * pc.a.r) {
+      surf = add(`CYLINDRICAL_SURFACE('',#${place(pc.a.centre, pc.axis, ref)},${stepReal((pc.a.r + pc.b.r) / 2, 6)})`);
+    } else {
+      const [sm, lg] = pc.a.r < pc.b.r ? [pc.a, pc.b] : [pc.b, pc.a];
+      const along = vsub(lg.centre, sm.centre);
+      const semi = Math.atan((lg.r - sm.r) / vlen(along));
+      surf = add(`CONICAL_SURFACE('',#${place(sm.centre, vunit(along), ref)},${stepReal(sm.r, 6)},${stepReal(semi)})`);
+    }
     const bound = add(`FACE_OUTER_BOUND('',#${emitLoop(loops[0])},.T.)`);
     faceIds.push(add(`ADVANCED_FACE('',(#${bound}),#${surf},${same ? '.T.' : '.F.'})`));
   }

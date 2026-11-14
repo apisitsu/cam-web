@@ -103,6 +103,17 @@ function FeatureEditor({ feature }) {
           style={{ width: 100 }}
           data-feature-size
         />
+        {feature.sizeEnd != null && (
+          <InputNumber
+            size="small"
+            value={feature.sizeEnd}
+            min={0.01}
+            onChange={(v) => { if (Number(v) > 0) update(feature.id, { sizeEnd: Number(v) }); }}
+            addonBefore="→R"
+            style={{ width: 100 }}
+            data-feature-size-end
+          />
+        )}
         <Button
           size="small"
           onClick={() => useFeatureStore.getState().startEdgeTreatment(feature.kind, feature)}

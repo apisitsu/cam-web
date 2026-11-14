@@ -55,6 +55,22 @@ describe('STEP export', () => {
     expect(V - E + F - (L - F)).toBe(0); // genus 1
   });
 
+  it('writes round walls as true cylinders bounded by circles, and falls back flat on request', () => {
+    const mesh = weld(tube(20, 10, 30, 64));
+    const text = meshToStep(mesh);
+    const ents = entities(text);
+    expect(closedShell(ents)).toBe(true);
+    // Inside and outside, each in pieces of no more than half a turn.
+    expect(count(ents, 'CYLINDRICAL_SURFACE')).toBe(6);
+    expect(count(ents, 'CIRCLE')).toBeGreaterThanOrEqual(12);
+    expect(count(ents, 'ADVANCED_FACE')).toBe(8);
+    const radii = [...ents.values()].filter((e) => e.type === 'CYLINDRICAL_SURFACE').map((e) => Number(e.body.split(',').pop()));
+    expect(new Set(radii.map((r) => Math.round(r))).size).toBe(2);
+    const flat = entities(meshToStep(mesh, { cylinders: false }));
+    expect(count(flat, 'CYLINDRICAL_SURFACE')).toBe(0);
+    expect(count(flat, 'ADVANCED_FACE')).toBe(130);
+  });
+
   it('writes reals the way STEP reads them', () => {
     expect(stepReal(0)).toBe('0.');
     expect(stepReal(12)).toBe('12.');

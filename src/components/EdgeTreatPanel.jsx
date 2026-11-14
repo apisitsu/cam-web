@@ -95,6 +95,11 @@ export default function EdgeTreatPanel({ sketching = true }) {
           )}
         </div>
       )}
+      {active === 'fillet' && sizeEnd != null && (
+        <Text style={{ color: CAD.dim, fontSize: 10, display: 'block', marginTop: 2 }}>
+          Along an edge from its start to its end; round a closed rim or chain, End is half-way round.
+        </Text>
+      )}
       <div style={{ marginTop: 6, maxHeight: 140, overflowY: 'auto' }}>
         {edges.map((e, i) => (
           <div key={`${i}-${describeEdgeRef(e)}`} style={{ display: 'flex', alignItems: 'center' }} data-edge-treat-edge>

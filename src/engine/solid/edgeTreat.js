@@ -97,7 +97,7 @@ function cluster(items, key) {
  */
 export function treatmentSection({
   P, n1, n2, t1, t2,
-}, kind, size, reach = Infinity) {
+}, kind, size, reach = Infinity, arcSteps = null) {
   if (!(size > 0)) throw new Error(`a ${kind} needs a size greater than zero`);
   const cosPhi = Math.max(-1, Math.min(1, dot(t1, t2)));
   const phi = Math.acos(cosPhi);
@@ -127,7 +127,9 @@ export function treatmentSection({
     while (d > Math.PI) d -= 2 * Math.PI;
     while (d < -Math.PI) d += 2 * Math.PI;
     a1 = a0 + d;
-    const steps = Math.max(4, Math.ceil(Math.abs(d) / ARC_STEP));
+    // A fixed count when asked: the sections of one variable fillet must match
+    // point for point, and a count from the angle can tip over by one.
+    const steps = arcSteps ?? Math.max(4, Math.ceil(Math.abs(d) / ARC_STEP));
     for (let k = 1; k < steps; k++) {
       const a = a0 + (d * k) / steps;
       arc.push([C[0] + size * Math.cos(a), C[1] + size * Math.sin(a)]);
@@ -269,14 +271,35 @@ function relocateLine(soup, ref) {
 }
 
 /**
+ * The size a variable fillet has at `f` (0–1) of the way along its edge: a
+ * straight run from `a` to `b` on an open edge; round a closed one, which has
+ * no ends, `a` at its start rising to `b` half-way and back, smoothly.
+ */
+const ARC_STEPS_VARIABLE = 16;
+
+function varying(a, b, f, closed) {
+  if (b == null || b === a) return a;
+  if (!closed) return a + (b - a) * f;
+  return a + ((b - a) * (1 - Math.cos(2 * Math.PI * f))) / 2;
+}
+
+/**
  * A tool whose section changes linearly along the edge: `loopA` at `pa`,
  * `loopB` at `pb` (2D loops in the frame u, v, the same number of points),
  * joined point to point. A fillet whose radius runs linearly is exactly this:
  * its section's centre and every arc point move linearly with the radius.
  */
 function ruledTool(loopA, loopB, pa, pb, u, v) {
-  const n = loopA.length / 2;
-  const at = (loop, o, i) => [0, 1, 2].map((k) => o[k] + loop[i * 2] * u[k] + loop[i * 2 + 1] * v[k]);
+  return stationTool([loopA, loopB], [pa, pb], u, v);
+}
+
+/**
+ * The same through several sections in a row: `loops[k]` at `at[k]`, joined
+ * each to the next, capped at the two ends.
+ */
+function stationTool(loops, at, u, v) {
+  const n = loops[0].length / 2;
+  const pt = (loop, o, i) => [0, 1, 2].map((k) => o[k] + loop[i * 2] * u[k] + loop[i * 2 + 1] * v[k]);
   const tris = [];
   const cap = (loop, o, flip) => {
     const { vertices, indices } = triangulate(loop, []);
@@ -286,18 +309,43 @@ function ruledTool(loopA, loopB, pa, pb, u, v) {
       tris.push(flip ? [t[0], t[2], t[1]] : t);
     }
   };
-  // u × v points from pa to pb, so the start cap faces back and the end on.
-  cap(loopA, pa, true);
-  cap(loopB, pb, false);
-  for (let i = 0; i < n; i++) {
-    const j = (i + 1) % n;
-    const a0 = at(loopA, pa, i); const a1 = at(loopA, pa, j);
-    const b0 = at(loopB, pb, i); const b1 = at(loopB, pb, j);
-    tris.push([a0, a1, b1], [a0, b1, b0]);
+  // u × v points along the stations, so the first cap faces back and the last on.
+  cap(loops[0], at[0], true);
+  cap(loops[loops.length - 1], at[at.length - 1], false);
+  for (let s = 0; s + 1 < loops.length; s++) {
+    for (let i = 0; i < n; i++) {
+      const j = (i + 1) % n;
+      const a0 = pt(loops[s], at[s], i); const a1 = pt(loops[s], at[s], j);
+      const b0 = pt(loops[s + 1], at[s + 1], i); const b1 = pt(loops[s + 1], at[s + 1], j);
+      tris.push([a0, a1, b1], [a0, b1, b0]);
+    }
   }
   const positions = new Float32Array(tris.length * 9);
   tris.forEach((t, q) => t.forEach((p, m) => positions.set(p, q * 9 + m * 3)));
   return { positions, triangleCount: tris.length, format: 'extrude' };
+}
+
+/**
+ * A closed ring of sections (each a closed loop of 3D points, all the same
+ * count) joined loop to loop and round to the first: a solid with no ends.
+ * Wound outward whichever way the rings run.
+ */
+function ringSolid(rings) {
+  const n = rings.length;
+  const m = rings[0].length;
+  const tris = [];
+  for (let k = 0; k < n; k++) {
+    const A = rings[k]; const B = rings[(k + 1) % n];
+    for (let i = 0; i < m; i++) {
+      const j = (i + 1) % m;
+      tris.push([A[i], B[i], B[j]], [A[i], B[j], A[j]]);
+    }
+  }
+  let vol = 0;
+  for (const [a, b, c] of tris) vol += dot(a, cross(b, c));
+  const positions = new Float32Array(tris.length * 9);
+  tris.forEach((t, q) => (vol < 0 ? [t[0], t[2], t[1]] : t).forEach((p, mm) => positions.set(p, q * 9 + mm * 3)));
+  return { positions, triangleCount: tris.length, format: 'revolve' };
 }
 
 function lineTool(soup, ref, kind, size, sizeEnd = null) {
@@ -327,7 +375,7 @@ function lineTool(soup, ref, kind, size, sizeEnd = null) {
     if (!(ra > 0) || !(rb > 0)) throw new Error('a variable fillet needs both sizes greater than zero');
     const sec = (r) => treatmentSection({
       P: [0, 0], n1: to2(f.n1), n2: to2(f.n2), t1: to2(f.t1), t2: to2(f.t2),
-    }, kind, r).loop;
+    }, kind, r, Infinity, ARC_STEPS_VARIABLE).loop;
     return {
       solid: ruledTool(sec(ra), sec(rb), pa, pb, u, v), merge: convex ? 'cut' : 'add', frame: { ...f, convex },
     };
@@ -457,17 +505,19 @@ function findChain(welded, ref) {
  *
  * @returns {{solids:object[], merge:'cut'|'add'}[]}
  */
-function chainTools(soup, ref, kind, size) {
+function chainTools(soup, ref, kind, size, sizeEnd = null) {
   const welded = weld(soup);
   const { N, segs, closed } = findChain(welded, ref);
+  const big = sizeEnd != null ? Math.max(size, sizeEnd) : size;
 
   const sections = segs.map((sg) => {
     const u = N;
     const v = cross(sg.d, u);
     const to2 = (w) => [dot(w, u), dot(w, v)];
-    const sec = treatmentSection({
+    const at = (r) => treatmentSection({
       P: [0, 0], n1: to2(sg.n1), n2: to2(sg.n2), t1: to2(sg.t1), t2: to2(sg.t2),
-    }, kind, size);
+    }, kind, r, Infinity, sizeEnd != null ? ARC_STEPS_VARIABLE : null);
+    const sec = { ...at(big), at };
     let reach = 0;
     for (let i = 0; i < sec.loop.length; i += 2) reach = Math.max(reach, Math.hypot(sec.loop[i], sec.loop[i + 1]));
     return { ...sec, u, v, reach };
@@ -494,12 +544,41 @@ function chainTools(soup, ref, kind, size) {
   });
   const before = segs.map((_, i) => (!closed && i === 0 ? PAST_END : after[(i + n - 1) % n]));
 
+  // A variable size runs along the chain: from `size` at its start to `sizeEnd`
+  // at its end, or — round a closed chain, which has neither — from `size` at
+  // its first corner to `sizeEnd` half-way round and back (`varying`).
+  const lens = segs.map((sg) => len(sub(sg.b, sg.a)));
+  const total = lens.reduce((s, l) => s + l, 0);
+  const startAt = [];
+  lens.reduce((s, l, i) => { startAt[i] = s; return s + l; }, 0);
+  const sizeAt = (s) => varying(size, sizeEnd, s / total, closed);
   const groups = { cut: [], add: [] };
   segs.forEach((sg, i) => {
-    const { loop, u, v, convex } = sections[i];
+    const {
+      loop, u, v, convex,
+    } = sections[i];
+    const pa = sub(sg.a, scale(sg.d, before[i]));
+    if (sizeEnd != null && sizeEnd !== size) {
+      // Sections no further apart than a 64th of the run, so the size follows
+      // its curve rather than a straight line across a long edge.
+      const from = -before[i];
+      const to = lens[i] + after[i];
+      const k = Math.max(1, Math.ceil((to - from) / (total / 64)));
+      const loops = [];
+      const at = [];
+      for (let q = 0; q <= k; q++) {
+        const t = from + ((to - from) * q) / k;
+        const r = sizeAt(startAt[i] + t);
+        if (!(r > 0)) throw new Error('a variable fillet needs both sizes greater than zero');
+        loops.push(sections[i].at(r).loop);
+        at.push(add(sg.a, scale(sg.d, t)));
+      }
+      groups[convex ? 'cut' : 'add'].push(stationTool(loops, at, u, v));
+      return;
+    }
     groups[convex ? 'cut' : 'add'].push(extrudeRegion({ outer: loop }, {
-      plane: { origin: sub(sg.a, scale(sg.d, before[i])), u, v },
-      depth: len(sub(sg.b, sg.a)) + before[i] + after[i],
+      plane: { origin: pa, u, v },
+      depth: lens[i] + before[i] + after[i],
     }));
   });
   return Object.entries(groups)
@@ -625,7 +704,7 @@ function relocateCircle(soup, ref) {
   return best ? best.c : null;
 }
 
-function circleTool(soup, ref, kind, size) {
+function circleTool(soup, ref, kind, size, sizeEnd = null) {
   let f;
   try {
     f = circleEdgeFrame(soup, ref);
@@ -644,6 +723,30 @@ function circleTool(soup, ref, kind, size) {
     if (loop[i] <= 0) throw new Error(`a ${size} mm ${kind} does not fit a Ø${(2 * R).toFixed(2)} rim`);
   }
   const u = add(scale(f.e1, Math.cos(f.phase)), scale(f.e2, Math.sin(f.phase)));
+  if (sizeEnd != null && sizeEnd !== size) {
+    // Variable round the rim: the section is worked out afresh at every step,
+    // sized by `varying`, and the steps joined into one ring.
+    const steps = f.segments ?? 96;
+    const sec = (r) => treatmentSection({
+      P: [R, 0], n1: f.n1, n2: f.n2, t1: f.t1, t2: f.t2,
+    }, kind, r, R * 0.5, ARC_STEPS_VARIABLE).loop;
+    const w = cross(f.k, u);
+    const rings = [];
+    for (let k = 0; k < steps; k++) {
+      const th = (2 * Math.PI * k) / steps;
+      const r = varying(size, sizeEnd, k / steps, true);
+      if (!(r > 0)) throw new Error('a variable fillet needs both sizes greater than zero');
+      const l = sec(r);
+      for (let i = 0; i < l.length; i += 2) {
+        if (l[i] <= 0) throw new Error(`a ${Math.max(size, sizeEnd)} mm ${kind} does not fit a Ø${(2 * R).toFixed(2)} rim`);
+      }
+      const dir = add(scale(u, Math.cos(th)), scale(w, Math.sin(th)));
+      const ring = [];
+      for (let i = 0; i < l.length; i += 2) ring.push(add(add(ref.center, scale(dir, l[i])), scale(f.k, l[i + 1])));
+      rings.push(ring);
+    }
+    return { solid: ringSolid(rings), merge: convex ? 'cut' : 'add' };
+  }
   const solid = revolveRegion({ outer: loop }, {
     axis: 'y',
     plane: { origin: [...ref.center], u, v: f.k },
@@ -664,11 +767,11 @@ export function edgeTreatmentTools(soup, feature) {
   const out = [];
   const lines = [];
   const variable = feature.kind === 'fillet' && feature.sizeEnd != null && feature.sizeEnd !== feature.size;
+  const end = variable ? feature.sizeEnd : null;
   for (const ref of feature.edges) {
-    if (variable && ref.type !== 'line') throw new Error('a variable fillet works on straight edges — pick those, or one size for all');
-    if (ref.type === 'chain') { out.push(...chainTools(soup, ref, feature.kind, feature.size)); continue; }
+    if (ref.type === 'chain') { out.push(...chainTools(soup, ref, feature.kind, feature.size, end)); continue; }
     if (ref.type === 'circle') {
-      const { solid, merge } = circleTool(soup, ref, feature.kind, feature.size);
+      const { solid, merge } = circleTool(soup, ref, feature.kind, feature.size, end);
       out.push({ solids: [solid], merge });
       continue;
     }

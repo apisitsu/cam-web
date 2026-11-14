@@ -105,9 +105,6 @@ describe('applyEdgeTreatment — straight edges', () => {
     near(volume(out), 8000 - (1 - Math.PI / 4) * 40 * ((1 + 4 + 16) / 3), 0.5);
     expect(isClosed(out)).toBe(true);
     expect(openEdgeCount(out)).toBe(0);
-    expect(() => applyEdgeTreatment(part, {
-      kind: 'fillet', size: 1, sizeEnd: 4, edges: [{ type: 'circle', center: [0, 0, 10], normal: [0, 0, 1], r: 3 }],
-    }, meshBoolean)).toThrow(/straight edges/);
   });
 
   it('chamfers several edges of one block', () => {
@@ -150,6 +147,20 @@ describe('applyEdgeTreatment — round edges', () => {
     // A ring of triangle ½·1·1 at a mean radius of 5 + 1/3.
     near(before - volume(out), 0.5 * 2 * Math.PI * (5 + 1 / 3), 0.1);
     expect(openEdgeCount(out)).toBe(0);
+  });
+
+  it('fillets a rim with a size that varies round it', () => {
+    const boss = revolveRegion({ outer: [0, 0, 8, 0, 8, 10, 0, 10] }, { axis: 'y', segments: 64 });
+    const rim = { type: 'circle', axis: 1, center: [0, 10, 0], radius: 8 };
+    const removed = (o) => volume(boss) - volume(applyEdgeTreatment(boss, { kind: 'fillet', edges: [rim], ...o }, meshBoolean));
+    const one = removed({ size: 1 });
+    const three = removed({ size: 3 });
+    const out = applyEdgeTreatment(boss, { kind: 'fillet', size: 1, sizeEnd: 3, edges: [rim] }, meshBoolean);
+    const v = volume(boss) - volume(out);
+    expect(v).toBeGreaterThan(one);
+    expect(v).toBeLessThan(three);
+    expect(openEdgeCount(out)).toBe(0);
+    expect(isClosed(out)).toBe(true);
   });
 
   it('fillets the top of a boss', () => {
@@ -225,6 +236,24 @@ describe('chains — straight runs and arcs round a flat face', () => {
     const out = applyEdgeTreatment(part, { kind: 'chamfer', size: 1.5, edges: [ref] }, meshBoolean);
     // ½c² swept along the path of its centroid, c/3 in from the outline.
     near(volume(part) - volume(out), 0.5 * 1.5 ** 2 * (160 + 2 * Math.PI * (10 - 0.5)), 0.5);
+    expect(openEdgeCount(out)).toBe(0);
+    expect(analyzeMesh(out, weld(out)).warnings).toEqual([]);
+  });
+
+  it('fillets a closed run with a size that varies round it, smoothly', () => {
+    const part = roundedBlock();
+    const ref = pickTreatEdge(weld(part), [30, 0, 15], 0.5);
+    const removed = (o) => volume(part) - volume(applyEdgeTreatment(part, { kind: 'fillet', edges: [ref], ...o }, meshBoolean));
+    const one = removed({ size: 1 });
+    const three = removed({ size: 3 });
+    const out = applyEdgeTreatment(part, { kind: 'fillet', size: 1, sizeEnd: 3, edges: [ref] }, meshBoolean);
+    const v = volume(part) - volume(out);
+    // Removal goes as a·r² along the run less b·r³ round its arcs (the corner
+    // sits in from the outline there); a and b from one size each way. With
+    // r = 2 − cos(2πs/L) the means of r² and r³ are 4.5 and 11.
+    const bb = (9 * one - three) / 18;
+    const aa = one + bb;
+    near(v, aa * 4.5 - bb * 11, 1.5);
     expect(openEdgeCount(out)).toBe(0);
     expect(analyzeMesh(out, weld(out)).warnings).toEqual([]);
   });

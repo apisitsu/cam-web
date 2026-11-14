@@ -96,6 +96,20 @@ describe('applyEdgeTreatment — straight edges', () => {
     expect(openEdgeCount(out)).toBe(0);
   });
 
+  it('fillets an edge with a radius running from one size to another', () => {
+    const part = box(0, 0, 40, 20, 0, 10);
+    const out = applyEdgeTreatment(part, {
+      kind: 'fillet', size: 1, sizeEnd: 4, edges: [TOP_FRONT],
+    }, meshBoolean);
+    // ∫ (1 − π/4) r(s)² ds with r linear from 1 to 4 over 40 mm.
+    near(volume(out), 8000 - (1 - Math.PI / 4) * 40 * ((1 + 4 + 16) / 3), 0.5);
+    expect(isClosed(out)).toBe(true);
+    expect(openEdgeCount(out)).toBe(0);
+    expect(() => applyEdgeTreatment(part, {
+      kind: 'fillet', size: 1, sizeEnd: 4, edges: [{ type: 'circle', center: [0, 0, 10], normal: [0, 0, 1], r: 3 }],
+    }, meshBoolean)).toThrow(/straight edges/);
+  });
+
   it('chamfers several edges of one block', () => {
     const part = box(0, 0, 40, 20, 0, 10);
     const edges = [
@@ -295,6 +309,37 @@ describe('phase 8 — edits that move edges, ball corners, tilted rims', () => {
     }
     expect(least).toBeGreaterThan(3.6);
     expect(least).toBeLessThan(3.85);
+  });
+
+  it('rounds a corner that is not square into a ball as well', () => {
+    const r = 3;
+    // A slanted prism: the corner at the origin is 71.6° in plan.
+    const part = extrudeRegion({ outer: [0, 0, 40, 0, 50, 30, 10, 30] }, { depth: 20 });
+    const lines = [
+      { a: [0, 0, 0], b: [40, 0, 0] },
+      { a: [0, 0, 0], b: [10, 30, 0] },
+      { a: [0, 0, 0], b: [0, 0, 20] },
+    ];
+    const edges = lines.map((e) => pickTreatEdge(weld(part), e.a.map((v, i) => (v + e.b[i]) / 2), 0.5));
+    const out = applyEdgeTreatment(part, { kind: 'fillet', size: r, edges }, meshBoolean);
+    expect(analyzeMesh(out, weld(out)).warnings).toEqual([]);
+    // The ball: r in from the floor (z = 0), the front (y = 0) and the slanted
+    // side through the origin, whose outward normal is (−3, 1)/√10.
+    const C = [(r * (1 + Math.sqrt(10))) / 3, r, r];
+    const dirs = [[1, 0, 0], [1 / Math.sqrt(10), 3 / Math.sqrt(10), 0], [0, 0, 1]];
+    // What is left in the corner — short of the centre along every edge — is
+    // on or inside that ball.
+    let worst = 0;
+    let seen = 0;
+    for (let i = 0; i < out.positions.length; i += 3) {
+      const p = [out.positions[i], out.positions[i + 1], out.positions[i + 2]];
+      const d = p.map((v, k) => v - C[k]);
+      if (dirs.some((e) => d[0] * e[0] + d[1] * e[1] + d[2] * e[2] > -1e-6)) continue;
+      seen++;
+      worst = Math.max(worst, Math.hypot(...d) - r);
+    }
+    expect(seen).toBeGreaterThan(10);
+    expect(worst).toBeLessThan(0.05);
   });
 
   it('finds and chamfers a rim on a tilted face', () => {

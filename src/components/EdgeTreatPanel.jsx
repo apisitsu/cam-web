@@ -3,7 +3,9 @@
  * the viewport like Measure: the size, the edges clicked so far, OK and Cancel.
  */
 import { useEffect, useState } from 'react';
-import { Button, InputNumber, Typography } from 'antd';
+import {
+  Button, Checkbox, InputNumber, Typography,
+} from 'antd';
 import { CloseOutlined } from '@ant-design/icons';
 import { useEdgeTreatStore } from '../stores/edgeTreatStore.js';
 import { useFeatureStore } from '../stores/featureStore.js';
@@ -19,6 +21,8 @@ export default function EdgeTreatPanel({ sketching = true }) {
   const error = useEdgeTreatStore((s) => s.error);
   const editingId = useEdgeTreatStore((s) => s.editingId);
   const setSize = useEdgeTreatStore((s) => s.setSize);
+  const sizeEnd = useEdgeTreatStore((s) => s.sizeEnd);
+  const setSizeEnd = useEdgeTreatStore((s) => s.setSizeEnd);
   const removeEdge = useEdgeTreatStore((s) => s.removeEdge);
   const stop = useEdgeTreatStore((s) => s.stop);
   const [busy, setBusy] = useState(false);
@@ -67,6 +71,30 @@ export default function EdgeTreatPanel({ sketching = true }) {
         style={{ width: '100%', marginTop: 4 }}
         data-edge-treat-size
       />
+      {active === 'fillet' && (
+        <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginTop: 4 }}>
+          <Checkbox
+            checked={sizeEnd != null}
+            onChange={(e) => setSizeEnd(e.target.checked ? size : null)}
+            data-edge-treat-variable
+          >
+            <span style={{ fontSize: 11 }}>Variable</span>
+          </Checkbox>
+          {sizeEnd != null && (
+            <InputNumber
+              size="small"
+              min={0.01}
+              step={0.5}
+              value={sizeEnd}
+              onChange={(v) => { if (Number(v) > 0) setSizeEnd(Number(v)); }}
+              addonBefore="End"
+              addonAfter="mm"
+              style={{ flex: 1 }}
+              data-edge-treat-size-end
+            />
+          )}
+        </div>
+      )}
       <div style={{ marginTop: 6, maxHeight: 140, overflowY: 'auto' }}>
         {edges.map((e, i) => (
           <div key={`${i}-${describeEdgeRef(e)}`} style={{ display: 'flex', alignItems: 'center' }} data-edge-treat-edge>

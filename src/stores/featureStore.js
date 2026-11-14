@@ -471,7 +471,10 @@ export const useFeatureStore = create((set, get) => ({
    */
   async buildEdgeTreatment() {
     const pick = useEdgeTreatStore.getState();
-    const { active: kind, size, edges, editingId } = pick;
+    const {
+      active: kind, size, edges, editingId,
+    } = pick;
+    const sizeEnd = kind === 'fillet' ? pick.sizeEnd : null;
     if (!kind) return null;
     if (!edges.length) {
       pick.setError('Click the edges to treat first.');
@@ -481,12 +484,12 @@ export const useFeatureStore = create((set, get) => ({
     const snapshot = get().features;
     let feature;
     if (before) {
-      get().updateFeature(editingId, { size, edges });
+      get().updateFeature(editingId, { size, sizeEnd, edges });
       feature = before;
     } else {
       const n = get().features.filter((f) => f.kind === kind).length + 1;
       feature = get().addFeature(kind, {
-        size, edges, name: `${kind === 'fillet' ? 'Fillet' : 'Chamfer'}${n}`,
+        size, sizeEnd, edges, name: `${kind === 'fillet' ? 'Fillet' : 'Chamfer'}${n}`,
       });
     }
     const analysis = await get().rebuild();

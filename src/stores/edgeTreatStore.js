@@ -13,6 +13,7 @@ const DEFAULT_SIZE = { chamfer: 1, fillet: 2 };
 export const useEdgeTreatStore = create((set, get) => ({
   active: null,
   size: DEFAULT_SIZE.chamfer,
+  sizeEnd: null, // a fillet's size at each edge's far end when it varies, else null
   edges: [],
   editingId: null,
   hover: null,
@@ -23,6 +24,7 @@ export const useEdgeTreatStore = create((set, get) => ({
     set({
       active: kind,
       size: feature?.size ?? DEFAULT_SIZE[kind],
+      sizeEnd: feature?.sizeEnd ?? null,
       edges: feature?.edges ? [...feature.edges] : [],
       editingId: feature?.id ?? null,
       hover: null,
@@ -35,6 +37,7 @@ export const useEdgeTreatStore = create((set, get) => ({
     });
   },
   setSize(size) { set({ size }); },
+  setSizeEnd(sizeEnd) { set({ sizeEnd }); },
   setHover(hover) { set({ hover }); },
   setError(error) { set({ error }); },
 

@@ -187,6 +187,8 @@ export function createFeature(kind, props = {}) {
       ...base,
       merge: 'cut',
       size: positive(props.size, 1),
+      // A fillet's size at the far end of each edge, for one that varies; null keeps one size.
+      sizeEnd: kind === 'fillet' && Number.isFinite(props.sizeEnd) && props.sizeEnd > 0 ? props.sizeEnd : null,
       edges: (Array.isArray(props.edges) ? props.edges : []).map(parseEdgeRef).filter(Boolean),
     };
   }
@@ -670,7 +672,7 @@ export function describeFeature(f, sketchName) {
   if (f.kind === 'import') return 'Imported mesh';
   if (isEdgeTreatment(f)) {
     const n = f.edges.length;
-    const size = f.kind === 'fillet' ? `R${f.size}` : `${f.size} mm`;
+    const size = f.kind === 'fillet' ? (f.sizeEnd != null ? `R${f.size}→R${f.sizeEnd}` : `R${f.size}`) : `${f.size} mm`;
     return `${f.kind === 'fillet' ? 'Fillet' : 'Chamfer'} ${size} · ${n} edge${n === 1 ? '' : 's'}`;
   }
   if (f.kind === 'sweep') return `Sweep${sketchName ? ` · ${sketchName}` : ''}${f.merge === 'cut' ? ' · cut' : ''}`;

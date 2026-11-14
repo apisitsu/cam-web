@@ -34,6 +34,7 @@
  * Pure: plain arrays, no three.js.
  */
 import { extrudeRegion, revolveRegion } from './extrude.js';
+import { triangulate } from './triangulate.js';
 import { detectSharpEdges } from '../mesh/features.js';
 import { weld } from '../mesh/stl.js';
 import { edgeAtPoint, distanceSqToEdge } from '../mesh/pickEdge.js';
@@ -267,7 +268,39 @@ function relocateLine(soup, ref) {
   return null;
 }
 
-function lineTool(soup, ref, kind, size) {
+/**
+ * A tool whose section changes linearly along the edge: `loopA` at `pa`,
+ * `loopB` at `pb` (2D loops in the frame u, v, the same number of points),
+ * joined point to point. A fillet whose radius runs linearly is exactly this:
+ * its section's centre and every arc point move linearly with the radius.
+ */
+function ruledTool(loopA, loopB, pa, pb, u, v) {
+  const n = loopA.length / 2;
+  const at = (loop, o, i) => [0, 1, 2].map((k) => o[k] + loop[i * 2] * u[k] + loop[i * 2 + 1] * v[k]);
+  const tris = [];
+  const cap = (loop, o, flip) => {
+    const { vertices, indices } = triangulate(loop, []);
+    const V = (i) => [0, 1, 2].map((k) => o[k] + vertices[i * 2] * u[k] + vertices[i * 2 + 1] * v[k]);
+    for (let k = 0; k < indices.length; k += 3) {
+      const t = [V(indices[k]), V(indices[k + 1]), V(indices[k + 2])];
+      tris.push(flip ? [t[0], t[2], t[1]] : t);
+    }
+  };
+  // u × v points from pa to pb, so the start cap faces back and the end on.
+  cap(loopA, pa, true);
+  cap(loopB, pb, false);
+  for (let i = 0; i < n; i++) {
+    const j = (i + 1) % n;
+    const a0 = at(loopA, pa, i); const a1 = at(loopA, pa, j);
+    const b0 = at(loopB, pb, i); const b1 = at(loopB, pb, j);
+    tris.push([a0, a1, b1], [a0, b1, b0]);
+  }
+  const positions = new Float32Array(tris.length * 9);
+  tris.forEach((t, q) => t.forEach((p, m) => positions.set(p, q * 9 + m * 3)));
+  return { positions, triangleCount: tris.length, format: 'extrude' };
+}
+
+function lineTool(soup, ref, kind, size, sizeEnd = null) {
   let f;
   try {
     f = lineEdgeFrame(soup, ref);
@@ -283,6 +316,22 @@ function lineTool(soup, ref, kind, size) {
     P: [0, 0], n1: to2(f.n1), n2: to2(f.n2), t1: to2(f.t1), t2: to2(f.t2),
   }, kind, size);
   const L = len(sub(f.b, f.a));
+  if (sizeEnd != null && sizeEnd !== size) {
+    // Variable: the size runs from `size` at the edge's start to `sizeEnd` at
+    // its end, carried on past both ends at the same rate.
+    const start = len(sub(f.a, ref.a)) <= len(sub(f.b, ref.a)) ? f.a : f.b;
+    const sAt = (p) => size + ((sizeEnd - size) * (dot(sub(p, start), f.d) * (start === f.a ? 1 : -1))) / L;
+    const pa = sub(f.a, scale(f.d, PAST_END));
+    const pb = add(f.b, scale(f.d, PAST_END));
+    const ra = sAt(pa); const rb = sAt(pb);
+    if (!(ra > 0) || !(rb > 0)) throw new Error('a variable fillet needs both sizes greater than zero');
+    const sec = (r) => treatmentSection({
+      P: [0, 0], n1: to2(f.n1), n2: to2(f.n2), t1: to2(f.t1), t2: to2(f.t2),
+    }, kind, r).loop;
+    return {
+      solid: ruledTool(sec(ra), sec(rb), pa, pb, u, v), merge: convex ? 'cut' : 'add', frame: { ...f, convex },
+    };
+  }
   const solid = extrudeRegion({ outer: loop }, {
     plane: { origin: sub(f.a, scale(f.d, PAST_END)), u, v },
     depth: L + 2 * PAST_END,
@@ -614,30 +663,60 @@ export function edgeTreatmentTools(soup, feature) {
   if (!feature.edges?.length) throw new Error('no edges are picked');
   const out = [];
   const lines = [];
+  const variable = feature.kind === 'fillet' && feature.sizeEnd != null && feature.sizeEnd !== feature.size;
   for (const ref of feature.edges) {
+    if (variable && ref.type !== 'line') throw new Error('a variable fillet works on straight edges — pick those, or one size for all');
     if (ref.type === 'chain') { out.push(...chainTools(soup, ref, feature.kind, feature.size)); continue; }
     if (ref.type === 'circle') {
       const { solid, merge } = circleTool(soup, ref, feature.kind, feature.size);
       out.push({ solids: [solid], merge });
       continue;
     }
-    const { solid, merge, frame } = lineTool(soup, ref, feature.kind, feature.size);
+    const { solid, merge, frame } = lineTool(soup, ref, feature.kind, feature.size, variable ? feature.sizeEnd : null);
     out.push({ solids: [solid], merge });
     lines.push(frame);
   }
-  if (feature.kind === 'fillet') out.push(...ballCorners(lines, feature.size));
+  if (feature.kind === 'fillet' && !variable) out.push(...ballCorners(lines, feature.size));
   return out;
 }
 
 /** Points closer than this (mm) are one corner. */
 const CORNER_TOL = 1e-3;
 
+/** Solve the 3×3 system with rows `m` (each [x,y,z]) for right-hand side `r`. */
+function solve3(m, r) {
+  const det = dot(m[0], cross(m[1], m[2]));
+  if (Math.abs(det) < 1e-12) return null;
+  const c0 = cross(m[1], m[2]); const c1 = cross(m[2], m[0]); const c2 = cross(m[0], m[1]);
+  return [0, 1, 2].map((k) => (r[0] * c0[k] + r[1] * c1[k] + r[2] * c2[k]) / det);
+}
+
+/** A convex six-sided block from its eight corners, `v[i*4 + j*2 + k]` for the three pairs of opposite sides. */
+function hexBlock(v) {
+  const mid = scale(v.reduce((s, p) => add(s, p), [0, 0, 0]), 1 / 8);
+  const quads = [[0, 1, 3, 2], [4, 6, 7, 5], [0, 4, 5, 1], [2, 3, 7, 6], [0, 2, 6, 4], [1, 5, 7, 3]];
+  const tris = [];
+  for (const q of quads) {
+    for (const t of [[q[0], q[1], q[2]], [q[0], q[2], q[3]]]) {
+      const [A, B, C] = t.map((i) => v[i]);
+      const n = cross(sub(B, A), sub(C, A));
+      tris.push(dot(n, sub(A, mid)) < 0 ? [A, C, B] : [A, B, C]);
+    }
+  }
+  const positions = new Float32Array(tris.length * 9);
+  tris.forEach((t, q) => t.forEach((p, m) => positions.set(p, q * 9 + m * 3)));
+  return { positions, triangleCount: tris.length, format: 'extrude' };
+}
+
 /**
- * Where three filleted straight edges meet square at an outside corner — the
- * corner of a block — the three round faces are joined by a ball, as a rolling
- * ball would leave it: the corner's cube of side r, less the ball of radius r
- * sitting in it, is cut away after the edges. Corners that are not three square
- * edges keep the edges' own meeting.
+ * Where three filleted straight edges meet at an outside corner, the three
+ * round faces are joined by a ball, as a rolling ball would leave it. The ball
+ * sits a radius in from all three faces; it meets each edge's round face along
+ * the circle in the plane through its centre square to that edge. So the
+ * material cut is the corner block — bounded by the three faces and those
+ * three planes — less the ball. Any angles, not only a block's square corner.
+ * Corners where the edges do not all run outward from one point keep the
+ * edges' own meeting.
  *
  * @returns {{corner:{cube:object, ball:object}}[]}
  */
@@ -658,20 +737,44 @@ function ballCorners(frames, r) {
     }
     if (at.length !== 3) continue;
     const [a, b, c] = at.map((k) => ends[k].e);
-    if (Math.abs(dot(a, b)) > 1e-3 || Math.abs(dot(b, c)) > 1e-3 || Math.abs(dot(a, c)) > 1e-3) continue;
-    at.forEach((k) => used.add(k));
+    // The three faces, each holding two of the edges, normals pointing out
+    // (away from the third edge).
+    const face = (u, w, away) => {
+      const n = unit(cross(u, w));
+      return dot(n, away) > 0 ? scale(n, -1) : n;
+    };
+    const nAB = face(a, b, c); const nAC = face(a, c, b); const nBC = face(b, c, a);
+    if (Math.abs(dot(a, cross(b, c))) < 0.05) continue; // the edges nearly in one plane
     const P = ends[i].p;
+    // Ball centre: a radius in from all three faces.
+    const off = solve3([nAB, nAC, nBC], [-r, -r, -r]);
+    if (!off) continue;
+    const C = add(P, off);
+    // It must lie between the edges, ahead of the corner along each.
+    if (dot(off, a) <= 0 || dot(off, b) <= 0 || dot(off, c) <= 0) continue;
+    at.forEach((k) => used.add(k));
     const eps = Math.min(0.05, r * 0.1);
-    // The cube: on the corner's own three edges, a hair out past each face.
-    const n = cross(a, b);
-    const up = dot(n, c) > 0 ? 1 : -1;
-    const cube = extrudeRegion({ outer: [-eps, -eps, r, -eps, r, r, -eps, r] }, {
-      plane: { origin: P, u: a, v: b },
-      depth: up * (r + eps),
-      base: up * -eps,
-    });
-    // The ball: a half disc turned about the axis through its centre.
-    const C = add(P, scale(add(add(a, b), c), r));
+    // Planes as [n, d] with n·X ≤ d inside. Each pair: the face away from an
+    // edge's direction, and the plane square to that edge through the centre.
+    const pairs = [
+      [[nBC, dot(nBC, P) + eps], [a, dot(a, C)]],
+      [[nAC, dot(nAC, P) + eps], [b, dot(b, C)]],
+      [[nAB, dot(nAB, P) + eps], [c, dot(c, C)]],
+    ];
+    const v = [];
+    let ok = true;
+    for (let x = 0; x < 2 && ok; x++) {
+      for (let y = 0; y < 2 && ok; y++) {
+        for (let z = 0; z < 2 && ok; z++) {
+          const [p0, p1, p2] = [pairs[0][x], pairs[1][y], pairs[2][z]];
+          const q = solve3([p0[0], p1[0], p2[0]], [p0[1], p1[1], p2[1]]);
+          if (!q) ok = false; else v[x * 4 + y * 2 + z] = q;
+        }
+      }
+    }
+    if (!ok) continue;
+    const cube = hexBlock(v);
+    // The ball: a half disc turned about an axis through its centre.
     const half = [];
     const steps = 24;
     for (let k = 0; k <= steps; k++) {
@@ -679,7 +782,7 @@ function ballCorners(frames, r) {
       half.push(r * Math.cos(t), r * Math.sin(t));
     }
     const ball = revolveRegion({ outer: half }, {
-      axis: 'y', plane: { origin: C, u: a, v: c }, segments: 48,
+      axis: 'y', plane: { origin: C, u: a, v: unit(cross(a, b)) }, segments: 48,
     });
     out.push({ corner: { cube, ball } });
   }

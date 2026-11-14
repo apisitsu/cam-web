@@ -205,16 +205,16 @@ export async function exportSketchDxf() {
 
 /** The part as built or imported, and the name to save it under. */
 function partToExport() {
-  const { welded } = getRawMesh();
+  const { welded, cad } = getRawMesh();
   if (!welded?.triangleCount) throw new Error('There is no part to export yet — build or open one first.');
   const base = (useCamStore.getState().fileName || 'part').replace(/\.[^.\\/]*$/, '') || 'part';
-  return { welded, base };
+  return { welded, base, surfaces: cad?.surfaces || [] };
 }
 
-/** Save the part as a STEP solid (faceted: flat faces, straight edges). */
+/** Save the part as a STEP solid: flat, cylindrical and conical faces, and the tori and spheres fillets made. */
 export async function exportPartStep() {
-  const { welded, base } = partToExport();
-  return saveTextFile(`${base}.step`, meshToStep(welded, { name: base }), {
+  const { welded, base, surfaces } = partToExport();
+  return saveTextFile(`${base}.step`, meshToStep(welded, { name: base, surfaces }), {
     description: 'STEP model',
     accept: { 'application/step': ['.step', '.stp'] },
   });

@@ -564,7 +564,7 @@ export const useFeatureStore = create((set, get) => ({
         }
       }
       const {
-        soup, steps, errors, planes, holes,
+        soup, steps, errors, planes, holes, surfaces,
       } = rebuildFeatures(features, {
         sketchOf: (id) => {
           const entry = sketch.sketches.find((s) => s.id === id);
@@ -589,7 +589,7 @@ export const useFeatureStore = create((set, get) => ({
       const analysis = await useCamPlanStore.getState().loadSoup(soup, name, {
         keepDatum: true,
         keepPage: true,
-        cad: { holes },
+        cad: { holes, surfaces },
       });
       // Dimensions taken to the part's edges: a sketch they moved may be what a
       // later feature is built from, and that feature was just built from it as

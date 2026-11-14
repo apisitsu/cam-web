@@ -111,6 +111,7 @@ export function treatmentSection({
 
   let A;
   let B;
+  let C = null;
   const arc = [];
   if (kind === 'chamfer') {
     A = add(P, scale(t1, size));
@@ -119,7 +120,7 @@ export function treatmentSection({
     const L = size / Math.tan(phi / 2);
     A = add(P, scale(t1, L));
     B = add(P, scale(t2, L));
-    const C = add(P, scale(unit(add(t1, t2)), size / Math.sin(phi / 2)));
+    C = add(P, scale(unit(add(t1, t2)), size / Math.sin(phi / 2)));
     const a0 = Math.atan2(A[1] - C[1], A[0] - C[0]);
     let a1 = Math.atan2(B[1] - C[1], B[0] - C[0]);
     // The short way round, which is the side facing the corner.
@@ -150,7 +151,10 @@ export function treatmentSection({
     area += x0 * y1 - x1 * y0;
   }
   if (area < 0) pts.reverse();
-  return { loop: pts.flat(), convex };
+  // `centre` and `ends`: a fillet's arc, for the round surface it leaves.
+  return {
+    loop: pts.flat(), convex, centre: C, ends: C ? [A, B] : null,
+  };
 }
 
 // ---------------------------------------------------------------------------
@@ -716,7 +720,9 @@ function circleTool(soup, ref, kind, size, sizeEnd = null) {
     f = circleEdgeFrame(soup, ref);
   }
   const R = f.radius;
-  const { loop, convex } = treatmentSection({
+  const {
+    loop, convex, centre: C2, ends,
+  } = treatmentSection({
     P: [R, 0], n1: f.n1, n2: f.n2, t1: f.t1, t2: f.t2,
   }, kind, size, R * 0.5);
   for (let i = 0; i < loop.length; i += 2) {
@@ -752,7 +758,21 @@ function circleTool(soup, ref, kind, size, sizeEnd = null) {
     plane: { origin: [...ref.center], u, v: f.k },
     segments: f.segments ?? undefined,
   });
-  return { solid, merge: convex ? 'cut' : 'add' };
+  // The round face a rim fillet leaves is a torus about the rim's axis: its
+  // tube runs round the fillet arc's centre.
+  // Its tube angle (about the arc's centre, from the radial out towards the
+  // axis direction) runs over the arc, `from` and on by `sweep`.
+  let surface = null;
+  if (kind === 'fillet' && C2) {
+    const ang = (p) => Math.atan2(p[1] - C2[1], p[0] - C2[0]);
+    let sweep = ang(ends[1]) - ang(ends[0]);
+    while (sweep > Math.PI) sweep -= 2 * Math.PI;
+    while (sweep < -Math.PI) sweep += 2 * Math.PI;
+    surface = {
+      kind: 'torus', centre: add(ref.center, scale(f.k, C2[1])), axis: f.k, R: C2[0], r: size, from: ang(ends[0]), sweep,
+    };
+  }
+  return { solid, merge: convex ? 'cut' : 'add', surface };
 }
 
 /**
@@ -771,8 +791,8 @@ export function edgeTreatmentTools(soup, feature) {
   for (const ref of feature.edges) {
     if (ref.type === 'chain') { out.push(...chainTools(soup, ref, feature.kind, feature.size, end)); continue; }
     if (ref.type === 'circle') {
-      const { solid, merge } = circleTool(soup, ref, feature.kind, feature.size, end);
-      out.push({ solids: [solid], merge });
+      const { solid, merge, surface } = circleTool(soup, ref, feature.kind, feature.size, end);
+      out.push({ solids: [solid], merge, surface });
       continue;
     }
     const { solid, merge, frame } = lineTool(soup, ref, feature.kind, feature.size, variable ? feature.sizeEnd : null);
@@ -887,7 +907,8 @@ function ballCorners(frames, r) {
     const ball = revolveRegion({ outer: half }, {
       axis: 'y', plane: { origin: C, u: a, v: unit(cross(a, b)) }, segments: 48,
     });
-    out.push({ corner: { cube, ball } });
+    // The ball's face is the part of it short of the centre along every edge.
+    out.push({ corner: { cube, ball }, surface: { kind: 'sphere', centre: C, r, inside: [a, b, c] } });
   }
   return out;
 }
@@ -900,7 +921,9 @@ function ballCorners(frames, r) {
 export function applyEdgeTreatment(soup, feature, meshBoolean) {
   if (!meshBoolean) throw new Error('no solid boolean is available to cut the part with');
   let out = soup;
-  for (const entry of edgeTreatmentTools(soup, feature)) {
+  const tools = edgeTreatmentTools(soup, feature);
+  const surfaces = tools.map((t) => t.surface).filter(Boolean);
+  for (const entry of tools) {
     if (entry.corner) {
       const shell = meshBoolean(entry.corner.cube, entry.corner.ball, 'cut', feature.kind);
       out = meshBoolean(out, shell, 'cut', feature.kind);
@@ -911,7 +934,8 @@ export function applyEdgeTreatment(soup, feature, meshBoolean) {
     if (once) { out = once; continue; }
     for (const tool of solids) out = meshBoolean(out, tool, merge, feature.kind);
   }
-  return out;
+  // What the round faces are, for an export that writes them as such.
+  return surfaces.length ? Object.assign(out, { surfaces }) : out;
 }
 
 // ---------------------------------------------------------------------------

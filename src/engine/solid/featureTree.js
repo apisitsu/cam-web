@@ -46,7 +46,9 @@
 import { sketchRegions } from '../sketch/loops.js';
 import { combineRegions } from './regionBoolean.js';
 import { buildSolid, mergeSoups } from './extrude.js';
-import { resolvePlaneRef, lineFrame, planeBasis } from '../sketch/plane.js';
+import {
+  resolvePlaneRef, lineFrame, planeBasis, planeToWorld,
+} from '../sketch/plane.js';
 import { centerlines } from '../sketch/model.js';
 import {
   HOLE_TYPES, THREADS, holeSolid, holePositions, holeRecords,
@@ -351,7 +353,35 @@ function makeFeatureSolid(feature, {
   if (feature.kind === 'revolve' && feature.axisLine != null) {
     return revolveAboutLine(regions, entry.doc, feature.axisLine, shape);
   }
-  return buildSolid(regions, shape);
+  const solid = buildSolid(regions, shape);
+  if (feature.kind === 'extrude' && !feature.draft) {
+    const surfaces = extrudedCylinders(entry.doc, plane, span);
+    if (surfaces.length) solid.surfaces = surfaces;
+  }
+  return solid;
+}
+
+/**
+ * The cylinders a straight extrude makes of its sketch's circles and arcs —
+ * what they are, for an export that writes them as such (`step.js` gathers
+ * each one's face from the facets lying on it).
+ */
+function extrudedCylinders(doc, plane, span) {
+  const { n } = planeBasis(plane);
+  const out = [];
+  for (const e of doc.entities.values()) {
+    if ((e.type !== 'circle' && e.type !== 'arc') || e.construction || !(e.r > 0)) continue;
+    const c = doc.entities.get(e.center);
+    if (!c) continue;
+    const at = (h) => {
+      const p = planeToWorld(plane, c.x, c.y);
+      return [p[0] + n[0] * h, p[1] + n[1] * h, p[2] + n[2] * h];
+    };
+    out.push({
+      kind: 'cylinder', axis: n, a: { centre: at(span.base), r: e.r }, b: { centre: at(span.base + span.depth), r: e.r },
+    });
+  }
+  return out;
 }
 
 /** A sketch for a sweep or loft, on the plane it sits on now. */
@@ -496,6 +526,8 @@ export function rebuildFeatures(features, ctx = {}, { keepIntermediates = false 
   const planes = new Map();
   const used = new Set(); // sketches a feature was actually built from
   const fctx = { ...ctx, refBounds, planes, used };
+  // The round faces fillets leave (tori, spheres), for the STEP export.
+  const surfaces = [];
   let holes = [];
   // Each built feature's own solid and how it joined, for a pattern to copy.
   const solids = new Map();
@@ -520,6 +552,7 @@ export function rebuildFeatures(features, ctx = {}, { keepIntermediates = false 
       if (!current) { fail(f, `a ${f.kind} needs a part to work on`); continue; }
       try {
         current = applyEdgeTreatment(current, f, meshBoolean);
+        if (current.surfaces) surfaces.push(...current.surfaces);
       } catch (e) {
         fail(f, e?.message || String(e));
         continue;
@@ -567,6 +600,7 @@ export function rebuildFeatures(features, ctx = {}, { keepIntermediates = false 
     try {
       // What Through All has to get through: the part as it stands before this.
       made = makeFeatureSolid(f, { ...fctx, partBounds: current ? boundsOf(current) : null });
+      if (made?.surfaces) surfaces.push(...made.surfaces);
     } catch (e) {
       fail(f, e?.message || String(e));
       continue;
@@ -619,7 +653,7 @@ export function rebuildFeatures(features, ctx = {}, { keepIntermediates = false 
   }
 
   return {
-    soup: current, steps, errors, planes, holes,
+    soup: current, steps, errors, planes, holes, surfaces,
   };
 }
 

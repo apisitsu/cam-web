@@ -82,6 +82,28 @@ describe('STEP export', () => {
     expect(semi).toBeCloseTo(Math.atan(5 / 20), 4);
   });
 
+  it('writes a filleted rim as two halves of a true torus, from what the fillet recorded', async () => {
+    const { meshBoolean, loadMeshBoolean } = await import('../../lib/csg.js');
+    const { applyEdgeTreatment } = await import('../solid/edgeTreat.js');
+    const { revolveRegion } = await import('../solid/extrude.js');
+    await loadMeshBoolean();
+    const boss = revolveRegion({ outer: [0, 0, 8, 0, 8, 10, 0, 10] }, { axis: 'y', segments: 64 });
+    const out = applyEdgeTreatment(boss, {
+      kind: 'fillet', size: 2, edges: [{ type: 'circle', axis: 1, center: [0, 10, 0], radius: 8 }],
+    }, meshBoolean);
+    expect(out.surfaces).toHaveLength(1);
+    expect(out.surfaces[0].kind).toBe('torus');
+    expect(out.surfaces[0].R).toBeCloseTo(6, 6);
+    expect(out.surfaces[0].r).toBe(2);
+    const ents = entities(meshToStep(weld(out), { surfaces: out.surfaces }));
+    expect(closedShell(ents)).toBe(true);
+    expect(count(ents, 'TOROIDAL_SURFACE')).toBe(2);
+    expect(count(ents, 'CYLINDRICAL_SURFACE')).toBe(2);
+    expect(count(ents, 'ADVANCED_FACE')).toBe(6);
+    // Without what the fillet recorded it is written flat, still closed.
+    expect(closedShell(entities(meshToStep(weld(out))))).toBe(true);
+  }, 60000);
+
   it('writes reals the way STEP reads them', () => {
     expect(stepReal(0)).toBe('0.');
     expect(stepReal(12)).toBe('12.');

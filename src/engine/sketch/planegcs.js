@@ -11,7 +11,25 @@
  */
 import { make_gcs_wrapper, Algorithm, SolveStatus } from '@salusoft89/planegcs';
 
+import { splineJoint } from './curves.js';
+
 const sid = (id) => String(id);
+
+/**
+ * An ellipse as planegcs holds it: centre, one focus and the minor radius, with
+ * the model's major-axis end point held at the end of the axis the focus is on.
+ * `null` for one with no proper major axis (round, or its minor radius the
+ * longer), which the solver is then not given.
+ */
+function ellipseFocus(sk, e) {
+  const c = sk.entities.get(e.center);
+  const m = sk.entities.get(e.major);
+  if (!c || !m || !(e.rb > 0)) return null;
+  const ra = Math.hypot(m.x - c.x, m.y - c.y);
+  if (!(ra > e.rb * (1 + 1e-9))) return null;
+  const f = Math.sqrt(ra * ra - e.rb * e.rb) / ra;
+  return { x: c.x + (m.x - c.x) * f, y: c.y + (m.y - c.y) * f };
+}
 
 /**
  * Convert a sketch document to an ordered planegcs primitive list: all points
@@ -43,8 +61,22 @@ export function toPlanegcs(sk) {
         end_angle: Math.atan2(en.y - c.y, en.x - c.x),
       });
       prims.push({ id: `arc_rules_${e.id}`, type: 'arc_rules', a_id: sid(e.id) });
+    } else if (e.type === 'ellipse') {
+      const f = ellipseFocus(sk, e);
+      if (f) {
+        prims.push({ id: `f${e.id}`, type: 'point', x: f.x, y: f.y, fixed: false });
+        prims.push({ id: sid(e.id), type: 'ellipse', c_id: sid(e.center), focus1_id: `f${e.id}`, radmin: e.rb });
+        // The major-axis end: on the ellipse, on the line through the centre
+        // and the focus — so the end of the axis the focus is on.
+        prims.push({ id: `ea${e.id}`, type: 'point_on_line_ppp', p_id: `f${e.id}`, lp1_id: sid(e.center), lp2_id: sid(e.major) });
+        prims.push({ id: `eb${e.id}`, type: 'point_on_ellipse', p_id: sid(e.major), e_id: sid(e.id) });
+      }
     }
   }
+  const solvedEllipse = (id) => {
+    const e = sk.entities.get(id);
+    return e?.type === 'ellipse' && ellipseFocus(sk, e) != null;
+  };
   let n = 0;
   const cid = () => `k${n++}`;
   for (const c of sk.constraints) {
@@ -165,7 +197,34 @@ export function toPlanegcs(sk) {
         prims.push({ id: cid(), type: 'tangent_aa', a1_id: a, a2_id: b });
         break;
       case 'ellipseMinor':
-        break; // not the solver's: `syncCurves` applies it
+        // A round ellipse is not the solver's: `syncCurves` applies it then.
+        if (solvedEllipse(c.refs[0])) {
+          prims.push({
+            id: cid(), type: 'equal', param1: { o_id: a, prop: 'radmin' }, param2: c.value, driving,
+          });
+        }
+        break;
+      case 'tangentEllipse':
+        if (solvedEllipse(c.refs[1])) prims.push({ id: cid(), type: 'tangent_le', l_id: a, e_id: b });
+        break;
+      case 'tangentSpline': {
+        // At the spline's drawn end it leaves straight for the point next to it,
+        // so tangency is that point on the other's tangent there.
+        const j = splineJoint(sk, c.refs[0], c.refs[1]);
+        const other = sk.entities.get(c.refs[0]);
+        if (!j) break;
+        if (other.type === 'line') {
+          prims.push({ id: cid(), type: 'point_on_line_pl', p_id: sid(j.n), l_id: a });
+        } else if (other.type === 'arc') {
+          prims.push({
+            id: cid(), type: 'perpendicular_pppp',
+            l1p1_id: sid(j.center), l1p2_id: sid(j.end), l2p1_id: sid(j.s), l2p2_id: sid(j.n),
+          });
+        } else {
+          prims.push({ id: cid(), type: 'point_on_line_ppp', p_id: sid(j.s), lp1_id: sid(j.n), lp2_id: sid(j.nb) });
+        }
+        break;
+      }
       default:
         throw new Error(`no planegcs mapping for constraint ${c.kind}`);
     }
@@ -203,6 +262,9 @@ export async function createSolver({ wasmPath } = {}) {
           e.r = gcs.sketch_index.get_sketch_circle(sid(e.id)).radius;
         } else if (e.type === 'arc') {
           e.r = gcs.sketch_index.get_sketch_arc(sid(e.id)).radius;
+        } else if (e.type === 'ellipse') {
+          const el = gcs.sketch_index.get_primitive(sid(e.id));
+          if (el) e.rb = el.radmin;
         }
       }
       return {

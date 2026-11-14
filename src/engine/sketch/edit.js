@@ -1093,7 +1093,7 @@ function segIntersect(a, b, c, d) {
 }
 
 /** Drop a point only if nothing references it and it is not the origin/fixed. */
-function removeIfOrphan(sk, pointId) {
+export function removeIfOrphan(sk, pointId) {
   const p = sk.entities.get(pointId);
   if (!p || p.type !== 'point' || p.origin || p.fixed) return;
   if (dependents(sk, pointId).length === 0) deleteEntity(sk, pointId);

@@ -16,7 +16,7 @@ import { describe, it, expect } from 'vitest';
 import {
   // eslint-disable-next-line no-unused-vars
   createSketch, addPoint, addLine, addLineXY, addCircle, addCircleXY, addArc,
-  addConstraint, CONSTRAINT_KINDS, addEllipse,
+  addConstraint, CONSTRAINT_KINDS, addEllipse, addSpline,
 } from './model.js';
 import { toPlanegcs } from './planegcs.js';
 
@@ -268,6 +268,7 @@ describe('toPlanegcs — constraints', () => {
           circle: [r.c1, r.c2],
           arc: [r.arc, r.arc2],
           ellipse: [addEllipse(r.sk, r.p1, r.p2, 1)],
+          spline: [addSpline(r.sk, [r.p1, r.p2, r.p3])],
         }[type];
         const pick = pool.find((id) => !used.has(id)) ?? sample(r, type) ?? pool[i % pool.length];
         used.add(pick);

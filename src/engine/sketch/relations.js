@@ -9,6 +9,8 @@
  * first one picked), and the store applies them together as one undo step.
  */
 
+import { splineJoint } from './curves.js';
+
 const chain = (kind, ids) => ids.slice(1).map((id) => [kind, [ids[0], id]]);
 
 export function relationsFor(sk, selection) {
@@ -65,6 +67,18 @@ export function relationsFor(sk, selection) {
   if (n === 2 && lines.length === 1 && curves.length === 1) {
     const arc = sk.entities.get(curves[0]).type === 'arc';
     add('tangent', 'Tangent', [[arc ? 'tangentArc' : 'tangent', [lines[0], curves[0]]]]);
+  }
+
+  // Curves: a line touching an ellipse; anything running into a spline's end.
+  const ellipses = of('ellipse');
+  const splines = of('spline');
+  if (n === 2 && lines.length === 1 && ellipses.length === 1) {
+    add('tangent', 'Tangent', [['tangentEllipse', [lines[0], ellipses[0]]]]);
+  }
+  if (n === 2 && splines.length >= 1) {
+    const sp = splines[splines.length - 1];
+    const other = selection.find((id) => id !== sp);
+    if (other != null && splineJoint(sk, other, sp)) add('tangent', 'Tangent', [['tangentSpline', [other, sp]]]);
   }
 
   if (n === 3 && points.length === 2 && lines.length === 1) {

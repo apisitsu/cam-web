@@ -36,7 +36,7 @@ export const ENTITY_KINDS = {
   arc: { refs: 3, refTypes: ['point', 'point', 'point'], ownParams: 3 },
   // Drawn through solver points; only the minor radius is the ellipse's own
   // (and is not solved). A spline has as many points as were clicked.
-  ellipse: { refs: 2, refTypes: ['point', 'point'], ownParams: 0 },
+  ellipse: { refs: 2, refTypes: ['point', 'point'], ownParams: 1 },
   spline: { refs: null, ownParams: 0 },
 };
 
@@ -71,9 +71,12 @@ export const CONSTRAINT_KINDS = {
   radius: { refTypes: ['circle'], value: true, dof: 1 },
   arcRadius: { refTypes: ['arc'], value: true, dof: 1 }, // radius of a partial arc
   diameter: { refTypes: ['circle'], value: true, dof: 1 }, // Ø of a circle (SW default dim)
-  // An ellipse's minor radius. Not a solver unknown (the ellipse's points are),
-  // so it removes none: `syncCurves` sets the radius to it after every edit.
-  ellipseMinor: { refTypes: ['ellipse'], value: true, dof: 0 },
+  // An ellipse's minor radius (a solver unknown, as a circle's radius is).
+  ellipseMinor: { refTypes: ['ellipse'], value: true, dof: 1 },
+  // A line touching an ellipse.
+  tangentEllipse: { refTypes: ['line', 'ellipse'], value: false, dof: 1 },
+  // A line, arc or spline running smoothly into a spline at one of its ends.
+  tangentSpline: { refTypes: [['line', 'arc', 'spline'], 'spline'], value: false, dof: 1 },
   // Equal radius between two circles/arcs (any mix). A ref position accepting more
   // than one entity type is written as an array of allowed types.
   equalRadius: { refTypes: [['circle', 'arc'], ['circle', 'arc']], value: false, dof: 1 },

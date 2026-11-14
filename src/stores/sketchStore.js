@@ -26,7 +26,7 @@ import {
   deleteEntity, removeConstraint, chamfer as chamferEdit, fillet as filletEdit,
   filletLineArc as filletLineArcEdit, filletArcArc as filletArcArcEdit,
   filletCircleCircle as filletCircleCircleEdit, linesShareCorner,
-  trimLine, trimCircle, trimArc, trimCurve, mirror as mirrorEdit, sketchAxisLine, patternSeeds, seedPolar, offsetChain,
+  trimLine, trimCircle, trimArc, trimCurve, removeIfOrphan, mirror as mirrorEdit, sketchAxisLine, patternSeeds, seedPolar, offsetChain,
   distancePointToLine, farEndpointFromLine, nearestRimPoint, nearestTangent,
   nearestIntersection, nearestQuadrant, nearestMidpoint, entitiesInBox, angleGuide,
   measureConstraint, lineArcMeet, arcArcMeet, angleSpec, interiorAngleToModel,
@@ -905,7 +905,18 @@ export const useSketchStore = create((set, get) => ({
         const rb = axisDistance(x, y, c, m);
         if (rb > 1e-6) {
           get()._snapshot();
-          addEllipse(sk, pending, pending2, rb);
+          const ra = Math.hypot(m.x - c.x, m.y - c.y);
+          if (rb > ra) {
+            // The third click went further out than the second: that one is the
+            // major axis. Its end point goes where the click's side of it is.
+            const ux = (m.x - c.x) / ra; const uy = (m.y - c.y) / ra;
+            const side = Math.sign((x - c.x) * -uy + (y - c.y) * ux) || 1;
+            const major = addPoint(sk, c.x - uy * rb * side, c.y + ux * rb * side);
+            addEllipse(sk, pending, major, ra);
+            removeIfOrphan(sk, pending2);
+          } else {
+            addEllipse(sk, pending, pending2, rb);
+          }
         } else {
           set({ error: 'The third click sets the minor radius — click off the major axis.' });
         }

@@ -463,3 +463,42 @@ export function hitTestCurve(sk, x, y, tol = 1e-6) {
   }
   return best;
 }
+
+/**
+ * Where a spline meets what it is to be tangent to, at one of its own drawn
+ * ends: `{ s, n, end, nb, center }` — the spline's end point `s` and the point
+ * next to it `n` (the spline leaves `s` straight towards `n`, so tangency there
+ * is `n` on the other's tangent), the other's end `end` that meets `s`, and for
+ * a spline `nb` (its point next to `end`) or for an arc its `center`. Null when
+ * no drawn end of the spline touches an end of the other (a trimmed end is not
+ * a drawn one: the curve does not leave it towards a point).
+ */
+export function splineJoint(sk, otherId, splineId, tol = 1e-4) {
+  const E = (id) => sk.entities.get(id);
+  const sp = E(splineId);
+  const o = E(otherId);
+  if (!sp || sp.type !== 'spline' || sp.closed || !o || otherId === splineId) return null;
+  const drawnEnds = (e) => {
+    const n = e.pts.length;
+    const out = [];
+    if (!e.range || e.range[0] <= 1e-12) out.push({ s: e.pts[0], n: e.pts[1] });
+    if (!e.range || e.range[1] >= n - 1 - 1e-12) out.push({ s: e.pts[n - 1], n: e.pts[n - 2] });
+    return out;
+  };
+  let others;
+  if (o.type === 'line') others = [{ end: o.p1 }, { end: o.p2 }];
+  else if (o.type === 'arc') others = [{ end: o.start, center: o.center }, { end: o.end, center: o.center }];
+  else if (o.type === 'spline' && !o.closed) others = drawnEnds(o).map((d) => ({ end: d.s, nb: d.n }));
+  else return null;
+  let best = null;
+  let bestD = tol;
+  for (const a of drawnEnds(sp)) {
+    for (const b of others) {
+      const p = E(a.s); const q = E(b.end);
+      if (!p || !q) continue;
+      const d = a.s === b.end ? 0 : Math.hypot(p.x - q.x, p.y - q.y);
+      if (d <= bestD) { bestD = d; best = { ...a, ...b }; }
+    }
+  }
+  return best;
+}

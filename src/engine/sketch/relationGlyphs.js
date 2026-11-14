@@ -13,6 +13,8 @@
  * one, and drawing them would bury the sketch.
  */
 
+import { isCurve, curveOf } from './curves.js';
+
 const SYMBOL = {
   horizontal: '—',
   vertical: '|',
@@ -24,6 +26,8 @@ const SYMBOL = {
   tangent: 'T',
   tangentArc: 'T',
   tangentArcArc: 'T',
+  tangentEllipse: 'T',
+  tangentSpline: 'T',
   midpoint: 'M',
   symmetric: '><',
   concentric: '◎',
@@ -44,6 +48,11 @@ export function relationGlyphs(sk) {
     if (e.type === 'line') {
       const a = E(e.p1); const b = E(e.p2);
       return a && b ? [(a.x + b.x) / 2, (a.y + b.y) / 2] : null;
+    }
+    if (isCurve(e)) {
+      const c = curveOf(sk, e);
+      const k = c ? Math.floor(c.points.length / 4) * 2 : 0;
+      return c ? [c.points[k], c.points[k + 1]] : null;
     }
     const c = E(e.center);
     return c ? [c.x, c.y + e.r] : null;

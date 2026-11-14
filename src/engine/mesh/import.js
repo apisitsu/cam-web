@@ -39,9 +39,15 @@ export const PART_FORMATS = [
   { id: 'stl', label: 'STL', extensions: ['.stl'], note: 'Triangle mesh. The usual export from any CAD.' },
   { id: 'obj', label: 'OBJ', extensions: ['.obj'], note: 'Wavefront mesh. Multi-object and n-sided faces.' },
   { id: 'ply', label: 'PLY', extensions: ['.ply'], note: 'Scanner and mesh-repair output.' },
+  {
+    id: 'step', label: 'STEP', extensions: ['.step', '.stp'], note: 'Solid model from any CAD (read with OpenCascade).', cad: true,
+  },
+  {
+    id: 'iges', label: 'IGES', extensions: ['.iges', '.igs'], note: 'Older CAD exchange (read with OpenCascade).', cad: true,
+  },
 ];
 
-/** The `accept` attribute for a file input: ".stl,.obj,.ply". */
+/** The `accept` attribute for a file input: ".stl,.obj,.ply,.step,…". */
 export const PART_ACCEPT = PART_FORMATS.flatMap((f) => f.extensions).join(',');
 
 /** The extension of a filename, lowercased, including the dot. */

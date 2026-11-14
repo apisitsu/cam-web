@@ -285,7 +285,7 @@ describe('the advertised format list', () => {
       expect(f.extensions.length).toBeGreaterThan(0);
       expect(f.note.length).toBeGreaterThan(10);
     }
-    expect(PART_ACCEPT).toBe('.stl,.obj,.ply');
+    expect(PART_ACCEPT).toBe('.stl,.obj,.ply,.step,.stp,.iges,.igs');
   });
 
   it('extracts an extension the way the dispatcher does', () => {

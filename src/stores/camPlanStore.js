@@ -15,6 +15,8 @@
 import { create } from 'zustand';
 import { weld } from '../engine/mesh/stl.js';
 import { parsePart } from '../engine/mesh/import.js';
+import { cadFormatOf, readCad } from '../engine/mesh/cadImport.js';
+import { loadOcct } from '../lib/occtLoader.js';
 import { analyzeMesh, boundsOf } from '../engine/mesh/analyze.js';
 import { planJob, planContext, planSummary } from '../engine/cam/plan.js';
 import { post } from '../engine/cam/post/fanuc.js';
@@ -288,6 +290,13 @@ export const useCamPlanStore = create((set, get) => ({
     });
     try {
       const buffer = await file.arrayBuffer();
+      // STEP and IGES are solids, not meshes: OpenCascade meshes them, loaded
+      // only now — it is large and nothing else needs it.
+      const cad = cadFormatOf(new Uint8Array(buffer), file.name);
+      if (cad) {
+        const occt = await loadOcct();
+        return await get().loadSoup(readCad(occt, new Uint8Array(buffer), cad), file.name);
+      }
       return await get().loadSoup(parsePart(buffer, file.name), file.name);
     } catch (err) {
       _raw.soup = _raw.welded = null;

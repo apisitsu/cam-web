@@ -1235,12 +1235,24 @@ describe('camPlanStore — part formats other than STL', () => {
   });
 
   it('refuses a format it cannot read, and says which it can', async () => {
-    const buf = new TextEncoder().encode('ISO-10303-21;').buffer;
-    await store().loadPart({ name: 'assembly.step', arrayBuffer: async () => buf });
+    const buf = new TextEncoder().encode('ACIS 21.0').buffer;
+    await store().loadPart({ name: 'assembly.sat', arrayBuffer: async () => buf });
     expect(store().status).toBe('error');
-    expect(store().error).toMatch(/\.step is not a part format/);
+    expect(store().error).toMatch(/\.sat is not a part format/);
     expect(store().error).toMatch(/\.stl/);
+    expect(store().error).toMatch(/\.step/);
   });
+
+  it('reads a STEP part through OpenCascade, as solid as an STL', async () => {
+    const { meshToStep } = await import('../engine/mesh/step.js');
+    const { weld } = await import('../engine/mesh/stl.js');
+    const text = meshToStep(weld(box(30, 20, 10)));
+    const buf = new TextEncoder().encode(text).buffer;
+    const analysis = await store().loadPart({ name: 'block.step', arrayBuffer: async () => buf });
+    expect(store().status).not.toBe('error');
+    expect(analysis).toBeTruthy();
+    expect(store().stlName).toBe('block.step');
+  }, 60000);
 });
 
 describe('camPlanStore — saving and restoring the whole setup', () => {

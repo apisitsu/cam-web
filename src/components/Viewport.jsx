@@ -712,7 +712,10 @@ export function SceneContents({
       <directionalLight position={[100, 100, 200]} intensity={0.75} />
       <directionalLight position={[-140, -80, 60]} intensity={0.28} />
 
-      <axesHelper args={[20]} />
+      {/* The origin stays in sight through the part, as SolidWorks draws it:
+          drawn last and without the depth test, so a solid round it does not
+          hide where (0,0,0) is. */}
+      <axesHelper args={[20]} renderOrder={1000} material-depthTest={false} material-transparent />
       <AxisLabels len={22} />
 
       {/* CAM geometry (backplot, stock, tool, lathe fixtures) belongs to the

@@ -81,7 +81,9 @@ const VERTEX_PX = 2.2;
 const VERTEX_PX_EMPH = 3.6;
 
 /** A sketch vertex dot at a constant on-screen size (see VERTEX_PX). */
-function Vertex({ x, y, color, pixels, pickable, onPointerDown, onClick }) {
+function Vertex({
+  x, y, color, pixels, pickable, onPointerDown, onClick, onTop = false,
+}) {
   const ref = useRef();
   useFrame(({ camera }) => {
     if (ref.current) ref.current.scale.setScalar(pixels / (camera.zoom || 1));
@@ -93,9 +95,11 @@ function Vertex({ x, y, color, pixels, pickable, onPointerDown, onClick }) {
       raycast={pickable ? undefined : noRaycast}
       onPointerDown={onPointerDown}
       onClick={onClick}
+      renderOrder={onTop ? 1000 : 0}
     >
       <sphereGeometry args={[1, 16, 16]} />
-      <meshBasicMaterial color={color} />
+      {/* `onTop` (the origin) shows through the part rather than behind it. */}
+      <meshBasicMaterial color={color} depthTest={!onTop} transparent={onTop} />
     </mesh>
   );
 }
@@ -1095,6 +1099,7 @@ export default function SketchLayer() {
             pickable={picking}
             onPointerDown={onDown}
             onClick={onClk}
+            onTop={!!p.origin}
           />
         );
       })}

@@ -163,58 +163,83 @@ function pointTriangleDist2(p, a, b, c) {
 /**
  * Where the inner wall comes closer than `reach` to the part's closed faces:
  * the part there is thinner than twice the wall, and the hollow would break
- * through it. The middle of the first such inner face, or null. A grid of
- * cells keeps it to the faces near each point.
+ * through it. The middle of the first such inner face, or null. A tree of
+ * boxes over the faces keeps each look to the faces near the point (a grid
+ * does not: the long thin triangles of a round cap fill thousands of cells).
  */
 export function thinWallAt(soup, inner, reach) {
   const P = soup.positions;
-  const T = soup.triangleCount;
-  let lo = [Infinity, Infinity, Infinity]; let hi = [-Infinity, -Infinity, -Infinity];
-  for (let i = 0; i < P.length; i += 3) {
-    lo = lo.map((v, k) => Math.min(v, P[i + k])); hi = hi.map((v, k) => Math.max(v, P[i + k]));
-  }
-  const span = Math.max(hi[0] - lo[0], hi[1] - lo[1], hi[2] - lo[2]) || 1;
-  const cs = Math.max(reach, span / 64);
-  const cell = (v, k) => Math.floor((v - lo[k]) / cs);
-  const grid = new Map();
-  const key = (i, j, k) => (i * 4096 + j) * 4096 + k;
-  for (let t = 0; t < T; t++) {
-    if (inner.open[t]) continue;
+  const ids = [];
+  for (let t = 0; t < soup.triangleCount; t++) if (!inner.open[t]) ids.push(t);
+  if (!ids.length) return null;
+  const box = new Float64Array(soup.triangleCount * 6);
+  const mid = new Float64Array(soup.triangleCount * 3);
+  const plane = new Float64Array(soup.triangleCount * 4); // unit normal and offset, for a quick miss
+  for (const t of ids) {
     const o = t * 9;
-    const a = [0, 1, 2].map((k) => cell(Math.min(P[o + k], P[o + 3 + k], P[o + 6 + k]), k));
-    const b = [0, 1, 2].map((k) => cell(Math.max(P[o + k], P[o + 3 + k], P[o + 6 + k]), k));
-    for (let i = a[0]; i <= b[0]; i++) {
-      for (let j = a[1]; j <= b[1]; j++) {
-        for (let k = a[2]; k <= b[2]; k++) {
-          const g = key(i, j, k);
-          if (!grid.has(g)) grid.set(g, []);
-          grid.get(g).push(t);
-        }
-      }
+    const ux = P[o + 3] - P[o]; const uy = P[o + 4] - P[o + 1]; const uz = P[o + 5] - P[o + 2];
+    const vx = P[o + 6] - P[o]; const vy = P[o + 7] - P[o + 1]; const vz = P[o + 8] - P[o + 2];
+    let nx = uy * vz - uz * vy; let ny = uz * vx - ux * vz; let nz = ux * vy - uy * vx;
+    const nl = Math.hypot(nx, ny, nz) || 1;
+    nx /= nl; ny /= nl; nz /= nl;
+    plane.set([nx, ny, nz, nx * P[o] + ny * P[o + 1] + nz * P[o + 2]], t * 4);
+    for (let k = 0; k < 3; k++) {
+      const a = P[o + k]; const b = P[o + 3 + k]; const c = P[o + 6 + k];
+      box[t * 6 + k] = Math.min(a, b, c);
+      box[t * 6 + 3 + k] = Math.max(a, b, c);
+      mid[t * 3 + k] = (a + b + c) / 3;
     }
   }
-  const Q = inner.positions;
+  // Nodes: [min x,y,z, max x,y,z] and either two children or a run of `ids`.
+  const nodes = [];
+  const build = (lo, hi) => {
+    const nb = [Infinity, Infinity, Infinity, -Infinity, -Infinity, -Infinity];
+    for (let i = lo; i < hi; i++) {
+      const t = ids[i];
+      for (let k = 0; k < 3; k++) {
+        if (box[t * 6 + k] < nb[k]) nb[k] = box[t * 6 + k];
+        if (box[t * 6 + 3 + k] > nb[k + 3]) nb[k + 3] = box[t * 6 + 3 + k];
+      }
+    }
+    const node = { b: nb, lo, hi, l: null, r: null };
+    nodes.push(node);
+    if (hi - lo > 8) {
+      const ax = [0, 1, 2].reduce((m, k) => (nb[k + 3] - nb[k] > nb[m + 3] - nb[m] ? k : m), 0);
+      const part = ids.slice(lo, hi).sort((x, y) => mid[x * 3 + ax] - mid[y * 3 + ax]);
+      for (let i = lo; i < hi; i++) ids[i] = part[i - lo];
+      const m = (lo + hi) >> 1;
+      node.l = build(lo, m);
+      node.r = build(m, hi);
+    }
+    return node;
+  };
+  const root = build(0, ids.length);
   const r2 = reach * reach;
-  const seen = new Int32Array(T).fill(-1);
+  const Q = inner.positions;
+  const tri = (t) => { const o = t * 9; return [[P[o], P[o + 1], P[o + 2]], [P[o + 3], P[o + 4], P[o + 5]], [P[o + 6], P[o + 7], P[o + 8]]]; };
+  const near = (node, c) => {
+    const b = node.b;
+    let d2 = 0;
+    for (let k = 0; k < 3; k++) {
+      const e = c[k] < b[k] ? b[k] - c[k] : c[k] > b[k + 3] ? c[k] - b[k + 3] : 0;
+      d2 += e * e;
+    }
+    if (d2 >= r2) return false;
+    if (node.l) return near(node.l, c) || near(node.r, c);
+    for (let i = node.lo; i < node.hi; i++) {
+      const t = ids[i];
+      const off = plane[t * 4] * c[0] + plane[t * 4 + 1] * c[1] + plane[t * 4 + 2] * c[2] - plane[t * 4 + 3];
+      if (off * off >= r2) continue;
+      const [a, bb, cc] = tri(t);
+      if (pointTriangleDist2(c, a, bb, cc) < r2) return true;
+    }
+    return false;
+  };
   for (let t = 0; t < inner.triangleCount; t++) {
     if (inner.open[t]) continue;
     const o = t * 9;
-    const c = [0, 1, 2].map((k) => (Q[o + k] + Q[o + 3 + k] + Q[o + 6 + k]) / 3);
-    const a = [0, 1, 2].map((k) => cell(c[k] - reach, k));
-    const b = [0, 1, 2].map((k) => cell(c[k] + reach, k));
-    for (let i = a[0]; i <= b[0]; i++) {
-      for (let j = a[1]; j <= b[1]; j++) {
-        for (let k = a[2]; k <= b[2]; k++) {
-          for (const u of grid.get(key(i, j, k)) || []) {
-            if (seen[u] === t) continue;
-            seen[u] = t;
-            const p = u * 9;
-            const d2 = pointTriangleDist2(c, [P[p], P[p + 1], P[p + 2]], [P[p + 3], P[p + 4], P[p + 5]], [P[p + 6], P[p + 7], P[p + 8]]);
-            if (d2 < r2) return c;
-          }
-        }
-      }
-    }
+    const c = [(Q[o] + Q[o + 3] + Q[o + 6]) / 3, (Q[o + 1] + Q[o + 4] + Q[o + 7]) / 3, (Q[o + 2] + Q[o + 5] + Q[o + 8]) / 3];
+    if (near(root, c)) return c;
   }
   return null;
 }

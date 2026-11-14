@@ -187,6 +187,7 @@ export const useSketchStore = create((set, get) => ({
   contextMenu: null, // { x, y } screen position of an open right-click menu, or null
   splinePts: [], // the points clicked so far for a spline being drawn
   showRelations: true, // draw the relation badges (— | ∥ ⊥ = ◎) beside the geometry
+  showPlanes: false, // keep the three reference planes on screen once there is a part (View ▸ Planes)
   hoverPlane: null, // reference-plane preset whose start button is under the pointer — the viewport lights that plane
   dimensionPending: null, // { kind, refs, label, current } set on a dimension-mode empty-click → shows the inline value input
   offsetPending: false, // true while the Offset rail button is waiting for its distance
@@ -1932,6 +1933,10 @@ export const useSketchStore = create((set, get) => ({
 
   toggleRelations() {
     set({ showRelations: !get().showRelations });
+  },
+
+  togglePlanes() {
+    set({ showPlanes: !get().showPlanes });
   },
 
   setHoverPlane(preset) {

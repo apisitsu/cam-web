@@ -102,11 +102,11 @@ const withShortcuts = (items) => items.map((top) => ({
  *
  * @param {{libraryOpen:boolean, hasProgram:boolean, sketching:boolean,
  *   hasSelection:boolean, view:string, treeOpen:boolean, canRestore:boolean,
- *   hasFace:boolean, hasFeatures:boolean, hasPart:boolean}} ctx
+ *   hasFace:boolean, hasFeatures:boolean, hasPart:boolean, showPlanes:boolean}} ctx
  */
 export function buildMenuItems(ctx) {
   const {
-    libraryOpen, hasProgram, sketching, hasSelection, view, treeOpen, canRestore, hasFace, hasFeatures, showRelations, hasPart,
+    libraryOpen, hasProgram, sketching, hasSelection, view, treeOpen, canRestore, hasFace, hasFeatures, showRelations, hasPart, showPlanes,
   } = ctx;
   return withShortcuts([
     {
@@ -147,6 +147,7 @@ export function buildMenuItems(ctx) {
       children: [
         { key: 'fit', label: 'Fit to view' },
         { key: 'sketch-relations', label: showRelations ? 'Sketch relations ✓' : 'Sketch relations' },
+        { key: 'planes', label: showPlanes ? 'Planes ✓' : 'Planes' },
         { type: 'divider' },
         ...VIEW_ITEMS.map((v) => ({
           key: `view:${v.value}`,
@@ -243,6 +244,7 @@ export default function MenuBar({
   const sketching = page === 'sketch';
   const selection = useSketchStore((s) => s.selection);
   const showRelations = useSketchStore((s) => s.showRelations);
+  const showPlanes = useSketchStore((s) => s.showPlanes);
   const undo = useSketchStore((s) => s.undo);
   const redo = useSketchStore((s) => s.redo);
   const deleteSelected = useSketchStore((s) => s.deleteSelected);
@@ -280,6 +282,7 @@ export default function MenuBar({
     hasProgram: !!gcode,
     sketching,
     showRelations,
+    showPlanes,
     hasSelection: selection.length > 0,
     view,
     treeOpen,
@@ -347,6 +350,7 @@ export default function MenuBar({
     if (key === 'delete') { deleteSelected(); return; }
     if (key === 'clear-sketch') { clearSketch(); return; }
     if (key === 'sketch-relations') { useSketchStore.getState().toggleRelations(); return; }
+    if (key === 'planes') { useSketchStore.getState().togglePlanes(); return; }
     if (key === 'fit') { setViewPreset(view); return; }
     if (key.startsWith('view:')) { setViewPreset(key.slice(5)); return; }
     if (key === 'new-sketch') { addSketch(); return; }

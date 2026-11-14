@@ -35,6 +35,16 @@ describe('buildMenuItems', () => {
     expect(leaf(buildMenuItems(ctx({ hasFace: true })), 'sketch-on-face').disabled).toBe(false);
   });
 
+  it('ticks View > Planes when the reference planes are kept on screen', () => {
+    expect(leaf(buildMenuItems(ctx()), 'planes').label).toBe('Planes');
+    expect(leaf(buildMenuItems(ctx({ showPlanes: true })), 'planes').label).toBe('Planes ✓');
+  });
+
+  it('offers part export only once there is a part', () => {
+    expect(leaf(buildMenuItems(ctx()), 'export-step').disabled).toBe(true);
+    expect(leaf(buildMenuItems(ctx({ hasPart: true })), 'export-stl').disabled).toBe(false);
+  });
+
   it('offers Rebuild only when there is a tree to rebuild', () => {
     expect(leaf(buildMenuItems(ctx()), 'rebuild').disabled).toBe(true);
     expect(leaf(buildMenuItems(ctx({ hasFeatures: true })), 'rebuild').disabled).toBe(false);

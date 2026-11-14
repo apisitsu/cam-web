@@ -84,6 +84,13 @@ export default function SketchStage({ meshVer }) {
   const treating = useEdgeTreatStore((s) => Boolean(s.active));
   const activeId = useSketchStore((s) => s.activeId);
   const built = useFeatureStore((s) => s.features.some((f) => f.sketchId === activeId));
+  // As SolidWorks: the three planes stand round an empty space to start on, and
+  // once there is a part they step back — one comes up while its button is
+  // pointed at, all of them with View ▸ Planes or while measuring.
+  const hasPart = useFeatureStore((s) => s.features.length > 0);
+  const showPlanes = useSketchStore((s) => s.showPlanes);
+  const hoverPlane = useSketchStore((s) => s.hoverPlane);
+  const planeShown = (preset) => !hasPart || showPlanes || measuring || hoverPlane === preset;
   const half = useMemo(() => {
     const { soup } = getRawMesh();
     if (!soup?.triangleCount) return MIN_HALF;
@@ -94,9 +101,11 @@ export default function SketchStage({ meshVer }) {
   return (
     <>
       {(sketchOpen || !built) && <SketchLayer />}
-      {(!sketchOpen || measuring) && !treating && Object.entries(PLANE_PRESETS).map(([preset, p]) => (
-        <ReferencePlane key={preset} preset={preset} label={p.label} half={half} />
-      ))}
+      {(!sketchOpen || measuring) && !treating && Object.entries(PLANE_PRESETS)
+        .filter(([preset]) => planeShown(preset))
+        .map(([preset, p]) => (
+          <ReferencePlane key={preset} preset={preset} label={p.label} half={half} />
+        ))}
     </>
   );
 }

@@ -66,3 +66,13 @@ describe('shellSolid', () => {
     near(volume(out.soup), 40 * 30 * 20 - 36 * 26 * 18);
   });
 });
+
+describe('shell on a part too thin for the wall', () => {
+  it('stops with where, rather than breaking through', () => {
+    expect(() => shellSolid(box(40, 30, 3), { thickness: 2 }, meshBoolean)).toThrow(/thinner than twice the wall/);
+    // Open on top, the same plate has only its floor to make: that is fine.
+    const TOP3 = { normal: [0, 0, 1], plane: 3, min: [0, 0, 3], max: [40, 30, 3] };
+    const out = shellSolid(box(40, 30, 3), { thickness: 2, openFaces: [TOP3] }, meshBoolean);
+    near(volume(out), 40 * 30 * 3 - 36 * 26 * 1);
+  });
+});

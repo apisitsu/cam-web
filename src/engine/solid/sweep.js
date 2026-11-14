@@ -217,7 +217,8 @@ export function ringCap(ring) {
 
 /**
  * Loft through profiles in order. Each is `{ outer, plane }`: one closed loop
- * (holes are not lofted) on its sketch plane.
+ * on its sketch plane. Holes are lofted separately and cut out of this
+ * (`makeLoft` in featureTree.js).
  */
 export function loftSolid(profiles) {
   if (profiles.length < 2) throw new Error('a loft needs two profiles or more');

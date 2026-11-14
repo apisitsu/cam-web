@@ -96,3 +96,27 @@ describe('sweep / loft features in the tree', () => {
     expect(bad.errors[0].message).toMatch(/no open line/);
   });
 });
+
+describe('loft with holes', () => {
+  it('lofts the holes through with the body', async () => {
+    const { meshBoolean, loadMeshBoolean } = await import('../../lib/csg.js');
+    await loadMeshBoolean();
+    const ring = (h, r) => {
+      const sk = createSketch();
+      const o = [[-h, -h], [h, -h], [h, h], [-h, h]].map(([x, y]) => addPoint(sk, x, y));
+      o.forEach((p, i) => addLine(sk, p, o[(i + 1) % 4]));
+      const q = [[-r, -r], [r, -r], [r, r], [-r, r]].map(([x, y]) => addPoint(sk, x, y));
+      q.forEach((p, i) => addLine(sk, p, q[(i + 1) % 4]));
+      return sk;
+    };
+    const sketches = {
+      1: { doc: ring(10, 5), plane: { preset: 'XY', offset: 0 } },
+      2: { doc: ring(5, 2), plane: { preset: 'XY', offset: 20 } },
+    };
+    const out = rebuildFeatures([createFeature('loft', { sketchIds: [1, 2] })], { sketchOf: (id) => sketches[id], meshBoolean });
+    expect(out.errors).toEqual([]);
+    const frustum = (a, b, h) => (h / 3) * (a * a + b * b + a * b);
+    expect(volume(out.soup)).toBeCloseTo(frustum(20, 10, 20) - frustum(10, 4, 20), 1);
+    expect(isClosed(out.soup)).toBe(true);
+  });
+});

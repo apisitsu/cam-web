@@ -156,6 +156,19 @@ describe('extrudeRegion — draft', () => {
     expect(bounds(out).max[0]).toBeGreaterThan(20);
   });
 
+  it('tapers a Mid Plane extrude both ways from the sketch, widest in the middle', () => {
+    const t = Math.tan((5 * Math.PI) / 180) * 5;
+    const soup = extrudeRegion({ outer: square(0, 0, 20, 20) }, {
+      depth: 10, base: -5, draft: 5, mid: true,
+    });
+    expect(isClosed(soup)).toBe(true);
+    expect(signedVolume(soup)).toBeCloseTo(2 * frustum(20, 20 - 2 * t, 5), 3);
+    const b = bounds(soup);
+    expect(b.min[2]).toBeCloseTo(-5, 6);
+    expect(b.max[2]).toBeCloseTo(5, 6);
+    expect(b.max[0]).toBeCloseTo(20, 6); // the sketch's own size, at z = 0
+  });
+
   it('refuses a draft so steep the profile closes up', () => {
     expect(() => extrudeRegion({ outer: square(0, 0, 4, 4) }, { depth: 20, draft: 30 })).toThrow(/too steep/);
   });

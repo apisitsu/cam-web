@@ -12,10 +12,15 @@
  * Pure: takes a welded mesh (`weld` in stl.js) and returns the file as text.
  */
 
-/** A STEP real: always with a decimal point, exponent as `E`. */
-export function stepReal(v) {
-  const n = Math.abs(v) < 1e-12 ? 0 : v;
-  let s = String(Number(n.toPrecision(12)));
+/**
+ * A STEP real: always with a decimal point, exponent as `E`. `digits` is the
+ * decimal places kept — the mesh is float32, so a coordinate carries no more
+ * than a micron's worth anyway.
+ */
+export function stepReal(v, digits = 9) {
+  const f = 10 ** digits;
+  const n = Math.round(v * f) / f;
+  let s = String(n === 0 ? 0 : n);
   if (s.includes('e')) {
     const [m, e] = s.split('e');
     return `${m.includes('.') ? m : `${m}.`}E${e.startsWith('-') ? e : e.replace('+', '')}`;
@@ -94,13 +99,14 @@ export function planarFaces(mesh, angTol = 1e-6, distTol = 1e-5) {
  */
 function faceLoops(mesh, tris) {
   const I = mesh.indices;
-  const directed = new Map(); // "a,b" → count, to cancel the inner edges
+  const directed = new Map(); // a→b as one number → [a, b], the inner edges cancelled
+  const K = 4294967296;
   for (const t of tris) {
     for (let k = 0; k < 3; k++) {
       const a = I[t * 3 + k]; const b = I[t * 3 + ((k + 1) % 3)];
-      const back = `${b},${a}`;
+      const back = b * K + a;
       if (directed.has(back)) directed.delete(back);
-      else directed.set(`${a},${b}`, [a, b]);
+      else directed.set(a * K + b, [a, b]);
     }
   }
   const out = new Map(); // vertex → outgoing boundary edges
@@ -190,20 +196,22 @@ export function meshToStep(mesh, { name = 'part', date = new Date() } = {}) {
   const sr = add('(NAMED_UNIT(*)SI_UNIT($,.STERADIAN.)SOLID_ANGLE_UNIT())');
   const unc = add(`UNCERTAINTY_MEASURE_WITH_UNIT(LENGTH_MEASURE(1.E-06),#${mm},'distance_accuracy_value','confusion accuracy')`);
   const ctx = add(`(GEOMETRIC_REPRESENTATION_CONTEXT(3)GLOBAL_UNCERTAINTY_ASSIGNED_CONTEXT((#${unc}))GLOBAL_UNIT_ASSIGNED_CONTEXT((#${mm},#${rad},#${sr}))REPRESENTATION_CONTEXT('Context3D','3D Context with 1E-06 uncertainty'))`);
-  const point = (x, y, z) => add(`CARTESIAN_POINT('',(${stepReal(x)},${stepReal(y)},${stepReal(z)}))`);
+  const point = (x, y, z) => add(`CARTESIAN_POINT('',(${stepReal(x, 6)},${stepReal(y, 6)},${stepReal(z, 6)}))`);
   const dir = (x, y, z) => add(`DIRECTION('',(${stepReal(x)},${stepReal(y)},${stepReal(z)}))`);
   const origin = add(`AXIS2_PLACEMENT_3D('',#${point(0, 0, 0)},#${dir(0, 0, 1)},#${dir(1, 0, 0)})`);
 
   // Loops first, so the vertices three faces share are known before any loop
   // is thinned.
   const faceLoopsList = faces.map((f) => faceLoops(mesh, f.tris));
-  const facesAt = new Map();
+  // How many faces each vertex is on (faces are walked in order, so a vertex
+  // met again in the same face is not counted twice).
+  const nv = P.length / 3;
+  const lastFace = new Int32Array(nv).fill(-1);
+  const faceCount = new Uint8Array(nv);
   faceLoopsList.forEach((loops, fi) => loops.forEach((loop) => loop.forEach((v) => {
-    if (!facesAt.has(v)) facesAt.set(v, new Set());
-    facesAt.get(v).add(fi);
+    if (lastFace[v] !== fi) { lastFace[v] = fi; if (faceCount[v] < 255) faceCount[v] += 1; }
   })));
-  const keep = new Set();
-  for (const [v, set] of facesAt) if (set.size >= 3) keep.add(v);
+  const keep = { has: (v) => faceCount[v] >= 3 };
 
   // One point per mesh vertex, used by its vertex, by the lines that start
   // there and by the planes placed there.
@@ -227,11 +235,11 @@ export function meshToStep(mesh, { name = 'part', date = new Date() } = {}) {
   const edgeId = new Map(); // "a,b" (a < b) → EDGE_CURVE id, defined a → b
   const edge = (a, b) => {
     const lo = Math.min(a, b); const hi = Math.max(a, b);
-    const k = `${lo},${hi}`;
+    const k = lo * 4294967296 + hi;
     if (!edgeId.has(k)) {
       const dx = P[hi * 3] - P[lo * 3]; const dy = P[hi * 3 + 1] - P[lo * 3 + 1]; const dz = P[hi * 3 + 2] - P[lo * 3 + 2];
       const len = Math.hypot(dx, dy, dz) || 1;
-      const line = add(`LINE('',#${vpoint(lo)},#${add(`VECTOR('',#${udir(dx / len, dy / len, dz / len)},${stepReal(len)})`)})`);
+      const line = add(`LINE('',#${vpoint(lo)},#${add(`VECTOR('',#${udir(dx / len, dy / len, dz / len)},${stepReal(len, 6)})`)})`);
       edgeId.set(k, add(`EDGE_CURVE('',#${vertex(lo)},#${vertex(hi)},#${line},.T.)`));
     }
     return { id: edgeId.get(k), same: a < b };

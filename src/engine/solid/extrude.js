@@ -148,11 +148,13 @@ export function draftLoop(loop, d) {
  * result is still outward-facing.
  *
  * @param {{outer:number[], holes?:number[][]}} region  loops in sketch coordinates
- * @param {{depth:number, plane?:object, base?:number}} opts
- *   `base` lifts the whole slab off the plane (a boss standing on a face).
+ * @param {{depth:number, plane?:object, base?:number, draft?:number, mid?:boolean}} opts
+ *   `base` lifts the whole slab off the plane (a boss standing on a face);
+ *   `mid` says the sketch is in the middle of the slab (Mid Plane), which a
+ *   draft then tapers from both ways.
  */
 export function extrudeRegion(region, {
-  depth, plane, base = 0, draft = 0,
+  depth, plane, base = 0, draft = 0, mid = false,
 } = {}) {
   if (!region?.outer || region.outer.length < 6) {
     throw new Error('That profile has no closed outer boundary to extrude.');
@@ -174,30 +176,44 @@ export function extrudeRegion(region, {
 
   // Draft: the walls lean in by `draft` degrees, so the profile at the far end
   // (away from the plane) is the sketch moved into the material; a negative
-  // draft leans them out.
+  // draft leans them out. Mid Plane leans both halves in from the sketch,
+  // which stays the widest section, in the middle.
   if (draft) {
-    const d = Math.abs(depth) * Math.tan((draft * Math.PI) / 180);
+    const tan = Math.tan((draft * Math.PI) / 180);
     const loops = [region.outer, ...holes];
-    const far = loops.map((l) => draftLoop(l, d));
-    const t = triangulate(far[0], far.slice(1));
-    if (!t.indices.length) throw new Error('The drafted end could not be triangulated — make the draft smaller.');
     const up = depth > 0;
-    const nearH = up ? lo : hi;
-    const farH = up ? hi : lo;
-    const Vf = (i) => at(t.vertices[i * 2], t.vertices[i * 2 + 1], farH);
-    for (let k = 0; k < indices.length; k += 3) {
-      const [a, b, c] = [indices[k], indices[k + 1], indices[k + 2]];
-      if (up) out.tri(V(c, nearH), V(b, nearH), V(a, nearH));
-      else out.tri(V(a, nearH), V(b, nearH), V(c, nearH));
+    let loLoops;
+    let hiLoops;
+    if (mid) {
+      const d = (Math.abs(depth) / 2) * tan;
+      loLoops = loops.map((l) => draftLoop(l, d));
+      hiLoops = loLoops; // the same section at both ends
+    } else {
+      const far = loops.map((l) => draftLoop(l, Math.abs(depth) * tan));
+      loLoops = up ? loops : far;
+      hiLoops = up ? far : loops;
     }
-    for (let k = 0; k < t.indices.length; k += 3) {
-      const [a, b, c] = [t.indices[k], t.indices[k + 1], t.indices[k + 2]];
-      if (up) out.tri(Vf(a), Vf(b), Vf(c));
-      else out.tri(Vf(c), Vf(b), Vf(a));
+    const tLo = triangulate(loLoops[0], loLoops.slice(1));
+    const tHi = triangulate(hiLoops[0], hiLoops.slice(1));
+    if (!tLo.indices.length || !tHi.indices.length) throw new Error('The drafted end could not be triangulated — make the draft smaller.');
+    const Vt = (t, i, h) => at(t.vertices[i * 2], t.vertices[i * 2 + 1], h);
+    for (let k = 0; k < tLo.indices.length; k += 3) {
+      const [a, b, c] = [tLo.indices[k], tLo.indices[k + 1], tLo.indices[k + 2]];
+      out.tri(Vt(tLo, c, lo), Vt(tLo, b, lo), Vt(tLo, a, lo));
     }
-    loops.forEach((l, i) => (up
-      ? taperedWalls(l, far[i], at, lo, hi, out)
-      : taperedWalls(far[i], l, at, lo, hi, out)));
+    for (let k = 0; k < tHi.indices.length; k += 3) {
+      const [a, b, c] = [tHi.indices[k], tHi.indices[k + 1], tHi.indices[k + 2]];
+      out.tri(Vt(tHi, a, hi), Vt(tHi, b, hi), Vt(tHi, c, hi));
+    }
+    loops.forEach((l, i) => {
+      if (mid) {
+        const h0 = (lo + hi) / 2;
+        taperedWalls(loLoops[i], l, at, lo, h0, out);
+        taperedWalls(l, hiLoops[i], at, h0, hi, out);
+      } else {
+        taperedWalls(loLoops[i], hiLoops[i], at, lo, hi, out);
+      }
+    });
     return out.build('extrude');
   }
 

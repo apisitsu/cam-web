@@ -297,7 +297,7 @@ export function parseFeatures(raw) {
 
 /** Build the solid one feature describes, on its own. Throws with a message. */
 function makeFeatureSolid(feature, {
-  sketchOf, importOf, refBounds, planes, used, partBounds,
+  sketchOf, importOf, refBounds, planes, used, partBounds, meshBoolean,
 }) {
   if (feature.kind === 'import') {
     const soup = importOf?.(feature);
@@ -306,7 +306,11 @@ function makeFeatureSolid(feature, {
     }
     return soup;
   }
-  if (feature.kind === 'loft') return makeLoft(feature, { sketchOf, refBounds, planes, used });
+  if (feature.kind === 'loft') {
+    return makeLoft(feature, {
+      sketchOf, refBounds, planes, used, meshBoolean,
+    });
+  }
   const entry = sketchOf?.(feature.sketchId);
   if (!entry?.doc) throw new Error('its sketch is gone');
 
@@ -337,6 +341,7 @@ function makeFeatureSolid(feature, {
     depth: span.depth,
     base: span.base,
     draft: feature.kind === 'extrude' ? feature.draft : 0,
+    mid: feature.kind === 'extrude' && feature.end === 'mid',
     axis: feature.axis,
     angle: feature.angle,
     segments: feature.segments ?? undefined,
@@ -376,9 +381,40 @@ function makeLoft(feature, ctx) {
     const { doc, plane } = placedSketch(id, ctx, `profile ${i + 1}`);
     const { regions } = sketchRegions(doc);
     if (!regions.length) throw new Error(`profile ${i + 1} does not enclose a closed profile`);
-    return { outer: regions[0].outer, plane };
+    return { outer: regions[0].outer, holes: regions[0].holes || [], plane };
   });
-  return loftSolid(profiles);
+  const body = loftSolid(profiles.map(({ outer, plane }) => ({ outer, plane })));
+  const nh = profiles[0].holes.length;
+  if (profiles.some((p) => p.holes.length !== nh)) {
+    throw new Error('every profile needs the same number of holes for the holes to loft through');
+  }
+  if (!nh) return body;
+  if (!ctx.meshBoolean) throw new Error('no solid boolean is available to cut the holes');
+  // Each hole is lofted through the hole in the same place, measured from its
+  // profile's own middle, of every other profile, and cut out of the body.
+  const mid = (loop) => {
+    let x = 0; let y = 0;
+    for (let i = 0; i < loop.length; i += 2) { x += loop[i]; y += loop[i + 1]; }
+    return [(x * 2) / loop.length, (y * 2) / loop.length];
+  };
+  const placeOf = (p, h) => { const a = mid(h); const o = mid(p.outer); return [a[0] - o[0], a[1] - o[1]]; };
+  const tools = profiles[0].holes.map(() => []);
+  profiles.forEach((p, k) => {
+    const free = p.holes.slice();
+    profiles[0].holes.forEach((h0, j) => {
+      const want = placeOf(profiles[0], h0);
+      let best = 0;
+      free.forEach((h, i) => {
+        const at = placeOf(p, h); const b = placeOf(p, free[best]);
+        if (Math.hypot(at[0] - want[0], at[1] - want[1]) < Math.hypot(b[0] - want[0], b[1] - want[1])) best = i;
+      });
+      tools[j][k] = { outer: free.splice(best, 1)[0], plane: p.plane };
+    });
+  });
+  const cutters = tools.map((t) => loftSolid(t));
+  const once = cutters.length > 1 ? ctx.meshBoolean.many?.(body, cutters, 'cut', 'loft') : null;
+  if (once) return once;
+  return cutters.reduce((s, c) => ctx.meshBoolean(s, c, 'cut', 'loft'), body);
 }
 
 /**
@@ -667,6 +703,6 @@ export function describeFeature(f, sketchName) {
   const back = f.reverse ? ', reversed' : '';
   const drafted = f.draft ? `, draft ${f.draft}°` : '';
   if (f.end === 'through') return `Extrude through all${back}${drafted}${where}${how}`;
-  if (f.end === 'mid') return `Extrude ${Math.abs(f.depth)} mm mid plane${where}${how}`;
+  if (f.end === 'mid') return `Extrude ${Math.abs(f.depth)} mm mid plane${drafted}${where}${how}`;
   return `Extrude ${f.depth} mm${back}${f.base ? ` from ${f.base}` : ''}${drafted}${where}${how}`;
 }

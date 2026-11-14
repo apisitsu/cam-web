@@ -129,13 +129,110 @@ export function innerBody(soup, thickness, openFaces = []) {
       positions[t * 9 + k * 3 + 2] = moved[v * 3 + 2];
     }
   }
-  return { positions, triangleCount: nt, format: 'shell', opened };
+  return {
+    positions, triangleCount: nt, format: 'shell', opened, open,
+  };
 }
+
+/** Squared distance from point p to triangle abc (each [x,y,z]). */
+function pointTriangleDist2(p, a, b, c) {
+  const sub = (u, v) => [u[0] - v[0], u[1] - v[1], u[2] - v[2]];
+  const dot = (u, v) => u[0] * v[0] + u[1] * v[1] + u[2] * v[2];
+  const ab = sub(b, a); const ac = sub(c, a); const ap = sub(p, a);
+  const d1 = dot(ab, ap); const d2 = dot(ac, ap);
+  const at = (q) => { const d = sub(p, q); return dot(d, d); };
+  if (d1 <= 0 && d2 <= 0) return at(a);
+  const bp = sub(p, b); const d3 = dot(ab, bp); const d4 = dot(ac, bp);
+  if (d3 >= 0 && d4 <= d3) return at(b);
+  const vc = d1 * d4 - d3 * d2;
+  if (vc <= 0 && d1 >= 0 && d3 <= 0) { const v = d1 / (d1 - d3); return at([a[0] + ab[0] * v, a[1] + ab[1] * v, a[2] + ab[2] * v]); }
+  const cp = sub(p, c); const d5 = dot(ab, cp); const d6 = dot(ac, cp);
+  if (d6 >= 0 && d5 <= d6) return at(c);
+  const vb = d5 * d2 - d1 * d6;
+  if (vb <= 0 && d2 >= 0 && d6 <= 0) { const w = d2 / (d2 - d6); return at([a[0] + ac[0] * w, a[1] + ac[1] * w, a[2] + ac[2] * w]); }
+  const va = d3 * d6 - d5 * d4;
+  if (va <= 0 && d4 - d3 >= 0 && d5 - d6 >= 0) {
+    const w = (d4 - d3) / ((d4 - d3) + (d5 - d6));
+    return at([b[0] + (c[0] - b[0]) * w, b[1] + (c[1] - b[1]) * w, b[2] + (c[2] - b[2]) * w]);
+  }
+  const denom = 1 / (va + vb + vc);
+  const v = vb * denom; const w = vc * denom;
+  return at([a[0] + ab[0] * v + ac[0] * w, a[1] + ab[1] * v + ac[1] * w, a[2] + ab[2] * v + ac[2] * w]);
+}
+
+/**
+ * Where the inner wall comes closer than `reach` to the part's closed faces:
+ * the part there is thinner than twice the wall, and the hollow would break
+ * through it. The middle of the first such inner face, or null. A grid of
+ * cells keeps it to the faces near each point.
+ */
+export function thinWallAt(soup, inner, reach) {
+  const P = soup.positions;
+  const T = soup.triangleCount;
+  let lo = [Infinity, Infinity, Infinity]; let hi = [-Infinity, -Infinity, -Infinity];
+  for (let i = 0; i < P.length; i += 3) {
+    lo = lo.map((v, k) => Math.min(v, P[i + k])); hi = hi.map((v, k) => Math.max(v, P[i + k]));
+  }
+  const span = Math.max(hi[0] - lo[0], hi[1] - lo[1], hi[2] - lo[2]) || 1;
+  const cs = Math.max(reach, span / 64);
+  const cell = (v, k) => Math.floor((v - lo[k]) / cs);
+  const grid = new Map();
+  const key = (i, j, k) => (i * 4096 + j) * 4096 + k;
+  for (let t = 0; t < T; t++) {
+    if (inner.open[t]) continue;
+    const o = t * 9;
+    const a = [0, 1, 2].map((k) => cell(Math.min(P[o + k], P[o + 3 + k], P[o + 6 + k]), k));
+    const b = [0, 1, 2].map((k) => cell(Math.max(P[o + k], P[o + 3 + k], P[o + 6 + k]), k));
+    for (let i = a[0]; i <= b[0]; i++) {
+      for (let j = a[1]; j <= b[1]; j++) {
+        for (let k = a[2]; k <= b[2]; k++) {
+          const g = key(i, j, k);
+          if (!grid.has(g)) grid.set(g, []);
+          grid.get(g).push(t);
+        }
+      }
+    }
+  }
+  const Q = inner.positions;
+  const r2 = reach * reach;
+  const seen = new Int32Array(T).fill(-1);
+  for (let t = 0; t < inner.triangleCount; t++) {
+    if (inner.open[t]) continue;
+    const o = t * 9;
+    const c = [0, 1, 2].map((k) => (Q[o + k] + Q[o + 3 + k] + Q[o + 6 + k]) / 3);
+    const a = [0, 1, 2].map((k) => cell(c[k] - reach, k));
+    const b = [0, 1, 2].map((k) => cell(c[k] + reach, k));
+    for (let i = a[0]; i <= b[0]; i++) {
+      for (let j = a[1]; j <= b[1]; j++) {
+        for (let k = a[2]; k <= b[2]; k++) {
+          for (const u of grid.get(key(i, j, k)) || []) {
+            if (seen[u] === t) continue;
+            seen[u] = t;
+            const p = u * 9;
+            const d2 = pointTriangleDist2(c, [P[p], P[p + 1], P[p + 2]], [P[p + 3], P[p + 4], P[p + 5]], [P[p + 6], P[p + 7], P[p + 8]]);
+            if (d2 < r2) return c;
+          }
+        }
+      }
+    }
+  }
+  return null;
+}
+
+/** How close (a share of the wall) an inner face may come to a face before the wall is too thick. */
+const THIN_WALL = 0.9;
 
 /** The part hollowed to `thickness`, open where `openFaces` say. */
 export function shellSolid(soup, { thickness, openFaces = [] }, meshBoolean) {
   if (!(thickness > 0)) throw new Error('a shell needs a wall thickness');
   if (!meshBoolean) throw new Error('no solid boolean is available to hollow the part');
   const inner = innerBody(soup, thickness, openFaces);
+  // Every inner face stands a wall's thickness off its own face; nearer than
+  // that to any face, the part is too thin there for this wall.
+  const thin = thinWallAt(soup, inner, thickness * THIN_WALL);
+  if (thin) {
+    const at = thin.map((v) => Math.round(v * 10) / 10).join(', ');
+    throw new Error(`the part is thinner than twice the wall near (${at}) — make the wall thinner than ${thickness} mm`);
+  }
   return meshBoolean(soup, inner, 'cut', 'shell');
 }
